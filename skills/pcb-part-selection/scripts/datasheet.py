@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Fetch a datasheet and find things in it, without grepping page by page.
+
+  datasheet.py fetch URL OUT.pdf                    # refuses anything that is not a PDF (checks the %PDF magic)
+  datasheet.py find DS.pdf "Layout Example" ["Figure 36" ...] [--context 1]
+  datasheet.py page DS.pdf N OUT.png [--dpi 170]     # render one page to look at (figures, land patterns, pinouts)
+
+fetch: manufacturer "symlink" URLs and distributor datasheet links can return an HTML page instead of the PDF - a
+landing page, a login wall, or a "not found" page for a discontinued part (that itself is a lifecycle warning: check
+the product page). The download is kept only if it starts with %PDF.
+find: prints every page whose text contains each phrase (case-insensitive, whitespace-insensitive), with the matching
+line, so you can name the page that holds a figure or section (e.g. "datasheet-p30.png = Figure 36, layout example")
+in the project's reference notes. pdftotext's font warnings are suppressed.
+Needs poppler (pdftotext, pdftoppm, pdfinfo).
+"""
+import argparse, os, re, shutil, subprocess, sys, urllib.error, urllib.request
+
+
+def fetch(url, out):
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        r = urllib.request.urlopen(req, timeout=60)
+        data, status, ctype = r.read(), r.status, r.headers.get('Content-Type', '')
+    except urllib.error.HTTPError as e:
+        data, status, ctype = e.read(), e.code, e.headers.get('Content-Type', '')
+    if not data.startswith(b'%PDF'):
+        title = re.search(rb'<title>(.*?)</title>', data, re.I | re.S)
+        sys.exit('not a PDF: HTTP %s, %s%s - nothing saved. Find the real PDF link on the product page.' % (
+            status, ctype or 'no content type', ', page title "%s"' % title.group(1).decode('utf-8', 'replace').strip()[:80] if title else ''))
+    open(out, 'wb').write(data)
+    print('saved %s (%d bytes)' % (out, len(data)))
+
+
+def pages(pdf):
+    n = int(re.search(r'Pages:\s+(\d+)', subprocess.run(['pdfinfo', pdf], capture_output=True, text=True).stdout).group(1))
+    txt = subprocess.run(['pdftotext', '-layout', pdf, '-'], capture_output=True, text=True, errors='replace').stdout
+    pp = txt.split('\f')
+    return pp[:n] if len(pp) >= n else pp
+
+
+def find(pdf, phrases, context):
+    pp = pages(pdf)
+    norm = lambda s: re.sub(r'\s+', ' ', s).lower()
+    for ph in phrases:
+        hits = []
+        for i, p in enumerate(pp, 1):
+            lines = p.splitlines()
+            for j, line in enumerate(lines):
+                if norm(ph) in norm(line):
+                    ctx = lines[max(0, j - context):j + context + 1]
+                    hits.append((i, ' | '.join(l.strip() for l in ctx if l.strip())[:160]))
+        print('"%s": %s' % (ph, 'pages ' + ', '.join(sorted({str(h[0]) for h in hits}, key=int)) if hits else 'not found'))
+        for i, s in hits[:12]:
+            print('  p%-3d %s' % (i, s))
+
+
+def page(pdf, n, out, dpi):
+    base = os.path.splitext(out)[0]
+    subprocess.run(['pdftoppm', '-r', str(dpi), '-f', str(n), '-l', str(n), '-png', '-singlefile', pdf, base], check=True)
+    print(base + '.png')
+
+
+def main():
+    for tool in ('pdftotext', 'pdftoppm', 'pdfinfo'):
+        if not shutil.which(tool):
+            sys.exit('%s not found: install poppler (brew install poppler / apt install poppler-utils)' % tool)
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    f = sub.add_parser('fetch'); f.add_argument('url'); f.add_argument('out')
+    s = sub.add_parser('find'); s.add_argument('pdf'); s.add_argument('phrases', nargs='+'); s.add_argument('--context', type=int, default=0)
+    g = sub.add_parser('page'); g.add_argument('pdf'); g.add_argument('n', type=int); g.add_argument('out'); g.add_argument('--dpi', type=int, default=170)
+    a = ap.parse_args()
+    if a.cmd == 'fetch':
+        fetch(a.url, a.out)
+    elif a.cmd == 'find':
+        find(a.pdf, a.phrases, a.context)
+    else:
+        page(a.pdf, a.n, a.out, a.dpi)
+
+
+if __name__ == '__main__':
+    main()
