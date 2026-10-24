@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Small, dependency-free helpers for editing KiCad s-expression files (.kicad_sch, .kicad_pcb, .kicad_sym, .kicad_mod)
-as text, plus a checker.
+"""Small, dependency-free helpers for looking at KiCad s-expression files (.kicad_sch, .kicad_pcb, .kicad_sym,
+.kicad_mod) as text, plus a checker. Nothing here writes KiCad files: edits and generators go through kicad_sexpr
+(SKILL.md section 2).
 
 CLI:
   sexp.py check FILE...            balance, raw newlines/tabs inside strings, duplicate uuids, duplicate references
@@ -12,11 +13,9 @@ Library (import sexp):
   block(text, i)                   the balanced (...) starting at index i
   blocks(text, head, depth=None)   [(start, block_text)] for every "(head" block
   find_ref(text, ref)              (start, block) of the footprint/symbol whose Reference is ref
-  replace_span(text, start, old, new)
-  kstr(s)                          quote a Python string for KiCad: escapes \\ and " and turns newlines into \\n
 
-Why text edits: pcbnew's SWIG API is fine for loading/moving footprints but has crashed after many FootprintLoad calls
-or PCB_VIA creations, and on save it renames track nets to match moved pads. Text edits are exact and diffable.
+`check` works on the raw text on purpose: it reports what a parser would reject or silently misread (unbalanced
+parentheses, raw newlines inside strings, duplicated uuids).
 """
 import re, sys, collections
 
@@ -50,13 +49,6 @@ def find_ref(t, ref):
             if re.search(r'\(property "Reference" "%s"' % re.escape(ref), b) and '(lib_symbols' not in b[:40]:
                 return s, b
     return None, None
-
-def replace_span(t, start, old, new):
-    assert t[start:start + len(old)] == old, 'text changed under the edit'
-    return t[:start] + new + t[start + len(old):]
-
-def kstr(s):
-    return '"' + s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') + '"'
 
 def check(path):
     t = open(path, encoding='utf-8').read(); probs = []

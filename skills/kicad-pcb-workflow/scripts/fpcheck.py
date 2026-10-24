@@ -14,7 +14,10 @@ the usual install path). Prints one line of facts and a list of PROBLEMs; exit 1
 Footprint matchers (including jlcimport's) propose wrong pin counts and sizes often enough that every suggestion
 needs this check, and the datasheet's land-pattern figure is still the authority for pad sizes and pitch.
 """
-import argparse, math, os, re, sys
+import argparse, os, re, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kicad_sexpr import SymbolLibrary, load, pins_of  # noqa: E402
 
 
 def fp_dir():
@@ -38,45 +41,36 @@ def resolve(spec):
     sys.exit('footprint not found: ' + spec)
 
 
-def pads(text):
-    """[(number, type, x, y, w, h, rot)] for every pad (multi-line pad blocks are fine)"""
+def pads(fp):
+    """[(number, type, x, y, w, h, rot)] for every pad of a footprint node (read through kicad_sexpr)"""
     out = []
-    for m in re.finditer(r'\(pad\s+"([^"]*)"\s+(\w+)\s+(\w+)\s*\(at\s+([-\d.]+)\s+([-\d.]+)(?:\s+([-\d.]+))?\)\s*'
-                         r'(?:\(locked[^)]*\)\s*)?\(size\s+([\d.]+)\s+([\d.]+)\)', text):
-        n, typ, _shape, x, y, rot, w, h = m.groups()
-        out.append((n, typ, float(x), float(y), float(w), float(h), float(rot or 0)))
+    for p in fp.nodes('pad'):
+        at, size = p.find('at'), p.find('size')
+        if at is None or size is None:
+            continue
+        out.append((str(p[1]), str(p[2]), at.number(1), at.number(2), size.number(1), size.number(2), at.number(3, 0.0)))
     return out
 
 
-def layer_bbox(text, layer):
+def layer_bbox(fp, layer):
+    """Bounding box of the points of every fp_line / fp_rect / fp_arc / fp_circle / fp_poly on `layer`, or None."""
     xs, ys = [], []
-    for m in re.finditer(r'\(fp_(?:line|rect|arc|circle|poly)\b', text):
-        i, d, j = m.start(), 0, m.start()
-        while True:
-            d += (text[j] == '(') - (text[j] == ')'); j += 1
-            if d == 0:
-                break
-        b = text[i:j]
-        if '(layer "%s")' % layer not in b:
+    for g in fp.nodes():
+        if g.head not in ('fp_line', 'fp_rect', 'fp_arc', 'fp_circle', 'fp_poly') or str(g.get('layer')) != layer:
             continue
-        for x, y in re.findall(r'\((?:start|end|mid|center|xy)\s+([-\d.]+)\s+([-\d.]+)\)', b):
-            xs.append(float(x)); ys.append(float(y))
+        for n in g.walk():
+            if n.head in ('start', 'end', 'mid', 'center', 'xy'):
+                xs.append(n.number(1)); ys.append(n.number(2))
     return (min(xs), min(ys), max(xs), max(ys)) if xs else None
 
 
 def symbol_pins(spec):
+    """Pin numbers of LIB.kicad_sym:NAME (derived symbols flattened), all units."""
     path, name = spec.rsplit(':', 1)
-    t = open(path, encoding='utf-8').read()
-    m = re.search(r'\(symbol "%s"' % re.escape(name), t)
-    if not m:
+    lib = SymbolLibrary.load(path)
+    if name not in lib.names():
         sys.exit('symbol %s not in %s' % (name, path))
-    i, d, j = m.start(), 0, m.start()
-    while True:
-        c = t[j]
-        d += (c == '(') - (c == ')'); j += 1
-        if d == 0:
-            break
-    return set(re.findall(r'\(number "([^"]*)"', t[i:j]))
+    return {p.number for p in pins_of(lib.get(name), None, None)}
 
 
 def parse_package(s):
@@ -92,11 +86,11 @@ def main():
     ap.add_argument('footprint'); ap.add_argument('--package'); ap.add_argument('--symbol'); ap.add_argument('--pads', action='store_true')
     a = ap.parse_args()
     path = resolve(a.footprint)
-    t = open(path, encoding='utf-8').read()
-    P = pads(t)
+    fp = load(path)
+    P = pads(fp)
     numbered = sorted({p[0] for p in P if p[0]}, key=lambda s: (len(s), s))
-    crt = layer_bbox(t, 'F.CrtYd')
-    fab = layer_bbox(t, 'F.Fab')
+    crt = layer_bbox(fp, 'F.CrtYd')
+    fab = layer_bbox(fp, 'F.Fab')
     probs = []
     print('%s: %d pads (%d numbers: %s), courtyard %s, F.Fab body %s' % (
         os.path.basename(path), len(P), len(numbered), ' '.join(numbered[:40]),
