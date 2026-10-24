@@ -51,6 +51,30 @@ Therefore:
 - Chargers also regulate their own die temperature (TJ(REG) 125 C on BQ2407x [BQ2407x p13]) by cutting the current;
   that protects the IC, not the cell.
 
+## Choosing the charger
+
+| Situation | Charger type | Examples (check stock and lifecycle with pcb-part-selection) |
+|---|---|---|
+| Up to about 0.5-1 A charge from 5 V, light system load | Linear with power path | BQ2407x [BQ2407x p1], BQ25185 [BQ25185 p1], MCP73831 (no power path) |
+| Multi-amp charge or a system load of watts, no host needed | Standalone switching charger with NVDC power path, ICHG / ILIM set by resistors | BQ25606: 3 A buck, NVDC power path, resistor-set ICHG and ILIM, 3.9-13.5 V VBUS operating range [BQ25606 p1, p6, p9]. BQ25616 is another TI standalone part (not checked here) |
+| Same, with a host that is powered independently of the charger | I2C switching charger | BQ25895: 5 A, I2C [BQ25895 p1] |
+| Power bank: charger + boost output + protection in one IC | Power-bank SoC | IP53xx and SW62xx families exist for this (not reviewed here; check datasheet availability and language first) |
+
+The deciding question for I2C chargers is startup independence: if the charger's defaults do not deliver what the
+system needs until a host writes its registers, the host must be powered from somewhere else. A charger that powers
+the only processor on the board should be standalone.
+
+## Charging while running
+
+The input must cover everything at once. With a power-path charger the system load is served first and the cell gets
+what is left:
+```
+P_in_needed = P_system_peak / eta_system + I_charge x V_charge / eta_charger        (V_charge = 4.2 V for 1S Li-ion)
+```
+Compare it with what the source can deliver (plain USB-C 5 V: at most 15 W, and only from a source that advertises
+3 A; see "USB-C as a 5 V sink"). If it does not fit, the board discharges while plugged in at peak load. Fix it with
+USB PD (below), a lower charge current, or charging only while the system is off, and record which.
+
 ## Linear vs switching
 
 | | Linear | Switching (buck) |
@@ -99,11 +123,33 @@ from VBUS to the system rail with the charger on the cell is the discrete equiva
   comparator: 0.25-0.61 V is default USB power, 0.70-1.16 V is 1.5 A, 1.31-2.04 V is 3.0 A at 5 V [USB Type-C R2.0
   Table 4-36, p241]. The sink shall keep its load within the detected limit [USB Type-C R2.0 p156]. If you do not
   measure, assume default USB power and set the input limit to 500 mA.
-- **USB PD is not needed for 5 V.** Above 15 W (5 V 3 A) or for 9-20 V, use a PD sink controller [TI SLVA842 s1].
+- **USB PD is not needed for 5 V.** Above 15 W (5 V 3 A) or for 9-20 V, use a PD sink controller [TI SLVA842 s1]
+  and read "PD sink + charger" below.
 - Older BC1.2 chargers advertise via D+/D-; chargers like the BQ25895 detect them [BQ25895 s8.2.3.3]. A simple
   resistor-only sink ignores BC1.2.
 - Protect VBUS: TVS at the connector, the charger's input OVP (BQ2407x 6.6 V or 10.5 V [BQ2407x p6]; BQ25185 25 V
   tolerant [BQ25185 p1]), and the hot-plug guidance in the **pcb-power-supply** skill's `input-protection.md`.
+
+## PD sink + charger
+
+A PD sink negotiates a contract (a voltage and a maximum current, e.g. 9 V / 2 A from an 18 W charger). **The
+negotiated contract is a limit that everything downstream must honour**; nothing in a typical charger enforces it for
+you:
+- **Set the charger's input current limit at or below the contract's current.** VIN-DPM does not protect a
+  higher-voltage source: it regulates on input voltage sag near the battery voltage (BQ25606: 4.3 V, or VBAT + 200 mV
+  when higher [BQ25606 p19]), so with a 9 V input it never acts, and an input limit set for a 5 V source can overload
+  the 9 V contract or the reverse.
+- **Know what happens when the requested voltage is not offered.** Read the sink controller's datasheet for its
+  fallback (stays at 5 V? turns VBUS off? signals on a PG pin?). If the datasheet does not say, design for the worst
+  fallback - the charger's input limit must be safe for a default 5 V source - or detect the negotiated result and set
+  the limit from it. Record the answer or the assumption.
+- **BC1.2 detection changes the input limit.** Chargers that detect the source type on D+/D- use their ILIM resistor
+  only in some cases: the BQ25606 sets 2.4 A for a dedicated charging port and uses the ILIM resistor only when the
+  adapter is detected as unknown [BQ25606 p19, p23]; the BQ25895 also detects D+/D- [BQ25895 s8.2.3.3]. Whether D+/D-
+  are wired to the connector (and whether a PD sink also uses those pins) therefore decides which limit applies -
+  decide it deliberately and note it with the no-connect decisions.
+These are design decisions frozen early (in the schematic) that the input's real behaviour can overturn: check them
+against the sink and charger datasheets before layout, and take any conflict back to the user.
 
 ## Solar
 

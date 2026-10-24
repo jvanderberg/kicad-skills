@@ -16,6 +16,10 @@ Use with the **kicad-board-review** skill (`review-checklist.md` sections 1, 4, 
 - [ ] Safety timers enabled and long enough for the capacity at the programmed current.
 - [ ] Input: USB-C CC1 and CC2 each with its own 5.1 k; input current limit fits the source; TVS and OVP rated for
       the input.
+- [ ] Input power covers system peak and charging at the same time (`charging.md` "Charging while running").
+- [ ] With a PD sink: the charger's input current limit is within the negotiated contract, the fallback when the
+      requested voltage is not offered is known (or designed for), and the D+/D- (BC1.2) wiring decision is recorded.
+- [ ] Protector trip current at the cell's minimum voltage covers the peak load (boost input current at V_cell_min).
 - [ ] Power path: the system runs with no cell and with a dead cell; downstream regulators rated for the highest
       system voltage.
 - [ ] Protector on every bare cell (or PCM confirmed in the pack); OVP / UVP thresholds suit the cell; overcurrent trip

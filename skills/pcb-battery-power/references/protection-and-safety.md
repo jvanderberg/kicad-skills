@@ -20,6 +20,14 @@ negative lead driving two back-to-back N-FETs (common drain), one blocking charg
   [TI BQ297xx p3, p6]. R_DS(on) rises with temperature and falls with gate drive (the gate is driven from the cell, so
   use R_DS(on) at about 2.5-3.5 V Vgs) - compute the trip current at both ends, and check the cell, wire and
   connector survive the highest one [TI BQ297xx p19-20].
+- **Size the trip current for the real load at the real gate drive.** The protector drives the FET gates from the
+  cell, so read R_DS(on) at Vgs equal to the cell's minimum (about 3 V at the over-discharge end), not the 4.5 V or
+  10 V headline figure: the trip current is lowest when the cell is nearly empty, which is also when a boost load draws
+  the most current. A boost from the cell draws I_in = P_out / (eta x V_cell_min): 12 W at 90 % from a 3.0 V cell is
+  about 4.4 A, plus inductor ripple at the peak. Hobby DW01-class protectors with 8205A-class dual FETs are commonly
+  reported to trip somewhere around 3-5 A (practice, unverified - compute it from the actual parts), which a
+  multi-amp boost load can exceed: choose lower-R_DS(on) FETs or a protector variant with a higher threshold, and keep
+  the trip below what the cells, wiring and connector survive.
 - **Charge overcurrent (OCC)** and zero-volt charging for depleted cells are also typical [TI BQ297xx p1].
 - **Drain:** the protector draws current permanently (BQ2970x: 4 uA typical, 5.5 uA maximum in normal mode
   [TI BQ297xx p5]) - include it in the sleep budget.

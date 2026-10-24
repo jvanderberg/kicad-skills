@@ -99,3 +99,14 @@ Leakage current can exceed a sleeping MCU's current; read it from the datasheet.
 - **Connector and wire rating.** JST-PH is rated 2 A with 24 AWG wire, 26-32 AWG accepted [JST PH series page]. Rate
   the connector and wire for the protector's overcurrent trip (what flows in a fault), not the average load.
 - Do not mix old and new cells, or different types, in one pack [Dubilier LP-503759 s6.19].
+
+## Parallel cells (1SnP)
+
+Practice (not from a single source above):
+- Same model, same age and batch, capacities matched; buy them together.
+- Bring every cell to the same voltage before joining them (or join them through a resistor until they equalise): a
+  charged cell connected to an empty one drives a large equalising current between them.
+- One protector and fuse for the parallel group, sized for the group's current; the group behaves as one cell with n
+  times the capacity.
+- Per-cell current is roughly the pack current / n, but only if the cells and their connections match: rate each cell
+  and each holder contact for more than an equal share.

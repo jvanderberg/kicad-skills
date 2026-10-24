@@ -18,6 +18,12 @@ charger or charger module, with professional review. Lithium is where a hobby bo
 every bare cell, a charger that respects the cell's voltage, current and temperature limits, and never an unattended
 first charge are not optional.
 
+Between those two ends sits a common hobby build: a 1S (or 1SnP) pack feeding boost converters at 10-15 W, so
+3-5 A flows from the cell (handhelds, portable displays, power banks). It is in scope, but the defaults for small
+boards do not apply: it needs a switching charger with power path, a protector and FETs sized for the boost's peak
+input current, matched parallel cells, and an input that can supply the load and the charge current at once (sections
+4-5 and `charging.md` "Choosing the charger").
+
 References (read the one you need):
 - `references/chemistries.md` - chemistry comparison table, coin cells, primaries, NiMH, LiFePO4, supercaps; choosing
   and buying cells and packs, holders, connectors, wire
@@ -73,9 +79,14 @@ JST-PH battery leads are not wired the same way by every vendor. Details in `ref
 
 ## 4. Design the charger
 
-Choose a charger IC with `references/charging.md`. For a USB-powered 1S lithium board, a linear charger with power
-path (the system runs from the input while the cell charges, and runs with a dead or missing cell), an NTC input,
-an input current limit for weak USB sources and a safety timer covers most cases. Set:
+Choose a charger IC with `references/charging.md` ("Choosing the charger"). For a small USB-powered 1S lithium board
+(charge current up to about 0.5-1 A, a light system load), a linear charger with power path (the system runs from the
+input while the cell charges, and runs with a dead or missing cell), an NTC input, an input current limit for weak USB
+sources and a safety timer covers most cases. Above that - multi-amp charging, a system load of several watts, a warm
+enclosure - use a switching charger with power path. Prefer a standalone (resistor-configured) charger when the
+board's processor is powered through it: a charger that needs I2C setup cannot be configured by the processor it
+powers (the pcb-power-supply skill's startup-independence rule). First check the input can supply the system and the
+charge current at the same time (`charging.md` "Charging while running"). Set:
 - the charge voltage to the cell's datasheet value (4.20 V for most Li-ion; check for 4.35 V cells and LiFePO4);
 - the charge current to the cell datasheet's standard rate (often 0.5C, lower below 10 C), and check the linear
   charger's dissipation (Vin - Vbat) x Icharge against its package and copper;
