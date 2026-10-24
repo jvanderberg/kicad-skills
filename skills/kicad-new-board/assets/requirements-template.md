@@ -28,6 +28,7 @@ certified use.
 | User-touchable parts (ESD) | |
 | Long cables (> 1 m) | |
 | Mains proximity | none / <details> |
+| Thermal budget | max board / enclosure temperature <C>, airflow yes / no |
 
 ## 3. Functional blocks
 
@@ -56,6 +57,16 @@ certified use.
 | From | To | Interface | Speed | Length / notes |
 |---|---|---|---|---|
 
+### Startup and control
+
+- Must work before the main processor runs: <charger config, soft power switch, gauge, ... / nothing>
+- How each is configured without it: <standalone parts / on-board controller>
+
+### External connections (user-facing)
+
+| Connection | Connector or pad | Label | Polarity / keying | Side |
+|---|---|---|---|---|
+
 ## 4. Power
 
 - Source(s): <USB-C 5 V / PD x V / battery chemistry, cells, capacity / DC <nom> V, range <min>-<max> V / external
@@ -77,11 +88,15 @@ certified use.
 
 Input power at peak: <W>. Regulator design: see the pcb-power-supply notes when done.
 
+Input power check (all loads at once, worst case): system peak <W> / eta + charging <A> x <V> / eta = <W> needed;
+input can deliver <W> (<source and what it advertises>) -> pass / fail -> <action>.
+
 ## 5. Physical
 
 | Item | Requirement |
 |---|---|
-| Board outline | <W x H mm, shape> |
+| Board outline | <W x H mm, shape> (provisional until placement) |
+| Area budget | connectors / pads <mm2>, mounting keepouts <mm2>, components <mm2> |
 | Connector positions | <connector: edge, position> |
 | Mounting holes | <count, size, positions> |
 | Height limits | top <mm>, bottom <mm> |
@@ -126,7 +141,8 @@ Values checked on jlcpcb.com on <date>.
 
 ## 10. Assumptions
 
-Defaults accepted without explicit confirmation; challenge any that are wrong.
+Defaults accepted without explicit confirmation, and anything decided without asking; each was stated to the user
+(date). Challenge any that are wrong.
 
 -
 

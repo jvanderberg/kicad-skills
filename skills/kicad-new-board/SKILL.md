@@ -36,6 +36,13 @@ References (read when you reach that step):
 - **Record as you go.** Keep a running draft of the document (in your notes or written to disk early) so nothing said
   in exchange two is lost by exchange six. Every default the user did not explicitly confirm goes on the assumptions
   list.
+- **Never decide silently.** Anything you assumed instead of asking - "no MCU", "5 V USB is enough", "the board can be
+  45 x 30 mm" - is said to the user in the next summary as an assumption they can overturn, not only written in the
+  document. A default the user never saw is a decision they did not make.
+- **Cover the whole operating envelope**, not the typical case: everything that can happen at once (charging while
+  running at peak load, radio TX while a motor starts), the worst case of each input and load, the thermal budget of
+  the box, the physical area that is not components (connectors, pads, holes), and what has to run before what. Most
+  late redesigns come from one of these being assumed instead of asked.
 - **Respect the user's time.** A typical hobby board should take four to six short exchanges. If the user wants to get
   going, fill the rest with defaults, mark them as assumptions, and move on.
 
@@ -46,28 +53,43 @@ Work through these levels in order. `references/interview-guide.md` has the deta
 1. **Purpose.** What the board does, who uses it, how many will be built, budget per board and overall, timeline, and
    whether it is a learning project (worth doing the hard part yourself) or a tool (use modules and get it working).
    This sets how much risk and effort every later choice is worth.
-2. **Usage and environment.** Indoor or outdoor, temperature range, enclosure or bare board, mounting, vibration and
-   moisture, what plugs into it and how often, which parts a person touches (each is an ESD entry point), long cables
-   (antennas and surge paths), and whether mains is anywhere nearby.
+2. **Usage and environment.** Indoor or outdoor, temperature range, enclosure or bare board, **how hot the board and
+   box may get and whether there is airflow** (a small sealed box changes the topology: switching instead of linear
+   chargers and regulators, lower charge current), mounting, vibration and moisture, what plugs into it and how often,
+   which parts a person touches (each is an ESD entry point), long cables (antennas and surge paths), and whether mains
+   is anywhere nearby.
 3. **Functional blocks.** MCU or processor (or a module), radios and connectivity, sensors, displays, actuators and
    loads, storage, user interface, debug and programming, expansion. Sketch a text block diagram and list every
    interface between blocks with its protocol and speed (I2C 400 kHz, SPI 20 MHz, UART 115200, USB full speed...).
-   The interface list drives the stackup, the layout and the pin assignment later.
+   The interface list drives the stackup, the layout and the pin assignment later. Ask what has to work **before the
+   main processor runs** (charger or regulator configuration, a soft power switch, a fuel gauge, a watchdog): a
+   processor cannot configure the thing that powers it, so those need standalone parts or their own small controller.
+   Ask; do not assume "no MCU" or "the host MCU will do it". For every external connection, also ask how a person will
+   identify and orient it (labels, polarity, keying) - that is a requirement, not decoration.
 4. **Power.** Source (USB-C and what it will negotiate, battery chemistry/cells/charging, DC jack or terminal and its
    voltage range, or mains). For mains, recommend an off-the-shelf certified adapter or a certified enclosed AC-DC
    module rather than on-board mains circuitry - isolation, creepage and certification are outside hobby scope. List
    every rail, each load's average and peak current, and protection needs (reverse polarity, fusing, surge, hot-plug).
-   Fill in the power budget table. Detailed regulator design belongs to the **pcb-power-supply** skill; batteries,
-   charging and sleep-current budgets to the **pcb-battery-power** skill.
+   Fill in the power budget table. **Check the input against everything that can draw at once**: input power >=
+   system peak / efficiency + charge current x charge voltage / charger efficiency (for a 1S lithium cell, 4.2 V).
+   A plain 5 V USB-C input is 15 W at most (5 V / 3 A, and only from a source that advertises it); if the check fails,
+   the design needs USB PD or a lower charge current - say so, or the board discharges while plugged in. Detailed
+   regulator design belongs to the **pcb-power-supply** skill; batteries, charging and sleep-current budgets to the
+   **pcb-battery-power** skill.
 5. **Physical.** Board size and shape limits, connector positions and which edge they face, mounting holes, height
-   limits (enclosure lid, tallest part), and assembly side. Default to all parts on the top side: JLC economic assembly
+   limits (enclosure lid, tallest part), and assembly side. **Budget the area that is not components** before
+   promising a size: edge connectors and solder pads (pitch x count per edge), mounting-hole keepouts, connector
+   overhang and mating clearance. Call the size provisional until a placement pass confirms it. Default to all parts on the top side: JLC economic assembly
    places one side only, and it keeps the order cheap.
 6. **Manufacturing.** JLCPCB fab and assembly unless the user says otherwise: economic vs standard assembly, Basic vs
    Extended parts and the per-part loading fee, 0402 as the smallest practical passive, the quantity, and the fact that
    every part must be in stock. Facts and sources are in `references/jlcpcb-stackups.md`.
 7. **Stackup.** Decide the layer count with the rule below and record the reason.
 8. **Component selection.** For each block, two or three candidate parts or modules, checked with the
-   **pcb-part-selection** skill (stock in the assembler's region, assembly class, package, datasheet available). Prefer
+   **pcb-part-selection** skill (`part_gate.py`: manufacturer lifecycle and stock of the exact orderable variant;
+   assembly class, package, datasheet available). For every switching regulator, run the vendor design tool (TI
+   WEBENCH, via the **pcb-power-supply** checklist) *before* settling on a part - ask the user about TI's terms and a
+   myTI login when you reach this step. Prefer
    modules for RF and anything hard (certified radio modules avoid antenna design and give a certified radio), common
    parts with good datasheets and reference designs, and parts with second sources. Avoid single-source and NRND/EOL
    parts. Record the candidates and the reason for the front-runner; final choices can wait for schematic capture.
@@ -106,12 +128,12 @@ Show the user the finished document (or its key tables) and ask for corrections 
 ## Next steps to propose
 
 1. **Create the KiCad project.** `kicad-cli` cannot create a project. Either the user creates it in KiCad (File > New
-   Project, or New Project from Template - KiCad ships templates such as Raspberry Pi HAT and Arduino shields), or copy
-   an existing minimal project (`.kicad_pro`, `.kicad_sch`, `.kicad_pcb`) and rename all three files consistently. Then,
-   in Board Setup: set the layer count and the physical stackup to the chosen JLC stackup (dielectric thicknesses and
-   copper weights from `references/jlcpcb-stackups.md`), and set design rules no tighter than JLC's capabilities for
-   that layer count, with margin (e.g. 0.15 mm track/space and 0.3/0.6 mm vias as comfortable defaults). Draw the board
-   outline and mounting holes from the physical section first, so placement starts inside real limits.
+   Project, or New Project from Template - KiCad ships templates such as Raspberry Pi HAT and Arduino shields), or
+   generate it with the **kicad-pcb-workflow** scripts (`references/new-design.md`): an empty schematic with `schgen`,
+   the board from the schematic's netlist with `new_board.py` (outline, layer count), then `board_setup.py --stackup
+   <JLC stackup>` for the physical stackup (from `references/jlcpcb-stackups.md`), design rules with margin inside JLC's
+   capabilities (0.15 mm track/space, 0.3/0.6 mm vias) and net classes. Draw the board outline and mounting holes from
+   the physical section first, so placement starts inside real limits.
 2. **Power design** with the **pcb-power-supply** skill, starting from the power budget table.
 3. **Part checks** with the **pcb-part-selection** skill for every candidate before it goes in the schematic.
 4. **Schematic capture and layout** with the **kicad-pcb-workflow** skill (scripted edits, verify, render, look).
@@ -119,4 +141,5 @@ Show the user the finished document (or its key tables) and ask for corrections 
    intended use, environment, currents and interfaces.
 
 Commit the document with the new project so later work can point back to it, and update it when a decision changes -
-a requirements file that disagrees with the board misleads every later review.
+a requirements file that disagrees with the board misleads every later review. When you report, give the absolute path
+of every file you wrote or changed.

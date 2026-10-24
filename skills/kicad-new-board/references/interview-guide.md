@@ -26,6 +26,7 @@ Contents: 1 Purpose - 2 Usage and environment - 3 Functional blocks - 4 Power - 
 |---|---|---|
 | Indoor or outdoor? | Indoor | Outdoor means moisture, UV, wider temperature, conformal coating, sealed connectors |
 | Temperature range? | 0-40 C ambient | Derates fuses, regulators, batteries (most Li-ion must not charge below 0 C) |
+| How hot may the board / box get? Airflow? | Warm to the touch at most; no airflow if in a box | A sealed small box makes linear chargers and LDOs with real dropout impractical and limits charge current |
 | Enclosure or bare board? What material? | Bare on standoffs | Metal boxes block radios; plastic boxes trap heat; the box sets board size and connector positions |
 | How is it mounted? | M3 holes in the corners | Hole positions are a mechanical constraint for layout |
 | Vibration, moisture, dust? | None | Changes connectors (locking), part sizes, and whether to coat |
@@ -51,6 +52,12 @@ Walk through the list; for each block that exists, ask what it needs to do, not 
 - **Debug and programming:** USB bootloader, SWD/JTAG header, UART console, test points. Default: a debug header and a
   UART console even if USB programming exists, because they are what work when the firmware does not.
 - **Expansion:** headers, Qwiic/STEMMA QT, Grove, a spare I2C/SPI/UART.
+- **What must run before the main processor?** Charger or PMIC configuration, a soft power switch, a fuel gauge, a
+  watchdog. Default: nothing, so every such part must be standalone (resistor-configured) - state this as an
+  assumption. A part that needs I2C setup before it delivers power cannot be set up by the processor it powers.
+- **How does a person use each external connection?** Labels, polarity, keying, which side wires are soldered from.
+  Default: every connector and solder pad labelled with its function on the silkscreen, polarity marked, pairs in the
+  same order (+ then GND) everywhere.
 
 Then write the block diagram and interface table:
 
@@ -73,7 +80,7 @@ Speeds and lengths decide whether anything needs termination, controlled impedan
 | Ask | Default | Why it matters |
 |---|---|---|
 | Power source? | USB-C 5 V | Sets the input range, protection and connector |
-| USB-C: plain 5 V, or USB PD at a higher voltage? How much current? | 5 V, up to 1.5 A, with 5.1k CC pull-downs | Without CC resistors many chargers give 0 V; above 5 V needs a PD sink controller |
+| USB-C: plain 5 V, or USB PD at a higher voltage? How much current? | 5 V, up to 1.5 A, with 5.1k CC pull-downs - only if the power check below passes | Without CC resistors many chargers give 0 V; above 5 V or 15 W needs a PD sink controller |
 | Battery: chemistry, cells, capacity, charged on board? | 1S Li-ion, on-board charger | Sets the regulator topology (3.0-4.2 V around 3.3 V needs buck-boost or a low-dropout plan) and charge safety |
 | DC jack or terminal: nominal voltage and real range? | 12 V, 9-15 V | The minimum sets regulator headroom; the maximum plus surge sets every part's voltage rating |
 | Mains? | - | Recommend a certified external adapter or an enclosed certified AC-DC module |
@@ -90,13 +97,25 @@ Power budget table (for each rail; sum loads, then add 20-30 % margin):
 Peaks matter: radios, motors and LED strips draw far above average, and the regulator, the input connector and the
 source must handle the peak. Hand the table to the **pcb-power-supply** skill.
 
+**Input power check (everything at once).** Add up what can happen simultaneously, at its worst:
+
+```
+P_in_needed = P_system_peak / eta_regulators + I_charge x V_charge / eta_charger      (V_charge = 4.2 V for 1S Li-ion)
+```
+Compare with what the input can deliver: plain USB-C 5 V is 2.5 W (default USB), 7.5 W (1.5 A) or 15 W (3 A)
+depending on what the source advertises; more needs USB PD (and a source that offers it) or another input. If it
+fails, the board discharges while plugged in: propose PD, a lower charge current, or charging only while off, and let
+the user choose. Example (labelled): a handheld drawing about 10 W at peak while charging a 1S2P pack at 2 A needs
+roughly 10 / 0.9 + 2 x 4.2 / 0.9, about 20 W - beyond any 5 V USB-C source.
+
 ## 5. Physical
 
 | Ask | Default | Why it matters |
 |---|---|---|
-| Size or shape limit? | As small as is comfortable, rectangle | Smaller boards are cheaper but harder to route; very small boards may need 4 layers |
+| Size or shape limit? | As small as is comfortable, rectangle - provisional until placement | Smaller boards are cheaper but harder to route; very small boards may need 4 layers |
+| How many external connections, and as connectors or solder pads? | - | Edge pads and connectors take pitch x count per edge; budget it before promising a size |
 | Which connectors on which edge? | All on one edge | Connector placement fixes much of the layout |
-| Mounting holes: count, size, positions? | 4 x M3 (3.2 mm), 3-4 mm from the corners | Must match the enclosure or standoffs |
+| Mounting holes: count, size, positions? | 4 x M3 (3.2 mm), 3-4 mm from the corners | Must match the enclosure or standoffs; each needs a copper and part keepout around it, which costs area |
 | Height limit above/below the board? | None | Tall parts (electrolytics, connectors, inductors) may not fit a lid |
 | All parts on top? | Yes | Required for JLC economic assembly; cheaper and simpler |
 | Through-hole parts? | Few, hand-soldered or JLC through-hole assembly | Each is a cost and process decision |
