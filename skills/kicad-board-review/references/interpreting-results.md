@@ -1,0 +1,52 @@
+# Interpreting the analysis, and explaining it
+
+Users ask follow-up questions in plain words. Answer with the measured number, the physics in one or two sentences,
+what it means for their board, and what is not included. When you do not have a number, run the solver - do not guess.
+
+## "This is the voltage drop?"
+
+Yes - in the copper only. Each power run holds one pad at 0 V and draws the stated current from the load pads; the
+result is the IR drop in pours, tracks and vias between them, plus the heat in that copper. Present it as the chain
+the current actually follows (terminal -> fuse -> protection -> shunt -> each load) with one number per hop, point out
+which hop dominates (usually the long rail fanning out to the loads), and add what is *not* included: fuse, FET, shunt,
+PTC, connector contacts, the wires. Put the total in proportion (90 mV is 0.75 % of 12 V; the load's own wiring often
+loses more).
+
+## "We have a massive ground plane - what are its limits?"
+
+A plane still has resistance (about 0.5 mOhm per square at 1 oz, 1 mOhm at 0.5 oz, regardless of the square's size).
+It stays low because current spreads; its limits are thin inner copper, crowding where current enters and leaves (a
+single connector pin), and holes/cuts. Report the ground run as offsets from a reference point (the MCU's ground pad):
+the input terminals, the far loads, the regulators, and the logic. Explain the direction - return current makes the
+board's ground sit slightly *above* the supply's minus terminal - and that what a part sees is its supply minus its own
+local ground, so a shift shared by all logic changes nothing. The place it matters is between a driver and its
+receiver on different grounds (data lines to the loads).
+
+## "So the other parts see 0.1 V less?"
+
+Separate the questions: logic regulators regulate relative to their own ground, so logic is unaffected; a load at the
+end of a power path sees supply minus (+ side drops) minus (ground side rise). Add those up explicitly for the worst
+load and scale to their supply voltage and load fraction.
+
+## "Enough vias?"
+
+Run `power.py --net <net> --source <ref:pad> --sink ...` and read the per-via currents. Report the count, the busiest
+via's current, the barrel resistance (about 1.3 mOhm for 0.3 mm / 20 um / 1.6 mm), the drop across the array vs the
+rest of the path, and the heat per via (I^2 R, milliwatts). The usual answer: the vias are not the limit; the pour is.
+Uneven sharing (front row takes most) is normal.
+
+## Grid artefacts and sanity checks
+
+- One sink reporting an absurd drop (megavolts) while others are sane: a pad cell isolated by the grid alignment.
+  Re-solve with a slightly different pitch (`h` 0.19 instead of 0.2). If the number becomes sane, it was the grid.
+- A result that changed after an unrelated edit: the grid origin moved; compare at two pitches.
+- Compare drops with a hand estimate (length / width squares x sheet resistance x current). A factor of 2 off is
+  plausible (spreading); a factor of 10 means a modelling problem (wrong pad, wrong net name, a disconnected island).
+- Results depend on the zone fills. The pack refills with KiCad; a board saved without a refill can have stale fills.
+
+## Before / after comparisons
+
+After a rework, rebuild the pack and tabulate every run's worst drop and copper loss before and after, plus the
+ground return and plane slot counts. Call out anything that got worse even if it is small, with the reason (example:
+a rework that lengthens a logic supply feed from 150 to 190 mOhm can still leave ample margin at the regulator - say
+so, and record it as accepted).

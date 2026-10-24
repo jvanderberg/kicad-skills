@@ -1,0 +1,32 @@
+{
+  "_comment": "Example per-board analysis config for a hypothetical board: a 12 V input on J1 (net VIN) through fuse F1 onto +12V, which feeds output connectors J2-J5 and a 5 V buck U2 (output inductor L1); a 3.3 V buck U3 (output inductor L2) feeds the MCU U1 and a radio module U4. Every ref, pad and net here is a placeholder: replace them with your own board's, after reading netlist.md, and delete entries that do not apply. Regexes match KiCad net names exactly as they appear in netlist.md (sheet-local nets look like /Power/NAME); the first matching rule wins. Power runs: the source pad is held at 0 V and each sink draws its amps; negative amps inject current (ground returns). Optional per run: h (grid pitch, mm) and region [x0, y0, x1, y1] (only copper inside the box is solved). rail_voltages gives the voltage of rails whose name does not contain it.",
+  "ground_nets": ["GND"],
+  "net_classes": [
+    {"match": "^(USB_D[+-]|/?USB_)", "class": "usb"},
+    {"match": "QSPI|PSRAM_CS", "class": "qspi"},
+    {"match": "^(SD_|SPI_|/?RADIO_)", "class": "spi"},
+    {"match": "XIN|XOUT|CLK_?IN|OSC", "class": "clock"},
+    {"match": "-SW\\d?\\)$|_LX$|^SW_NODE", "class": "switch"},
+    {"match": "^(SWCLK|SWDIO)$", "class": "swd"},
+    {"match": "SDA|SCL", "class": "i2c"},
+    {"match": "^(\\+|VIN|VBUS|VSYS)|3V3|5V|12V", "class": "power"}
+  ],
+  "fast_classes": ["usb", "qspi", "spi", "clock", "switch", "swd"],
+  "diff_pairs": [["USB_D+", "USB_D-"]],
+  "rail_voltages": {"VIN": 12},
+  "hot_loops": [
+    {"ic": "U2", "in_net": "+12V", "gnd_net": "GND", "label": "5 V buck input"},
+    {"ic": "U3", "in_net": "+5V", "gnd_net": "GND", "label": "3.3 V buck input"}
+  ],
+  "power_runs": [
+    {"name": "p12v_rail", "net": "+12V", "title": "Fuse F1 to the four output connectors, 10 A total",
+     "source": ["F1:2"], "sinks_auto": {"ref": "^J[2-5]$", "pad": "1", "total_amps": 10}},
+    {"name": "gnd_return", "net": "GND", "title": "Ground return from the output connectors to the input terminal, 10 A",
+     "source": ["J1:2"], "sinks": [["J2:2", -2.5], ["J3:2", -2.5], ["J4:2", -2.5], ["J5:2", -2.5]],
+     "region": [0, 0, 100, 80]},
+    {"name": "p5v", "net": "+5V", "title": "5 V buck output to the 3.3 V buck input, 0.6 A",
+     "source": ["L1:2"], "sinks": [["U3:1", 0.6]]},
+    {"name": "p3v3", "net": "+3V3", "title": "3.3 V buck output to the MCU and the radio", "h": 0.19,
+     "source": ["L2:2"], "sinks": [["U1:1", 0.15], ["U4:2", 0.5]]}
+  ]
+}

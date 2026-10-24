@@ -1,0 +1,86 @@
+---
+name: kicad-board-review
+description: Engineering design review of a KiCad PCB - power distribution and copper capacity, ground planes and return paths, heat, signal integrity and EMC (crosstalk, reference planes, radiation), protection (fusing, reverse polarity, surge, ESD), datasheet compliance, sourcing and manufacturability - backed by a measured analysis pack (netlist digest, DC voltage-drop solver, plane and EMC geometry) and an adversarial reviewer. Use it whenever the user asks to review, audit, sanity-check or "find problems in" a board, asks whether a design will work, asks about voltage drop, current capacity, vias, ground planes, crosstalk, emissions, ESD, fusing or heat, before ordering boards, and after any significant rework to prove it did not regress.
+---
+
+# KiCad board review
+
+A review is worth what it finds before the boards are made. Two things make it find real problems: **evidence** (measure
+the copper instead of eyeballing it, read the datasheet instead of remembering it) and **adversarial intent** (assume
+the design - including your own recent work - is wrong somewhere, and go looking). A board that passes DRC can still
+have blockers and major issues, and the most recent rework is where regressions hide. DRC checks rules; it does not
+check engineering.
+
+Read `references/review-checklist.md` for what to look at in each area and why it matters. It is the core of this
+skill. `references/interpreting-results.md` explains what the numbers from the analysis mean (and how to explain them
+to the user); `references/reviewer-brief.md` is the brief for the adversarial reviewer agent; `references/analysis-limits.md`
+lists what the scripts cannot see.
+
+## 1. Understand the board before judging it
+
+- Read the project docs (README, design notes, CLAUDE.md), the intended use (input voltage range, load currents,
+  environment, enclosure temperature, cable lengths, who plugs what in), and decisions the user already made.
+- Build the analysis pack (section 2) and read `netlist.md` end to end: every IC's pin-to-net map, every two-pin part.
+  Many findings come straight from it (a missing series resistor, a pin tied wrong, a protection part on the wrong side
+  of a resistor, an address strap, an undriven chip select).
+- Know the stackup the fab will actually build. A file saying 35 um inner copper often ships as 0.5 oz (17.5 um); if it
+  is not confirmed, analyse both and say so.
+
+## 2. Build the analysis pack
+
+```
+${CLAUDE_SKILL_DIR}/scripts/make_pack.sh <project_dir> <pack_dir>        # writes a starter review_config.json if there is none
+# edit <pack_dir>/review_config.json: net classes (regex -> usb/spi/clock/switch/i2c/...), power runs, hot loops, diff pairs
+${CLAUDE_SKILL_DIR}/scripts/make_pack.sh <project_dir> <pack_dir> --inner-um 17.5,35    # run in the background: minutes
+```
+
+It copies the project (never touches the original), refills zones with KiCad, and writes:
+`netlist.md` (readable netlist), `board_overview.md` (stackup, copper per layer, vias, widths, parts),
+`power.md` (DC drop, copper loss, current density hotspots, busiest via per power path; ground plane pieces, slots and
+what cuts them; tracks on inner layers), `emc.md` (fast nets off their reference plane, crosstalk, layer changes and
+return vias, edge proximity, switching nodes, hot loops, microstrip Z0, diff pair skew), `drc.md`, plus JSON for all of it.
+
+Write power runs for every path that carries real current: each input connector -> fuse -> protection -> rail -> loads,
+the ground return of all of them at once, regulator outputs to their loads, long thin rails. Use realistic currents
+(the connector or fuse rating for power paths, datasheet peaks for radios). One-off questions get the ad hoc mode:
+`scripts/power.py <pack> --net +12V --source F1:2 --sink J2:1=2.5 ...` prints the drop per sink and the busiest vias.
+`scripts/region.py` and `scripts/view.py` show exactly what copper is where.
+
+Classify every net that matters. Nets that fall through to "slow" are not checked for reference continuity, so a long
+I2C bus running under a noisy high-voltage pour goes unreported. If a bus is slow but long or exposed, give it its own
+class and include it.
+
+## 3. Review, area by area
+
+Go through every section of `references/review-checklist.md`: power path and protection, copper capacity and heat,
+ground and return paths, decoupling and regulator layout, signal integrity and EMC, ESD and external interfaces,
+component and datasheet compliance, sourcing and assembly, mechanical and silkscreen, firmware-visible consequences.
+For each finding record: **what** (with refdes, net, coordinates), **evidence** (the number from the pack, the
+datasheet section and page, the netlist line), **consequence** (what fails, when, how badly), **fix** (concrete, and
+what it costs in board space and risk).
+
+Rank: **Blocker** (board will not work or cannot be built/ordered), **Major** (works on the bench, fails in the field,
+in production, in compliance testing, or at rated load), **Minor** (margin, cleanliness, cost). Do not inflate; do not
+soften. Mark anything unverified as unverified.
+
+## 4. Adversarial pass
+
+Spawn a separate reviewer (fork or general-purpose agent) with `references/reviewer-brief.md`, pointing it at the pack,
+the project and the datasheets. Its job is to break the design and to challenge the pack itself (the scripts have
+artefacts). Merge its findings with yours, de-duplicate, and verify each one against the files before reporting -
+reviewers also make mistakes (a short crossing reported as a high crosstalk figure is a typical one).
+
+## 5. Fix, then prove the fix
+
+Fixes go through the **kicad-pcb-workflow** skill. Afterwards, rebuild the pack on the new board and compare against
+the pack from before the fix: the targeted numbers must improve and nothing else may get worse (drops, copper loss,
+hotspots, plane slots, inner-layer tracks, reference spans, crosstalk). Report the before/after table. Fixes that were
+not done get an explicit reason (no room, part unavailable, user decision) and a mitigation (firmware limit, docs).
+
+## 6. Report
+
+Lead with blockers and majors, each with evidence and a recommended fix; then minors; then what was checked and found
+fine (so the user knows the coverage); then limits of the analysis. Write the result into the project's docs if it
+keeps a design log. When the user asks follow-up questions ("is this the voltage drop?", "what are the ground plane's
+limits?", "enough vias?"), answer from measured numbers, explain the physics plainly, and run the ad hoc solver rather
+than estimating - see `references/interpreting-results.md` for how to answer them.

@@ -1,0 +1,8 @@
+{
+  "name": "kicad-skills",
+  "description": "KiCad PCB development and review skills for Claude Code",
+  "owner": { "name": "Josh Vanderberg" },
+  "plugins": [
+    { "name": "kicad-skills", "source": ".", "description": "KiCad PCB development, review and part-selection skills with analysis tools" }
+  ]
+}
