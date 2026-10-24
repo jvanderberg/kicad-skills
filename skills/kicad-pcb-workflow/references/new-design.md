@@ -11,13 +11,14 @@ so a generator describes the design and never formats KiCad text itself:
 | Draw the schematic as wired blocks; geometry checks; locate shorts | `schgen.py` (library) | python3 |
 | Footprint facts: courtyard, pad count / body vs package, pins vs pads | `fpcheck.py` | python3 |
 | Add missing courtyards to imported footprints | `add_courtyard.py` | python3 |
-| Board from the netlist: footprints, symbol links, nets, fields, outline, placement, pad labels | `new_board.py` | `$KICAD_PYTHON` |
+| Board from the netlist: footprints, symbol links, nets, fields, outline, placement, pad labels | `new_board.py` | python3 |
 | JLC stackup block, design rules, net classes | `board_setup.py` | python3 |
 | Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely) |
 | Unused and strapped pins as decisions | `nc_audit.py` | python3 |
 
-If you are tempted to write `'(property %s %s ...)' % (...)` in a project generator, add what you need to one of
-these instead. Hand-written format strings caused a stray `'''` inside a schematic and a duplicated property name on a
+All of them write through `kicad_sexpr` (no KiCad text is formatted in the scripts), with stable uuids: an unchanged
+design regenerates byte-identical. If you are tempted to write `'(property %s %s ...)' % (...)` in a project
+generator, add what you need to one of these (or to the layer) instead. Hand-written format strings caused a stray `'''` inside a schematic and a duplicated property name on a
 real board; the shared writers assert against both.
 
 ## 1. Write the circuit down as data first
@@ -79,13 +80,17 @@ through bodies, overlapping bodies) must be empty and `find_merges(s, NETS)` mus
 
 ```
 kicad-cli sch export netlist --format kicadxml -o net.xml proj.kicad_sch
-$KICAD_PYTHON scripts/new_board.py net.xml proj.kicad_pcb --layers 4 --outline 50x40 --origin 100,100 --corner-r 1 \
+python3 scripts/new_board.py net.xml proj.kicad_pcb --layers 4 --outline 50x40 --origin 100,100 --corner-r 1 \
     --placement place.json --labels labels.json
 python3 scripts/board_setup.py proj.kicad_pro --stackup JLC04161H-7628 --class Power:track=0.8,clearance=0.2 \
     --assign Power=GND,VBUS,+5V        # or --pattern 'Power=+*'
 ```
-- Run `new_board.py` before `board_setup.py`: pcbnew writes a default `.kicad_pro` next to a new board if there is
-  none, and board_setup then edits it.
+- Run `new_board.py` before `board_setup.py`: new_board writes a minimal `.kicad_pro` next to a new board if there is
+  none (KiCad fills in its defaults), and board_setup then edits it.
+- Regenerating over an existing board keeps every footprint's uuid (new_board reads OUT first; `--previous FILE` to
+  read another, `--previous none` for none). Routing comes from `router.py apply ... --previous <the routed board
+  before regeneration>` (e.g. a copy of HEAD's board), so tracks, vias and zones keep theirs too. Then `board_diff.py
+  HEAD` and `git diff` show only what changed.
 - `board_setup.py --list` shows the stackups it knows; the numbers come from `kicad-new-board`'s
   `references/jlcpcb-stackups.md` and need re-checking on jlcpcb.com before an order.
 - An empty schematic for a brand-new project: `Sch('name').write('name.kicad_sch')` with `schgen`.

@@ -35,14 +35,14 @@ All tools also work without Claude.
 | `kicad-pcb-workflow/scripts/netspec.py` | Intended netlist vs KiCad's netlist: SPLIT / SHORT / MISSING / UNEXPECTED |
 | `kicad-pcb-workflow/scripts/schgen.py`, `symgen.py` | Generate a readable wire-drawn KiCad 10 schematic and redrawn symbols from python; collision check; locate shorts |
 | `kicad-pcb-workflow/scripts/new_board.py` | New board from the schematic netlist (footprints, symbol links, pad nets, fields, outline, placement, pad labels) - KiCad has no CLI for this |
-| `kicad-pcb-workflow/scripts/board_setup.py` | JLC stackup block, design rules and net classes as text (pcbnew cannot set a stackup) |
+| `kicad-pcb-workflow/scripts/board_setup.py` | JLC stackup block, design rules and net classes (pcbnew cannot set a stackup) |
 | `kicad-pcb-workflow/scripts/router.py` | Routing as data: tracks, vias, zones, keepouts by pad name, checked for clearance, hole-to-hole (any net) and board edge before writing |
 | `kicad-pcb-workflow/scripts/board_lint.py` | What DRC misses: footprints without courtyards, missing 3D model files, silk text on part bodies |
 | `kicad-pcb-workflow/scripts/nc_audit.py` | Every unused pin and every input strapped to a rail, as a decision table with datasheet notes |
 | `kicad-pcb-workflow/scripts/fpcheck.py`, `add_courtyard.py` | Footprint vs package string and symbol (pad count, body size, numbering); add missing courtyards |
 | `kicad-pcb-workflow/scripts/board_diff.py` | Everything that changed between two board versions (or vs a git revision), with anything outside the expected areas flagged |
-| `kicad-pcb-workflow/scripts/kicad_sexpr/` | The file-format layer: lossless read/write of every KiCad s-expression file in KiCad's own formatting, plus builders for schematics (symbols, wires, labels, sheets), boards (footprints, tracks, vias, zones, keepouts, stackup) and project net classes. Generators and edits use it instead of formatting text |
-| `kicad-pcb-workflow/scripts/sexp.py` | Check s-expression files (balance, raw newlines in strings, duplicate uuids); list/get footprints and symbols; editing helpers |
+| `kicad-pcb-workflow/scripts/kicad_sexpr/` | The file-format layer: lossless read/write of every KiCad s-expression file in KiCad's own formatting, plus builders for schematics (symbols, wires, labels, sheets), boards (footprints, tracks, vias, zones, keepouts, stackup) and project net classes, with stable uuids (regeneration is byte-identical). Generators and edits use it instead of formatting text; the writers above are built on it |
+| `kicad-pcb-workflow/scripts/sexp.py` | Check s-expression files (balance, raw newlines in strings, duplicate uuids); list/get footprints and symbols |
 | `kicad-pcb-workflow/scripts/render.py` | Render a window of chosen layers by KiCad coordinates to PNG (or a 3D render); also boards without an outline (imported reference layouts) |
 | `kicad-pcb-workflow/scripts/kicad_open.sh` | Is KiCad holding the project open? |
 | `kicad-board-review/scripts/make_pack.sh` | Build the analysis pack: netlist digest, board overview, DC power runs, planes, EMC, DRC |

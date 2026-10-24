@@ -28,10 +28,18 @@ Scripts are in `${CLAUDE_SKILL_DIR}/scripts/`. Detailed references (read the one
 - `references/version-upgrade.md` - KiCad 9 -> 10 conversion
 
 **One place owns each file format and each fiddly rule.** `scripts/kicad_sexpr` owns KiCad's file syntax (quoting,
-escaping, uuids, headers, `{slash}` net names, KiCad's own formatting). The higher-level writers own the design rules
-on top of it: `schgen`/`symgen` for schematics and symbols, `new_board.py` and `board_setup.py` for boards and
-projects, `router.py` for copper and hole spacing. A project generator describes the design; if it needs a feature the
-writers lack, add it to the writer or the layer, never as a format string in the project.
+escaping, uuids, headers, `{slash}` net names, KiCad's own formatting). The higher-level writers sit on top of it and
+own the design rules: `schgen`/`symgen` for schematics and symbols, `new_board.py` and `board_setup.py` for boards and
+projects, `router.py` for copper and hole spacing, `add_courtyard.py` for footprints. They build every item through
+the layer's builders and format no KiCad text themselves (the `.kicad_dru` rules language, which is not KiCad
+s-expression data, is the one thing still written as text). A project generator describes the design; if it needs a
+feature the writers lack, add it to the writer or the layer, never as a format string in the project.
+
+**Generated files are deterministic.** The layer gives every item a stable uuid: the one it already had in the file
+being regenerated (footprints and symbols by reference, items inside a footprint by what they are, tracks and vias by
+net and geometry, zones by name), else one derived from that same key. The writers reuse the existing file by default
+(`router.py --previous` for routing, since its input board has none), so an unchanged design regenerates
+byte-identical, a change touches only its own lines, and GUI edits keep their ids. Never generate random ids.
 
 ## 0. Before touching anything
 
@@ -94,6 +102,9 @@ writers lack, add it to the writer or the layer, never as a format string in the
   diff against HEAD shows it.
 - Every edit asserts it found exactly what it meant to change (one footprint with that reference, one zone with that
   name, ...). A silent miss is worse than a crash.
+- Regenerating a file: reuse the ids of the version you are replacing (`Board.new(previous=...)`,
+  `Schematic.new(previous=...)`, or the writers' defaults) and check the diff against HEAD is only what you meant to
+  change. A rebuild that rewrites every uuid hides the real change in noise (KiCad sorts board items by uuid on save).
 - Compute the new text before opening the file for writing: `open(p, 'w').write(f(t))` truncates the file before
   `f` runs, so an error or refusal inside `f` leaves an empty file (the layer's `save()` already does this).
 - Pass plain Python strings to the layer; it escapes quotes, backslashes and **newlines** when it writes (do not

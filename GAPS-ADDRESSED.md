@@ -24,7 +24,8 @@ Paths below are relative to `skills/`. "wf" = `kicad-pcb-workflow`, "nb" = `kica
 | R10 Later phases check earlier frozen decisions | wf `references/layout-stages.md` stage 1 | bat `charging.md` "PD sink + charger" (contract as a downstream limit); wf SKILL.md s1 and mistakes |
 | R11 Allocate shared resources first | wf `references/layout-stages.md` stage 0 | wf routing.md (plan before the first track; reserved via sites) |
 | R12 Defaults are decisions; interfaces get affordances | wf `references/layout-rules.md` "External connections are a user interface" + `nc_audit.py` | nb interview (startup, external connections), nb template; rev checklist s6/s9; `new_board.py --labels` |
-| R13 One place owns each format and fiddly rule | wf `SKILL.md` (paragraph after the reference list) | wf new-design.md (table of owning scripts); every new script keeps s-expression output in small `*_sexpr()` functions |
+| R13 One place owns each format and fiddly rule | wf `SKILL.md` (paragraph after the reference list) | wf new-design.md (table of owning scripts); `kicad_sexpr` owns the syntax and the writers sit on it: `schgen`, `symgen`, `new_board.py` (no pcbnew), `board_setup.py`, `router.py`, `add_courtyard.py` build every item with its builders and format no KiCad text (branch `writers-on-kicad-sexpr`; `.kicad_dru` rules text is the one exception, and no skills script writes it); `fpcheck.py` reads through it; `sexp.py` lost its text-editing helpers |
+| R15 Generated files are deterministic and canonical | wf `SKILL.md` "Generated files are deterministic" | `kicad_sexpr` stable uuids (previous file's id by key, else uuid5 of the key) used by every writer; `Project.assign` writes KiCad 10's list form; kicad_sexpr README "Stable ids" |
 | R14 Standard, verified building blocks first | ps `SKILL.md` "Importing into KiCad" | wf new-design.md s5; `fpcheck.py`, `add_courtyard.py` |
 
 Refinements to the rules: none merged. R13 gained one concrete corollary found while porting (compute the new text
@@ -67,7 +68,7 @@ before opening a file for writing: `open(p, 'w').write(f(t))` truncates the file
 | 31 full-board renders unreadable with pours | R7 | wf rendering.md (use view.py for routing / figure comparison); render.py docstring | Text |
 | 32 datasheet handling | R4 | `pcb-part-selection/scripts/datasheet.py`; ps `SKILL.md` | TI symlink for TPS61088 refused ("HTTP 404, page title Error 404"); BQ25606 PDF saved; `find` named pages for "Layout Example", "9.3.2.3"; `page` rendered p35. pdftotext warnings suppressed |
 | 33 no-connect pins hide decisions | R12 | wf `scripts/nc_audit.py`, check.sh; new-design.md; rev checklist s6 | On minipc-power's netlist: 23 rows (unused pins, symbol-NC pins, inputs tied to rails such as OTG/CE to GND), notes file fills the decision column, `--require-notes` exits 1 while any is missing |
-| 0 s-expression object model | R13 | Not on this branch: handled on the separate `sexpr-model` branch. New scripts keep output in small per-object `*_sexpr()` functions so they can move onto it | - |
+| 0 s-expression object model | R13, R15 | `kicad_sexpr` (merged from `sexpr-model`); the writers moved onto it on `writers-on-kicad-sexpr` | minipc-power (f8f963b) rebuilt with the ported writers vs with main's: ERC, netlist, DRC report identical (0 unconnected, parity 0, the 2 accepted J1 silk items; 105 footprints, 298 segments, 98 vias, 28 zones incl. 3 keepouts); generated schematic and symbol library equal item by item. Two from-scratch builds byte-identical (.kicad_sch, .kicad_pcb before and after refill, .kicad_pro); a build over the committed files keeps all 887 schematic and 2273 of 2277 board uuids (the 4 others: 2 vias + 2 links that skills' `router.py` places differently from minipc's own router), a rebuild of that is byte-identical, and adding one part adds only its 84 schematic / 160 board lines |
 
 ### Tool notes in the log
 
@@ -109,7 +110,6 @@ before opening a file for writing: `open(p, 'w').write(f(t))` truncates the file
 
 ## Left open, and why
 
-- **Gap 0** (object model): separate `sexpr-model` branch, by instruction.
 - **Tool 7** (block layout helpers): written as guidance; a helper worth having needs design work with the
   object model.
 - **Live WEBENCH table text**: `part_gate.py --from-text` uses a TI part-number regex; tested on text containing the
