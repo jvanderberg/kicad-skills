@@ -18,21 +18,16 @@ Coordinates are mm, y down (sheet coordinates), snapped to the 1.27 mm grid. Wir
 junctions are added wherever three or more ends meet, so the drawing connects the way it looks. Single sheet: symbol
 instances use the root path. After writing: `netspec.py check`, `kicad-cli sch erc`, then render the PDF and look.
 """
-import math, os, re, shutil, uuid
+import math, os, re, shutil, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kicad_sexpr import Schematic, SymbolLibrary, loads, pins_of  # noqa: E402
 
 G = 1.27
 
 
 def snap(v):
     return round(round(v / G) * G, 4)
-
-
-def uid():
-    return str(uuid.uuid4())
-
-
-def kstr(s):
-    return '"' + str(s).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
 
 
 def kicad_symbol_dir():
@@ -50,66 +45,41 @@ def kicad_symbol_dir():
     raise FileNotFoundError('KiCad symbol directory not found: set KICAD10_SYMBOL_DIR')
 
 
-# ---------------------------------------------------------------- symbol libraries
+# ---------------------------------------------------------------- symbol libraries (read through kicad_sexpr)
 
-def _blocks(text, head):
-    """Yield (name, start, end) for top-level '(symbol "name"' blocks in a .kicad_sym text."""
-    i, depth, n, in_str, starts = 0, 0, len(text), False, []
-    while i < n:
-        c = text[i]
-        if in_str:
-            if c == '\\':
-                i += 2
-                continue
-            if c == '"':
-                in_str = False
-        elif c == '"':
-            in_str = True
-        elif c == '(':
-            if depth == 1 and text.startswith(head, i):
-                starts.append(i)
-            depth += 1
-        elif c == ')':
-            depth -= 1
-            if depth == 1 and starts and starts[-1] is not None:
-                s = starts[-1]
-                yield re.match(r'\(symbol "([^"]+)"', text[s:]).group(1), s, i + 1
-                starts[-1] = None
-        i += 1
+def _sym(sym):
+    return loads(sym) if isinstance(sym, str) else sym
 
 
 class SymLib:
+    """A .kicad_sym library (from a file or its text). get(name) returns the symbol as a kicad_sexpr node
+    (derived symbols flattened, a fresh copy each call)."""
+
     def __init__(self, nickname, path=None, text=None):
         self.nick = nickname
-        text = text if text is not None else open(path, encoding='utf-8').read()
-        self.raw = {name: text[s:e] for name, s, e in _blocks(text, '(symbol "')}
+        self.lib = SymbolLibrary.from_text(text, nickname) if text is not None else SymbolLibrary.load(path, nickname)
+
+    def names(self):
+        return self.lib.names()
 
     def get(self, name):
-        if name not in self.raw:
+        if name not in self.lib.names():
             raise KeyError('symbol %s not in library %s' % (name, self.nick))
-        return self.raw[name]
+        return self.lib.get(name)
 
 
-def pin_list(sym_text):
-    """Pins of a symbol block: list of dict(num, name, type, x, y, rot) in symbol coordinates (y up)."""
-    out = []
-    for m in re.finditer(r'\(pin (\w+) \w+\s*\(at ([-\d.]+) ([-\d.]+)(?: ([-\d.]+))?\)(.*?)\(name "([^"]*)"(.*?)\(number "([^"]*)"',
-                         sym_text, re.S):
-        out.append(dict(type=m.group(1), x=float(m.group(2)), y=float(m.group(3)), rot=float(m.group(4) or 0),
-                        name=m.group(6), num=m.group(8)))
-    return out
+def pin_list(sym):
+    """Pins of a library symbol (node or text): list of dict(num, name, type, x, y, rot) in symbol coordinates
+    (y up), every unit, body style 1."""
+    return [dict(type=p.etype, x=p.x, y=p.y, rot=p.angle, name=p.name, num=p.number) for p in pins_of(_sym(sym), None, 1)]
 
 
-def body_rect(sym_text):
+def body_rect(sym):
     """First rectangle of the symbol body (x0, y0, x1, y1) in symbol coordinates, or None."""
-    m = re.search(r'\(rectangle\s*\(start ([-\d.]+) ([-\d.]+)\)\s*\(end ([-\d.]+) ([-\d.]+)\)', sym_text)
-    return tuple(float(v) for v in m.groups()) if m else None
-
-
-def embed(lib_id, sym_text):
-    """Rename a library symbol block for the schematic's lib_symbols section."""
-    name = re.match(r'\(symbol "([^"]+)"', sym_text).group(1)
-    return sym_text.replace('(symbol "%s"' % name, '(symbol "%s"' % lib_id, 1)
+    for r in _sym(sym).walk('rectangle'):
+        s, e = r.need('start'), r.need('end')
+        return (s.number(1), s.number(2), e.number(1), e.number(2))
+    return None
 
 
 # ---------------------------------------------------------------- schematic
@@ -120,7 +90,7 @@ class Part:
         self.x, self.y, self.rot, self.mirror = snap(x), snap(y), rot, mirror
         self.pins, self.fields, self.footprint = pins, fields, footprint
         self.in_bom, self.on_board, self.dnp = in_bom, on_board, dnp
-        self.uuid = uid()
+        self.uuid = None                  # the symbol's uuid, set by Sch.write()
 
     def xf(self, sx, sy):
         """symbol coordinates (y up) -> sheet coordinates (y down), with this part's rotation and mirror"""
@@ -145,7 +115,7 @@ class Part:
 
     def body(self):
         """sheet-coordinate bounding box of the symbol's body rectangle, or None"""
-        r = body_rect(self.sch.symtext(self.lib_id))
+        r = body_rect(self.sch.used[self.lib_id])
         if not r:
             return None
         a, b = self.xf(r[0], r[1]), self.xf(r[2], r[3])
@@ -157,47 +127,10 @@ def _on_interior(pt, a, b):
            (a[1] == b[1] == pt[1] and min(a[0], b[0]) < pt[0] < max(a[0], b[0]))
 
 
-# ------------------------------------------------- s-expression writers (one per object type)
-
-def junction_sexpr(pt):
-    return '\t(junction\n\t\t(at %s %s)\n\t\t(diameter 0)\n\t\t(color 0 0 0 0)\n\t\t(uuid "%s")\n\t)\n' % (pt[0], pt[1], uid())
-
-
-def no_connect_sexpr(pt):
-    return '\t(no_connect\n\t\t(at %s %s)\n\t\t(uuid "%s")\n\t)\n' % (pt[0], pt[1], uid())
-
-
-def wire_sexpr(a, b):
-    return ('\t(wire\n\t\t(pts\n\t\t\t(xy %s %s) (xy %s %s)\n\t\t)\n\t\t(stroke\n\t\t\t(width 0)\n\t\t\t(type default)\n'
-            '\t\t)\n\t\t(uuid "%s")\n\t)\n') % (a[0], a[1], b[0], b[1], uid())
-
-
-def label_sexpr(kind, name, x, y, rot, shape):
-    just = 'left' if rot in (0, 90) else 'right'
-    if kind == 'label':
-        return ('\t(label %s\n\t\t(at %s %s %s)\n\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n'
-                '\t\t\t(justify %s bottom)\n\t\t)\n\t\t(uuid "%s")\n\t)\n') % (kstr(name), x, y, rot, just, uid())
-    return ('\t(global_label %s\n\t\t(shape %s)\n\t\t(at %s %s %s)\n\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n'
-            '\t\t\t)\n\t\t\t(justify %s)\n\t\t)\n\t\t(uuid "%s")\n\t)\n') % (kstr(name), shape, x, y, rot, just, uid())
-
-
-def text_sexpr(s, x, y, size, bold):
-    return ('\t(text %s\n\t\t(exclude_from_sim no)\n\t\t(at %s %s 0)\n\t\t(effects\n\t\t\t(font\n\t\t\t\t(size %s %s)%s\n'
-            '\t\t\t)\n\t\t\t(justify left bottom)\n\t\t)\n\t\t(uuid "%s")\n\t)\n') % (
-        kstr(s), x, y, size, size, '\n\t\t\t\t(bold yes)' if bold else '', uid())
-
-
-def property_sexpr(key, value, x, y, ang, just='center', hidden=False):
-    return ('\t\t(property %s %s\n\t\t\t(at %s %s %s)\n\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1.27 1.27)\n'
-            '\t\t\t\t)%s%s\n\t\t\t)\n\t\t)\n') % (kstr(key), kstr(value), snap(x), snap(y), ang,
-                                                '' if just == 'center' else '\n\t\t\t\t(justify %s)' % just,
-                                                '\n\t\t\t\t(hide yes)' if hidden else '')
-
-
 class Sch:
     def __init__(self, project, paper='A3', title='', rev='', date=''):
         self.project, self.paper, self.title, self.rev, self.date = project, paper, title, rev, date
-        self.uuid = uid()
+        self.uuid = None                  # the sheet's uuid, set by write()
         self.libs, self.used = {}, {}
         self.parts, self.wires, self.labels, self.noconnects, self.texts, self.extra_junctions = [], [], [], [], [], []
         self.pwr_n = 0
@@ -205,15 +138,18 @@ class Sch:
     def lib(self, nickname, path=None, text=None):
         self.libs[nickname] = SymLib(nickname, path, text)
 
-    def symtext(self, lib_id):
+    def libsym(self, lib_id):
+        """The library symbol 'Lib:Name' as a kicad_sexpr node (a fresh copy)."""
         nick, name = lib_id.split(':', 1)
         return self.libs[nick].get(name)
+
+    symtext = libsym                      # older name
 
     def add(self, lib_id, ref, value, x, y, rot=0, footprint='', lcsc='', fields=None, in_bom=True, on_board=True,
             dnp=False, mirror=None):
         """fields: extra properties (hidden). Keys starting with '_' are layout hints: _ref_at, _val_at (x, y),
         _just, _hide_value, _visible (list of field names shown under the value)."""
-        t = self.symtext(lib_id)
+        t = self.used.get(lib_id) or self.libsym(lib_id)
         self.used[lib_id] = t
         f = dict(fields or {})
         if lcsc:
@@ -320,40 +256,38 @@ class Sch:
             if p.fields.get('_visible'):
                 return p.x + 2.54, p.y - 2.54, p.x + 2.54, p.y, 0, 'left'
             return p.x + 2.54, p.y - 1.27, p.x + 2.54, p.y + 1.27, 0, 'left'
-        r = body_rect(self.symtext(p.lib_id))
+        r = body_rect(self.used[p.lib_id])
         if r and p.rot == 0 and not p.mirror:
             x1, y1, x2, y2 = r
             left, top, bot = p.x + min(x1, x2), p.y - max(y1, y2), p.y - min(y1, y2)
             return left, top - 1.27, left, bot + 2.54, 0, 'left'
         return p.x + 3.81, p.y - 3.81, p.x + 3.81, p.y + 3.81, 90 if p.rot in (90, 270) else 0, 'left'
 
-    def symbol_sexpr(self, p):
-        props = [('Reference', p.ref), ('Value', p.value), ('Footprint', p.footprint), ('Datasheet', p.fields.get('Datasheet', ''))]
-        props += [(k, v) for k, v in p.fields.items() if k != 'Datasheet' and not k.startswith('_') and k not in p.fields.get('_visible', [])]
-        names = [k for k, _ in props]
+    def _place(self, sch, p):
+        """Add part p to a kicad_sexpr Schematic: the field set and layout this generator decides (Reference, Value,
+        Footprint, Datasheet, then the extra fields hidden, then the _visible ones stacked under the value)."""
+        visible = p.fields.get('_visible', [])
+        extra = [k for k in p.fields if k != 'Datasheet' and not k.startswith('_') and k not in visible]
+        names = ['Reference', 'Value', 'Footprint', 'Datasheet'] + extra
         assert len(names) == len(set(names)), '%s: duplicate property names %s' % (p.ref, names)
-        out = ['\t(symbol\n\t\t(lib_id %s)\n\t\t(at %s %s %s)\n%s\t\t(unit 1)\n\t\t(exclude_from_sim no)\n'
-               '\t\t(in_bom %s)\n\t\t(on_board %s)\n\t\t(dnp %s)\n\t\t(uuid "%s")\n' % (
-                   kstr(p.lib_id), p.x, p.y, p.rot, '\t\t(mirror %s)\n' % p.mirror if p.mirror else '',
-                   'yes' if p.in_bom else 'no', 'yes' if p.on_board else 'no', 'yes' if p.dnp else 'no', p.uuid)]
+        fields = {k: p.fields[k] for k in extra + list(visible)}
+        s = sch.add_symbol(p.lib_id, p.ref, p.value, (p.x, p.y), p.rot, p.mirror, footprint=p.footprint,
+                           datasheet=p.fields.get('Datasheet', ''), fields=fields, in_bom=p.in_bom,
+                           on_board=p.on_board, dnp=p.dnp, lib_fields=('Reference', 'Value', 'Footprint', 'Datasheet'))
+        p.uuid = s.uuid
         rx, ry, vx, vy, ang, just = self._field_spots(p)
         rx, ry = p.fields.get('_ref_at', (rx, ry))
         vx, vy = p.fields.get('_val_at', (vx, vy))
         just = p.fields.get('_just', just)
-        for k, v in props:
-            if k == 'Reference':
-                out.append(property_sexpr(k, v, rx, ry, ang, just, p.ref.startswith('#')))
-            elif k == 'Value':
-                out.append(property_sexpr(k, v, vx, vy, ang, just, p.fields.get('_hide_value', p.lib_id == 'power:GND')))
-            else:
-                out.append(property_sexpr(k, v, p.x, p.y, ang, just, True))
-        for i, k in enumerate(p.fields.get('_visible', [])):     # extra visible fields stacked under the value
-            out.append(property_sexpr(k, p.fields[k], vx, vy + 2.54 * (i + 1), ang, just, False))
-        for q in p.pins:
-            out.append('\t\t(pin %s\n\t\t\t(uuid "%s")\n\t\t)\n' % (kstr(q['num']), uid()))
-        out.append('\t\t(instances\n\t\t\t(project %s\n\t\t\t\t(path "/%s"\n\t\t\t\t\t(reference %s)\n'
-                   '\t\t\t\t\t(unit 1)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)\n' % (kstr(self.project), self.uuid, kstr(p.ref)))
-        return ''.join(out)
+
+        def put(k, x, y, hide):
+            s.set_field(k, at=(snap(x), snap(y)), angle=ang, justify=[just], hide=hide)
+        put('Reference', rx, ry, p.ref.startswith('#'))
+        put('Value', vx, vy, p.fields.get('_hide_value', p.lib_id == 'power:GND'))
+        for k in ['Footprint', 'Datasheet'] + extra:
+            put(k, p.x, p.y, True)
+        for i, k in enumerate(visible):
+            put(k, vx, vy + 2.54 * (i + 1), False)
 
     def split_wires(self):
         """The wires split at every pin point and wire end lying on their interior (T-taps become real joints)."""
@@ -365,23 +299,35 @@ class Sch:
             out += [(u, v) for u, v in zip(seq, seq[1:]) if u != v]
         return out
 
-    def write(self, path):
+    def write(self, path, previous='auto'):
+        """Write the sheet through kicad_sexpr (which owns the syntax, uuids and KiCad 10 layout).
+        Ids are stable: items keep the uuid they had in ``previous`` (default: the file being overwritten, if it
+        exists; None = from scratch), matched by reference / position; new items get ids derived from their key, so
+        an unchanged design rewrites the same bytes and board footprints stay linked to their symbols."""
         self.wires = self.split_wires()
-        o = ['(kicad_sch\n\t(version 20260306)\n\t(generator "eeschema")\n\t(generator_version "10.0")\n',
-             '\t(uuid "%s")\n\t(paper "%s")\n' % (self.uuid, self.paper),
-             '\t(title_block\n\t\t(title %s)\n\t\t(date %s)\n\t\t(rev %s)\n\t)\n' % (kstr(self.title), kstr(self.date), kstr(self.rev)),
-             '\t(lib_symbols\n']
-        for lib_id, t in sorted(self.used.items()):
-            o.append('\t\t' + embed(lib_id, t).replace('\n', '\n\t\t').rstrip('\t') + '\n')
-        o.append('\t)\n')
-        o += [junction_sexpr(pt) for pt in self._junctions()]
-        o += [no_connect_sexpr(pt) for pt in self.noconnects]
-        o += [wire_sexpr(a, b) for a, b in self.wires]
-        o += [label_sexpr(*lb) for lb in self.labels]
-        o += [text_sexpr(*tx) for tx in self.texts]
-        o += [self.symbol_sexpr(p) for p in self.parts]
-        o.append('\t(sheet_instances\n\t\t(path "/"\n\t\t\t(page "1")\n\t\t)\n\t)\n\t(embedded_fonts no)\n)\n')
-        open(path, 'w', encoding='utf-8').write(''.join(o))
+        if previous == 'auto':
+            previous = path if os.path.exists(path) else None
+        sch = Schematic.new(self.project, paper=self.paper, title=self.title, date=self.date, rev=self.rev,
+                            previous=previous)
+        self.uuid = sch.uuid
+        for lib_id, sym in sorted(self.used.items()):
+            sch.embed_symbol(lib_id, sym)
+        for pt in self._junctions():
+            sch.junction(pt)
+        for pt in self.noconnects:
+            sch.no_connect(pt)
+        for a, b in self.wires:
+            sch.wire(a, b)
+        for kind, name, x, y, rot, shape in self.labels:
+            if kind == 'label':
+                sch.label(name, (x, y), rot)
+            else:
+                sch.global_label(name, (x, y), rot, shape)
+        for s, x, y, size, bold in self.texts:
+            sch.text(s, (x, y), size=size, bold=bold)
+        for p in self.parts:
+            self._place(sch, p)
+        sch.save(path)
 
 
 def find_merges(sch, intended, symmetric=('R', 'C', 'L', 'FB', 'F')):
