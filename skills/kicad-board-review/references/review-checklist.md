@@ -114,7 +114,10 @@ while others are absent.
   side; for a buck-boost, both. The capacitor must sit at the pins (measure edge-to-edge; `emc.py` reports pad centres),
   on the same layer, with the ground return directly under or beside it. Compare with the datasheet's layout example
   item by item - it is usually explicit, and small items (a high-frequency capacitor at VOUT, the AGND/PGND tie point)
-  are easy to miss without it.
+  are easy to miss without it. Use the project's layout reference pack and compliance file if it has them
+  (kicad-pcb-workflow `layout-stages.md`), and re-tick each rule against a net-coloured render (`view.py`) rather than
+  trusting the file: a blanket ground pour or a stitching via beside every pad silently breaks single-point analog
+  grounds. A deviation marked "no room" needs evidence of what was tried (smaller package, other value, position).
 - **Switch node.** Keep its copper area as small as the current allows (`switch_copper`), away from sensitive lines and
   the board edge; nothing sensitive on the layer under it without a plane between.
 - **Feedback and enable lines** are high impedance: short, away from the switch node and inductor, and they must not
@@ -196,6 +199,8 @@ Derate everything; datasheet maxima are limits, not targets:
   assume a copper area - check the board gives that area.
 - Every pin of every IC deliberately handled: tied, pulled, or explicitly no-connect per the datasheet (example of what
   goes wrong: mode pins hard-tied to the wrong level, status LEDs fed from a rail that can exceed the pin rating).
+  A no-connect flag makes ERC silent, so audit them: `kicad-pcb-workflow/scripts/nc_audit.py` lists every unused pin
+  and every input strapped to a rail; each row needs the datasheet's pin-table reason.
 
 For every IC and every non-trivial discrete:
 - **Absolute maximum per pin**, including pin current limits (example: when a TVS clamps above a sense input's voltage
@@ -235,7 +240,10 @@ page that contains the real PDF link.
   plan consignment now, not at order time.
 - Package sizes the assembler can place economically (no 0201 at JLC economic), Economic vs Standard assembly per part,
   extended-part fees, single-sided assembly if that is the plan.
-- Avoid single-source, NRND/EOL and counterfeit-prone parts; note approved alternates for anything critical. Keyed,
+- Avoid single-source, NRND/EOL and counterfeit-prone parts; note approved alternates for anything critical. Check
+  lifecycle on the manufacturer's page, not by distributor stock (`pcb-part-selection/scripts/part_gate.py`; a 404
+  product page = treat as discontinued), and check that each design value came from the datasheet of the exact
+  orderable variant fitted. Keyed,
   retained connectors for anything a user plugs in (no bare pin headers in production).
 - A project stock policy is worth stating explicitly (example: at least 1,000 listed units per MPN, with named
   user-approved exceptions), then checked mechanically.
@@ -247,7 +255,9 @@ page that contains the real PDF link.
 ## 9. Mechanical and silkscreen
 
 - Tall parts: 3D clearance between them and nearby parts (fuse holders, terminal blocks, electrolytics, connectors) -
-  render in 3D, check model offsets.
+  render in 3D, check model offsets. Run `kicad-pcb-workflow/scripts/board_lint.py` first: a missing 3D model file
+  renders as bare pads and looks like an empty spot; it also lists footprints without courtyards (invisible to DRC's
+  overlap check) and silkscreen text on other parts' bodies (DRC does not check silk against bodies).
 - Mounting holes: keepout around the screw head and washer; no copper or parts under it unless intended.
 - Connectors at the edge, oriented so cables leave the board cleanly; polarity marked.
 - Heat: spread hot parts apart; keep precision analog, electrolytics and oscillators away from FETs and regulators;
@@ -259,6 +269,9 @@ page that contains the real PDF link.
   clear of panel edges; rework access; tall parts not shadowing short ones.
 - Silkscreen: readable size (>= 1 mm text, >= 0.15 mm lines), not on pads, labels that match the function (and the
   physical order, or the firmware must remap), plain - no decoration the user did not ask for.
+- External connections usable without the schematic: every connector and solder pad labelled with its function (both
+  sides if wires are soldered from either side), polarity and pin 1 marked, one pad-shape convention, pairs in the same
+  order everywhere.
 
 - **Thermal vias:** a 0.3 mm plated via through 1.6 mm is roughly 100-200 C/W each, so they work in numbers: about 9 at
   1.0-1.2 mm pitch under a 3x3 mm exposed pad, or the datasheet's pattern.
@@ -290,8 +303,11 @@ Some properties are cheap to prove with a script and expensive to discover on a 
   the intended shunt pad (not the pour or the power trace beside it).
 - **Paste and vias:** exposed-pad paste coverage (about 50 % in a window pattern is typical), no via drill under a
   paste aperture, tenting requested for vias near pads.
-- **Capture contract:** a small netlist checker that asserts the topology you meant (refs present, pins on the
-  intended nets, no unexpected single-node nets). It catches silently dropped symbols and miswired series parts.
+- **Capture contract:** `kicad-pcb-workflow/scripts/netspec.py` asserts the topology you meant (SPLIT, SHORT, MISSING,
+  UNEXPECTED against an intended netlist). It catches silently dropped symbols, miswired series parts and shorts that
+  ERC passes.
+- **Exemptions:** if the project filters its DRC report, every exemption must name the item and the reason
+  (`drc_summary.py --accept`); a filter that drops a whole violation type is itself a finding.
 - **Change scope:** `board_diff.py` (kicad-pcb-workflow) against the last commit, so a rebuild cannot quietly revert
   someone else's edits.
 

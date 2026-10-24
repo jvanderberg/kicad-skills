@@ -16,3 +16,6 @@
 - **Hot-loop distances** are pad centre to pad centre; subtract half pad widths before calling a capacitor far away.
 - **Crossings are not parallel runs**; a high crosstalk figure on a short overlap is usually an artefact.
 - **No thermal model.** Copper loss in watts is reported; temperature rise needs judgment (area, airflow, neighbours).
+- **Design intent is not in the pack.** The scripts and DRC measure copper and rules, not whether a block follows its
+  datasheet layout (single-point grounds, hot-loop parts at the pins) or the intended netlist. Check those against the
+  references themselves (datasheet figure, netspec file); kicad-pcb-workflow `checks.md` lists what each check misses.
