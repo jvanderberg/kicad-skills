@@ -12,6 +12,8 @@ work is a loop: **checkpoint -> edit in a scratch copy with a script -> verify w
 render -> copy back -> report.** Skipping any step below lets a silent failure through.
 
 Scripts are in `${CLAUDE_SKILL_DIR}/scripts/`. Detailed references (read the one you need, when you need it):
+- `scripts/kicad_sexpr/README.md` - the file-format layer: read, modify and generate .kicad_sch / .kicad_pcb /
+  .kicad_sym / .kicad_mod / .kicad_pro. **Every generator and edit goes through it** (section 2)
 - `references/new-design.md` - a new project from nothing: intended netlist, readable generated schematic, board from
   the netlist, stackup and rules (kicad-cli can do none of this)
 - `references/layout-stages.md` - layout as staged sessions with written briefs, resource allocation, feasibility
@@ -25,11 +27,11 @@ Scripts are in `${CLAUDE_SKILL_DIR}/scripts/`. Detailed references (read the one
 - `references/rendering.md` - getting images you can actually inspect
 - `references/version-upgrade.md` - KiCad 9 -> 10 conversion
 
-**One place owns each file format and each fiddly rule.** Generate KiCad text only through the scripts' writers
-(`schgen`/`symgen` for schematics and symbols, `new_board.py` and `board_setup.py` for boards and projects, `router.py`
-for copper, `sexp.kstr()` for any string); they own the syntax, escaping, uuids, `{slash}` net names and hole spacing.
-A project generator describes the design; if it needs a feature the writers lack, add it there, not as a format string
-in the project.
+**One place owns each file format and each fiddly rule.** `scripts/kicad_sexpr` owns KiCad's file syntax (quoting,
+escaping, uuids, headers, `{slash}` net names, KiCad's own formatting). The higher-level writers own the design rules
+on top of it: `schgen`/`symgen` for schematics and symbols, `new_board.py` and `board_setup.py` for boards and
+projects, `router.py` for copper and hole spacing. A project generator describes the design; if it needs a feature the
+writers lack, add it to the writer or the layer, never as a format string in the project.
 
 ## 0. Before touching anything
 
@@ -75,19 +77,28 @@ in the project.
   editing the script and re-running it, never patching the previous output (that stacks fixes on top of old mistakes).
   Keep the scripts somewhere durable (the user's repo `tools/` or a project scratch dir that will not be cleaned) -
   they are the record of what was done.
-- **Text edits for almost everything** (`scripts/sexp.py` has the helpers): pad nets, tracks, vias, zones, fields, silk.
-  They are exact, diffable, and do not reformat the file. Use **pcbnew python only to create/load or move footprints**,
-  one stage per process, and do all deletions/renets of old copper as text *before* that stage - pcbnew renames track
+- **Every read, edit and generator goes through `scripts/kicad_sexpr`** (its README has examples): load the file
+  into the tree, change nodes or call the builders (symbols, wires, labels, footprints, tracks, vias, zones, keepouts,
+  stackup, net classes), save. **Never build KiCad file text with format strings, f-strings or templates**, and never
+  copy syntax out of another file: the layer owns quoting/escaping, unique uuids, KiCad 10 headers and the layouts
+  KiCad writes, and it writes KiCad's own formatting, so untouched parts of a file stay byte-identical and diffs stay
+  reviewable. Hand-formatted text is what produced a stray `'''` inside a schematic, a duplicated property, a keepout
+  copied from a library footprint and a stackup found by grepping other projects. If the layer lacks a builder, build
+  the `Node` (the generic tree keeps any token) and add a builder plus a kicad-cli-checked test to the layer.
+- pcbnew python is not needed to place footprints any more (`Board.add_footprint`, checked against pcbnew's own
+  placement and flipping). If you still use pcbnew for something, one stage per process, and pcbnew renames track
   nets to match pads on save. Details in `references/pcbnew-api.md`.
 - **The base is the last commit, never an older snapshot**, and GUI edits come first: if the user has edited the board
   in KiCad since the generator scripts last ran, rebuild from their current file (or fold their edits into the
   generators) before re-running anything. A rebuild from an older snapshot silently reverts the user's work, and only a
   diff against HEAD shows it.
-- Every patch asserts its anchor matched exactly once (`assert t.count(old) == 1`). A silent miss is worse than a crash.
+- Every edit asserts it found exactly what it meant to change (one footprint with that reference, one zone with that
+  name, ...). A silent miss is worse than a crash.
 - Compute the new text before opening the file for writing: `open(p, 'w').write(f(t))` truncates the file before
-  `f` runs, so an error or refusal inside `f` leaves an empty file.
-- Generated strings go through `kstr()` (escapes quotes, backslashes and **newlines**). A raw newline inside a
-  schematic string makes KiCad silently drop every item after it.
+  `f` runs, so an error or refusal inside `f` leaves an empty file (the layer's `save()` already does this).
+- Pass plain Python strings to the layer; it escapes quotes, backslashes and **newlines** when it writes (do not
+  pre-escape). A raw newline inside a schematic string makes KiCad silently drop every item after it; the layer
+  cannot write one.
 - Keep schematic and board in sync in the same change: a part added to the schematic needs its footprint, pad nets and
   fields on the board; series parts rename auto-generated nets (`Net-(U1-GPIO35)`), which the board must follow.
 

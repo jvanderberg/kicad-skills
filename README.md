@@ -41,6 +41,7 @@ All tools also work without Claude.
 | `kicad-pcb-workflow/scripts/nc_audit.py` | Every unused pin and every input strapped to a rail, as a decision table with datasheet notes |
 | `kicad-pcb-workflow/scripts/fpcheck.py`, `add_courtyard.py` | Footprint vs package string and symbol (pad count, body size, numbering); add missing courtyards |
 | `kicad-pcb-workflow/scripts/board_diff.py` | Everything that changed between two board versions (or vs a git revision), with anything outside the expected areas flagged |
+| `kicad-pcb-workflow/scripts/kicad_sexpr/` | The file-format layer: lossless read/write of every KiCad s-expression file in KiCad's own formatting, plus builders for schematics (symbols, wires, labels, sheets), boards (footprints, tracks, vias, zones, keepouts, stackup) and project net classes. Generators and edits use it instead of formatting text |
 | `kicad-pcb-workflow/scripts/sexp.py` | Check s-expression files (balance, raw newlines in strings, duplicate uuids); list/get footprints and symbols; editing helpers |
 | `kicad-pcb-workflow/scripts/render.py` | Render a window of chosen layers by KiCad coordinates to PNG (or a 3D render); also boards without an outline (imported reference layouts) |
 | `kicad-pcb-workflow/scripts/kicad_open.sh` | Is KiCad holding the project open? |
