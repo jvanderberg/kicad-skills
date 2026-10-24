@@ -19,6 +19,18 @@ References (read the one you need):
 - `references/webench.md` - driving TI WEBENCH Power Designer from the browser: what it gives, what needs a login
 - `references/sources.md` - the app notes and datasheets these are drawn from
 
+## Before choosing any switching regulator
+
+- [ ] **Run the requirement through a vendor design tool first** - TI WEBENCH when browser tools are available
+      (`references/webench.md`), before settling on a part and before hand sizing. Ask the user up front whether
+      they accept TI's terms and whether they will log in to myTI themselves for the detailed pages. WEBENCH does not
+      cover battery chargers: those use the datasheet procedure (pcb-battery-power).
+- [ ] **Gate every candidate for lifecycle and stock** before customising a design around it (pcb-part-selection's
+      `part_gate.py`): tool recommendations and distributor stock are snapshots, not evidence the part is made or
+      buyable.
+- [ ] **Design for the exact orderable variant** and its own datasheet.
+- [ ] **Collect the layout reference pack** for the chosen part before placement (step 6).
+
 ## 1. Pin down the requirement
 
 For every rail: input range (minimum *after* upstream drops: diodes, ideal diodes, fuses, cable), output voltage and
@@ -52,14 +64,15 @@ package. A buck at 90 % on the same job dissipates about 0.3 W.
 - Integrated FETs for up to a few amps; controller + external FETs above that.
 - **Startup independence:** the MCU's own supply must come up on its own - a converter that needs I2C configuration
   before its output turns on cannot power the thing that configures it.
-- **Variant suffixes** change the part (forced PWM vs auto, fixed vs adjustable output, automotive grade). Read the
-  ordering table.
+- **Variant suffixes** change the part (forced PWM vs auto, fixed vs adjustable output, automotive grade, package).
+  Read the ordering table, and when you switch to a variant (e.g. because the commercial part is discontinued),
+  re-derive every value from that variant's datasheet: equations, references and limits can differ.
 - Stock and assembly class with the **pcb-part-selection** skill. Regulators are rarely JLC Basic; plan for the
   extended-part fee. Prefer the plentiful variant when equivalent.
 - **Run the requirement through TI WEBENCH Power Designer** in the browser when browser tools are available
   (`references/webench.md`): in a couple of minutes it lists every TI part that fits with efficiency, area, cost and
   a full power-stage BOM - a fast shortlist and a cross-check on your own sizing. Ask the user before accepting TI's
-  terms. Optionally, if the user logs in to myTI themselves, it also gives real MPNs with DC-bias-derated capacitance,
+  terms. Gate its picks for lifecycle and stock (step 6 there) before customising any. Optionally, if the user logs in to myTI themselves, it also gives real MPNs with DC-bias-derated capacitance,
   phase margin and crossover, inductor/IC loss and junction temperature, capacitor RMS currents, and transient
   simulations. For other vendors use their tools (ADI LTpowerCAD, MPS, Richtek) or the
   datasheet's design procedure, which also covers compensation for externally compensated parts.
@@ -90,16 +103,32 @@ usually a larger case size; a higher voltage rating in the same case does not re
 (`references/components.md`). Resistors 1 % (0.1 % only where accuracy needs it). Put the
 calculations and chosen values in the design doc.
 
-## 6. Lay it out
+## 6. Gather the layout reference pack
 
-Copy the datasheet's layout example; then check against `references/layout.md`. In order: input capacitor at the
+Before placing a converter, collect its layout references into the project (e.g. `docs/layout-refs/<part>/`), with a
+README that states the order of authority and names the file and page of each figure:
+1. **The datasheet's Layout Guidelines text and Layout Example figure** - primary; they win any conflict. Find the pages
+   with pcb-part-selection's `datasheet.py find ds.pdf "Layout Example" "Layout Guidelines"` and render them with
+   `datasheet.py page` (record e.g. "datasheet-p35.png = Figure 12-2, layout example").
+2. **The EVM user guide's layout**, if one exists (the datasheet often names the EVM).
+3. **Vendor tool layouts** (WEBENCH's PCB LAYOUT views and its imported EAGLE/Altium board) - reference only: drawn
+   around the tool's BOM and a generic stackup.
+Then write down, per converter, as rules for its layout brief (kicad-pcb-workflow `references/layout-stages.md`): the
+hot loop and which parts must sit at which pins, the quiet-side parts, the feedback and sense routing, the ground
+scheme (single-point analog ground?), the switch-node limits, and the thermal-pad via pattern. These references are
+re-read when the block is placed and again when it is routed; the block is checked against them in the compliance file.
+
+## 7. Lay it out
+
+Follow the reference pack, block by block, from a brief (kicad-pcb-workflow `references/layout-stages.md`); then
+check against `references/layout.md`. In order: input capacitor at the
 pins (the hot loop), then the IC, inductor and output capacitors, then the small-signal parts (feedback, enable,
 soft start) on the quiet side; switch node copper as small as the current allows; feedback taken from the output
 capacitor and routed away from the inductor and switch node; ground pour unbroken under the power stage with vias to
 the plane at the IC's ground and the capacitors' grounds; AGND/PGND joined where the datasheet says; thermal vias in the
 exposed pad.
 
-## 7. Verify
+## 8. Verify
 
 - Calculations reviewed against the datasheet procedure; numbers in the doc.
 - Worst-case startup: lowest input after all upstream drops still above UVLO and enough for regulation; highest input

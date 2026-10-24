@@ -1,6 +1,8 @@
 # Switching regulator layout
 
-The datasheet's layout example is the primary reference: follow it item by item, then check against this list.
+The datasheet's layout example is the primary reference: follow it item by item, then check against this list. The
+EVM layout comes second and vendor-tool layouts (WEBENCH) third; collect all three in the layout reference pack
+(SKILL.md step 6) and re-read them when the block is placed and routed.
 Sources: TI SNVA021 (AN-1149), SLYT614, SLVA773, SLVA535B; listed in `sources.md`.
 
 ## 1. Find the hot loop first
