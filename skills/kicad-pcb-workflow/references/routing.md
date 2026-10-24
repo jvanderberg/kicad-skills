@@ -1,9 +1,13 @@
 # Routing by hand, from a script
 
-Route deliberately: every track is a list of coordinates you chose, written as data in the generator script. Do not
+Route deliberately: every track is a list of coordinates you chose, written as data in a route plan that
+`scripts/router.py` turns into KiCad copper. Do not
 use an autorouter (KiCad's, Freerouting, or a home-made maze router) for anything but a throwaway experiment: it does
 not know the board's layer plan, which returns must not be cut, which existing routes to reuse, or why a lane order
 matters, and its output is hard to review. Hand routing from real coordinates is reliable and reviewable.
+
+Route block by block, each from its brief, and check each block against its datasheet layout before starting the next
+(`layout-stages.md`). The layer and channel plan (stage 0 there) comes before the first track.
 
 ## 1. Plan before drawing
 
@@ -18,15 +22,21 @@ matters, and its output is hard to review. Hand routing from real coordinates is
   pick the place where the least return current flows (e.g. beyond the input connectors, at the end of a pour), and
   say so in the report.
 
-## 2. Draw as data
+## 2. Draw as data, with router.py
 
 ```python
-# (layer, net, width, [points...]) - each consecutive pair becomes one segment
-TRACKS = [
-  ('F.Cu', 'I2C_SCL', 0.15, [(120.0, 60.0), (120.0, 80.0), (121.0, 81.0), (140.0, 81.0)]),
-]
-VIAS = [((140.0, 81.0), 'I2C_SCL', 0.45, 0.2)]
+# plan.py - run with: $PY scripts/router.py check pack/board.json plan.py      (prints every check, writes nothing)
+#                     $PY scripts/router.py apply proj.kicad_pcb pack/board.json plan.py
+def build(r):
+    r.track('F.Cu', 0.15, ('U1', '12'), (120.0, 80.0), (121.0, 81.0), ('J2', '3'))   # net taken from the pads
+    r.via((140.0, 81.0), r.net('U1', '12'), 0.45, 0.2)                                  # checked before it is accepted
+    r.via_near('C5', '2')                     # closest legal spot beside a pad, with a short link track
+    r.rect('GND', 'In1.Cu', 100.3, 100.3, 149.7, 139.7, name='GND_PLANE')
+    r.keepout('F.Cu', [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], name='AGND_U3')     # no pour over an analog island
 ```
+`board.json` is `kicad-board-review/scripts/boarddump.py` run on the unrouted board (or on the board as it is, with
+`apply --append`). Pads are named, so routes follow placement changes; a track touching pads of two nets raises an
+error. The board is regenerated from schematic + placement + plan, so the plan is the record of every route.
 - Orthogonal runs with 45 degree corners (offset both coordinates by the same amount at a bend).
 - Lanes on a fixed pitch (track width + clearance + margin, e.g. 0.5 mm for 0.15 mm tracks at 0.15 mm clearance).
 - End exactly on pad centres or on another track's end/vertex - a 0.01 mm miss is an unconnected item.
@@ -35,10 +45,26 @@ VIAS = [((140.0, 81.0), 'I2C_SCL', 0.45, 0.2)]
 
 ## 3. Check clearance yourself before DRC
 
-Build obstacles from `board.json` (pads, tracks, vias, other nets' zone fills) and buffer them by clearance + half the
-new track width with **round caps** (shapely `cap_style=1`): KiCad's tracks have round ends, and a flat-cap check
-approves positions DRC rejects. Then run `check.sh` - DRC is the authority - and fix every new clearance error and
-unconnected item.
+`router.py` checks each new via and track against existing and new copper before writing: copper clearance to other
+nets (the larger of the two nets' net-class clearances, round track ends), the board edge, and **hole-to-hole distance
+to every drilled hole, whatever its net**. The last one matters: a clearance check rightly skips same-net copper, but
+holes must keep apart regardless of net, and a ground stitching pass that drops a via onto a hand-placed ground via is a
+`hole_to_hole` DRC error at 0.000 mm. It logs VIOLATION / REJECTED lines and exits 1 if there are any. It does not model
+custom `.kicad_dru` rules (pass `clearance=` on that call and name the rule) or zone fills. Then run `check.sh` - DRC is
+the authority - and fix every new clearance error and unconnected item.
+
+## Generic habits that break datasheet rules
+
+These look tidy and pass DRC, and each one has broken a specific datasheet rule on a real board:
+- **A stitching via beside every ground pad, and one pour everywhere.** Parts whose datasheet asks for a separate
+  analog/quiet ground joined to power ground at a single point (current-set, frequency-set, feedback, compensation and
+  NTC resistors of chargers and converters) must not get plane vias, and the pour must be kept off them: route their
+  grounds as a track to the specified point and add a keepout over the island (`r.keepout`).
+- **Capacitor ground returns through the plane** when the datasheet shows them tied on the top layer to the IC's ground
+  pins (input/output caps of a hot loop). Return on the same layer, then stitch.
+- **Copper on adjacent layers under a switch node**, when the datasheet says no parallel layers under SW.
+- **Feedback and compensation routing near the switch node or inductor**, or a slow signal routed through the reserved
+  via site under an IC (allocate those sites in the layer plan first).
 
 ## 4. Look, and report what it crosses
 

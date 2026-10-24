@@ -8,6 +8,9 @@ calling this`) - harmless; filter it.
 
 ## Good uses
 
+- Creating a new board from a netlist: `scripts/new_board.py` (footprints, symbol links, pad nets, outline,
+  placement), then text passes for everything else.
+
 - Loading a board and reading geometry (pads with polygons, tracks, arcs, vias, zones and their **saved** fills,
   outline): `boarddump.py`.
 - Creating a footprint from a library and placing it, or moving/rotating existing footprints - one stage, in its own
@@ -28,6 +31,10 @@ calling this`) - harmless; filter it.
 | `GetBoardPolygonOutlines()` signature error | KiCad 10 API change | `eps = pcbnew.SHAPE_POLY_SET(); b.GetBoardPolygonOutlines(eps, True)` |
 | Islands that KiCad would remove | `ZONE_FILLER(b).Fill(...)` skips island removal | Refill with `kicad-cli pcb drc --refill-zones --save-board` (twice after zone edits) |
 | Whole file reformatted | Any `Save` | Accept it only in the footprint stage; do everything else as text |
+| Setting a 3D model path or offset has no effect, no error | `FOOTPRINT.Models()` returns copies | Rewrite the `(model ...)` block as text |
+| Stackup cannot be read or set | `GetStackupDescriptor()` returns an opaque SwigPyObject (10.0.1) | `board_setup.py` writes the `(stackup ...)` block as text |
+| `'SwigPyObject' object has no attribute 'GetName'` on a net class | `NETINFO_ITEM.GetNetClass()` is opaque (10.0.1) | `net.GetNetClassName()` |
+| A `.kicad_pro` appears next to a board you saved | `SaveBoard` writes the project settings file too | Create the board first, then edit the `.kicad_pro` (`board_setup.py`) |
 
 Creating vias and tracks through the API works but is fragile across versions; text is simpler and exact
 (`file-format.md` has the blocks).

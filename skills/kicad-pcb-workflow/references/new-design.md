@@ -1,0 +1,102 @@
+# A new design from nothing: project, schematic, board
+
+kicad-cli cannot create a project, draw a schematic or update a board from a schematic, and pcbnew's python cannot
+set the stackup. These scripts cover that gap. Each one owns one fiddly job (file syntax, escaping, uuids, net names),
+so a generator describes the design and never formats KiCad text itself:
+
+| Job | Script | Runs in |
+|---|---|---|
+| Intended connectivity, checked against KiCad's netlist | `netspec.py` | python3 |
+| Redraw symbols readably, pins numbered for the footprint | `symgen.py` (library) | python3 |
+| Draw the schematic as wired blocks; geometry checks; locate shorts | `schgen.py` (library) | python3 |
+| Footprint facts: courtyard, pad count / body vs package, pins vs pads | `fpcheck.py` | python3 |
+| Add missing courtyards to imported footprints | `add_courtyard.py` | python3 |
+| Board from the netlist: footprints, symbol links, nets, fields, outline, placement, pad labels | `new_board.py` | `$KICAD_PYTHON` |
+| JLC stackup block, design rules, net classes | `board_setup.py` | python3 |
+| Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely) |
+| Unused and strapped pins as decisions | `nc_audit.py` | python3 |
+
+If you are tempted to write `'(property %s %s ...)' % (...)` in a project generator, add what you need to one of
+these instead. Hand-written format strings caused a stray `'''` inside a schematic and a duplicated property name on a
+real board; the shared writers assert against both.
+
+## 1. Write the circuit down as data first
+
+Before drawing anything, write the intended netlist: `{net: ["REF.PIN", ...]}` in a JSON file or a `NETS = {...}`
+python file (see `netspec.py`). It is the design, independent of how it is drawn; every later step is checked against
+it. Pin numbers are the footprint's pad numbers, so pick the footprints now (`fpcheck.py` below).
+
+## 2. Symbols
+
+- Library symbols are fine where they read well. Redraw a symbol when it does not: an imported one with pins in package
+  order, "unspecified" pin types, off-grid pins. `symgen.ic()` groups pins by function (inputs and supplies left,
+  outputs right, supply pins top, ground bottom, related pins adjacent) with real types from the datasheet pin table,
+  and stacks duplicate pins (several GND or SW pins) on one point.
+- **Number pins for the footprint you will use**, and prove it: `fpcheck.py FOOTPRINT --symbol LIB.kicad_sym:NAME`
+  lists symbol pins with no pad and pads with no pin. Example: KiCad's NexFET VSON-8 footprint merges source pins 5-8
+  into one pad "5", so a FET symbol numbered 1-8 leaves pads unconnected; `symgen.fet()` renumbers a Device FET
+  symbol to the footprint's pads.
+
+## 3. Draw the schematic so a person can read it
+
+The default an agent reaches for - every pin gets a net label - produces a sheet nobody can review. Instead:
+- **One functional block per area, drawn with real wires.** Power symbols for rails and ground. Net labels only for
+  signals that travel between blocks.
+- **Flow left to right**: inputs on the left, outputs on the right; supplies at the top, ground at the bottom.
+- **Ladder layout for shunt parts**: the rail runs along the top, decoupling and divider parts hang below it with their
+  ground symbols, and signal wires run below the lowest ground symbol - never through a shunt part's span. Most drawing
+  faults on generated sheets are a shunt part's pin landing on a signal wire that passes under the rail.
+- Minimise crossings; junction dots only at real T-joins (`schgen` adds them where three or more ends meet).
+- Values and references beside the part, not on its body or on wires.
+
+With `schgen.Sch`: place parts, `wire()` between pin points (`part.p('VIN')` or `part.p(3)`), `power()` for rails,
+`label()` between blocks, then **before writing**: `s.collisions()` (pins on wire interiors, overlapping wires, wires
+through bodies, overlapping bodies) must be empty and `find_merges(s, NETS)` must return nothing. Then `s.write()`.
+
+## 4. Verify the schematic
+
+1. `python3 scripts/netspec.py check nets.py sheet.kicad_sch` - must print "netlist matches the spec". It reports
+   SPLIT / SHORT / MISSING / UNEXPECTED. ERC does not replace this: a generated sheet with a supply shorted to GND
+   passed ERC with one unrelated warning; netspec caught it at once, and `find_merges()` then named the pin and
+   coordinate where the two nets touched.
+2. `kicad-cli sch erc` - clean, or every remaining item explained.
+3. `python3 scripts/nc_audit.py sheet.kicad_sch --notes nc-notes.json` - every unused pin and every input strapped to a
+   rail gets a recorded decision from the datasheet pin table (`--require-notes` before calling the schematic done).
+4. Render the PDF (`kicad-cli sch export pdf`, `pdftoppm -r 150`) and **look at every page**: overlapping text,
+   labels on wires, values on bodies, crossings that could be avoided. A clean ERC is not a readable sheet.
+
+## 5. Footprints
+
+- **Prefer KiCad's library footprint whenever the package is standard** (chip passives, SOT/SOD, SOIC/TSSOP, standard
+  QFN/SON variants, common connectors and fuses). Keep an imported footprint only for genuinely part-specific packages.
+  KiCad's are drawn to one convention, have courtyards and fab layers, and are maintained.
+- Check every assignment, library or imported: `fpcheck.py FOOTPRINT --package "<LCSC package string>" --symbol ...`
+  (pad count, body size, numbering). Automatic matchers (jlcimport's included) propose wrong pin counts and body sizes
+  often enough that each suggestion needs this check; the datasheet's land-pattern figure decides pad sizes and pitch.
+- Imported footprints without a courtyard: `add_courtyard.py LIB.pretty` (DRC cannot see overlaps otherwise).
+
+## 6. The board
+
+```
+kicad-cli sch export netlist --format kicadxml -o net.xml proj.kicad_sch
+$KICAD_PYTHON scripts/new_board.py net.xml proj.kicad_pcb --layers 4 --outline 50x40 --origin 100,100 --corner-r 1 \
+    --placement place.json --labels labels.json
+python3 scripts/board_setup.py proj.kicad_pro --stackup JLC04161H-7628 --class Power:track=0.8,clearance=0.2 \
+    --assign Power=GND,VBUS,+5V        # or --pattern 'Power=+*'
+```
+- Run `new_board.py` before `board_setup.py`: pcbnew writes a default `.kicad_pro` next to a new board if there is
+  none, and board_setup then edits it.
+- `board_setup.py --list` shows the stackups it knows; the numbers come from `kicad-new-board`'s
+  `references/jlcpcb-stackups.md` and need re-checking on jlcpcb.com before an order.
+- An empty schematic for a brand-new project: `Sch('name').write('name.kicad_sch')` with `schgen`.
+- Placement lives in a data file (`place.json`, mm relative to the outline's top-left), and the board is regenerated
+  from schematic + placement + route plan. GUI edits must be folded back into those files before the next regeneration,
+  or they are lost (`board_diff.py HEAD` shows what a regeneration would revert).
+- Then layout in stages with `references/layout-stages.md`, routing with `router.py` (`references/routing.md`), and
+  `check.sh` after every stage.
+
+## Example (labelled): what this replaced on one board
+
+minipc-power (USB-C PD + 1S2P charger + three converters, 4 layers) was built this way: `schgen` drew 105 parts with
+192 wires, `netspec` checked 77 nets, `new_board.py` + `board_setup.py` + `router.py` rebuilt the routed board from the
+netlist with DRC clean apart from two known, named silk warnings.

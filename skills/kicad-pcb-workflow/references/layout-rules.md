@@ -44,10 +44,25 @@ islands; AGND/PGND joined at the specified point.
 
 - Respect the assembly plan (e.g. everything on top). Check tall parts in 3D (fuse holders, terminal blocks, inductors)
   and model offsets; keep parts out of mounting-hole keepouts; leave room for connectors' mating plugs.
-- Courtyards on every footprint (imported ones often lack them); fixed pitches for rows of passives with real
-  clearance (e.g. about 2.0 mm for 0805s; 1.75 mm is tight).
+- Courtyards on every footprint: imported ones often lack them, and DRC's overlap check cannot see a part without one
+  (`board_lint.py` lists them; `add_courtyard.py` adds them to the library). Fixed pitches for rows of passives with
+  real clearance (e.g. about 2.0 mm for 0805s; 1.75 mm is tight).
+- Budget area for what is not a component: edge connectors and solder pads (pitch x count per edge), mounting-hole
+  keepouts, connector overhang and mating clearance. A board size promised before a placement pass is provisional.
 
 ## Silkscreen
 
 Plain and readable: text >= 1 mm, lines >= 0.15 mm, never on pads, labels that say what the thing is. No decoration
-(knockouts, dashes) unless asked. Once the user accepts a silk position, leave it.
+(knockouts, dashes) unless asked. Once the user accepts a silk position, leave it. Labels must also clear other parts'
+bodies, which DRC does not check (`board_lint.py` does).
+
+## External connections are a user interface
+
+Every connector, solder pad, switch and test point is used by a person who does not have the schematic. Give each one:
+- a **function label** on the silkscreen (on both sides when wires can be soldered from either side; `new_board.py
+  --labels` writes both, mirrored on the bottom);
+- **polarity and orientation** marks: +/- or pin 1, a keyed footprint where one exists, and one pad-shape convention
+  kept across the board (for example square = positive or signal, round = ground), stated in the board's docs;
+- a **consistent order** for pairs and groups (always + then GND, the same order on every connector);
+- labels clear of pads, other silk and part bodies.
+Check them in a silk render and a 3D render, not only in DRC.

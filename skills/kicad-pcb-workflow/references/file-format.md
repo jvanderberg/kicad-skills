@@ -21,6 +21,18 @@ that asserts each anchor matched exactly once.
 - **Auto net names come from a pin** (`Net-(U1-GPIO35)`). Inserting a series part or swapping a connector renames
   nets; re-export the netlist and rename the board's nets to match, or parity reports
   `Pad net (X) doesn't match net given by schematic (Y)`.
+- Board setup: the `(setup (stackup ...))` block, design rules and net classes are written by `scripts/board_setup.py`
+  (pcbnew cannot set the stackup). Board-specific rules go in `<project>.kicad_dru`, each with a comment saying why,
+  scoped as narrowly as possible:
+  ```
+  (version 1)
+  # U7 is a 0.4 mm pitch DFN: its own pads sit 0.18 mm apart, below the 0.2 mm net-class clearance
+  (rule "U7 fine pitch"
+      (constraint clearance (min 0.12mm))
+      (condition "A.Type == 'Pad' && B.Type == 'Pad' && A.memberOfFootprint('U7')"))
+  ```
+- Hole-to-hole spacing applies between every pair of drilled holes regardless of net (vias of the same net included);
+  `router.py` checks it before writing a via.
 - Track and via blocks that work (fresh uuid each):
   ```
   	(segment
