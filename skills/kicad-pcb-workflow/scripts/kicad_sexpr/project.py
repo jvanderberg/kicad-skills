@@ -83,13 +83,32 @@ class Project:
         return c
 
     def assign(self, net: str, netclass: str) -> None:
-        """Put one net in a class (``netclass_assignments``; net names as in the schematic netlist)."""
+        """Put one net in a class (``netclass_assignments``; net names as in the schematic netlist).
+
+        KiCad 10 stores each net's classes as a list (``"VBUS": ["Power"]``) and rewrites the older single-string
+        form to a list whenever it saves the project, so this writes a list. A net may carry several classes:
+        assigning another class appends it (no duplicates); the string form in a loaded file is read as one entry."""
         ns = self._ns()
         a = ns.get('netclass_assignments')
         if not isinstance(a, dict):
             a = {}
             ns['netclass_assignments'] = a
-        a[net] = netclass
+        cur = self.assignments().get(net, [])
+        if netclass not in cur:
+            cur.append(netclass)
+        a[net] = list(cur)
+
+    def assignments(self) -> Dict[str, List[str]]:
+        """{net: [class, ...]} from ``netclass_assignments``, whether the file stores lists (KiCad 10) or strings."""
+        a = self._ns().get('netclass_assignments')
+        out: Dict[str, List[str]] = {}
+        if isinstance(a, dict):
+            for net, v in a.items():
+                if isinstance(v, str):
+                    out[net] = [v]
+                elif isinstance(v, list):
+                    out[net] = [str(c) for c in v]
+        return out
 
     def clear_assignments(self, patterns: bool = True) -> None:
         """Drop every per-net assignment (and, by default, every pattern) before re-assigning from scratch."""
