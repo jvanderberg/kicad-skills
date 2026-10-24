@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply a JLCPCB stackup, design rules and net classes to a KiCad project, as text (no GUI, no pcbnew).
+"""Apply a JLCPCB stackup, design rules and net classes to a KiCad project (no GUI, no pcbnew), through kicad_sexpr.
 
   board_setup.py PROJECT.kicad_pro|PROJECT_DIR --stackup JLC04161H-7628 [--finish ENIG]
                  [--rules jlc|keep] [--class NAME:track=0.8,clearance=0.2,via=0.6,drill=0.3 ...]
@@ -19,7 +19,10 @@ the 2-layer entry is derived (1.6 mm board less copper and mask), JLC publishes 
 re-check the page before ordering and say that you did. Board-specific rules (a footprint-scoped clearance for a
 fine-pitch part) belong in the project's .kicad_dru, written by hand with the reason in a comment.
 """
-import argparse, json, os, re, sys
+import argparse, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kicad_sexpr import Board, Project, stackup  # noqa: E402
 
 MASK = dict(thickness=0.01, er=3.8)            # solder mask: er 3.8 per JLC's impedance page; 0.01 mm nominal
 OUTER, INNER = 0.035, 0.0152                   # finished copper, 1 oz outer / 0.5 oz inner (JLC default inner)
@@ -57,33 +60,15 @@ CLASS_BASE = {'bus_width': 12, 'diff_pair_gap': 0.25, 'diff_pair_via_gap': 0.25,
 DEFAULT_CLASS = dict(track_width=0.2, clearance=0.15, via_diameter=0.6, via_drill=0.3)
 
 
-# ------------------------------------------------------------------ s-expression writers
+# ------------------------------------------------------------------ stackup (built by kicad_sexpr)
 
-def stackup_layer_sexpr(name, typ, extra=()):
-    body = ''.join('\t\t\t\t(%s %s)\n' % kv for kv in extra)
-    return '\t\t\t(layer "%s"\n\t\t\t\t(type "%s")\n%s\t\t\t)\n' % (name, typ, body)
-
-
-def stackup_sexpr(name, finish='None'):
+def stackup_node(name, finish='None'):
+    """The (stackup ...) node for a table entry. JLC gives no loss tangents: none are written."""
     entries = STACKUPS[name]
-    ncu = sum(1 for e in entries if e[0] == 'cu')
-    cu_names = ['F.Cu'] + ['In%d.Cu' % i for i in range(1, ncu - 1)] + ['B.Cu']
-    out = [stackup_layer_sexpr('F.SilkS', 'Top Silk Screen'), stackup_layer_sexpr('F.Paste', 'Top Solder Paste'),
-           stackup_layer_sexpr('F.Mask', 'Top Solder Mask', (('thickness', MASK['thickness']), ('material', '"LPI"'),
-                                                             ('epsilon_r', MASK['er'])))]
-    ci = di = 0
-    for e in entries:
-        if e[0] == 'cu':
-            out.append(stackup_layer_sexpr(cu_names[ci], 'copper', (('thickness', e[1]),)))
-            ci += 1
-        else:
-            di += 1
-            out.append(stackup_layer_sexpr('dielectric %d' % di, e[0], (('thickness', e[1]), ('material', '"%s"' % e[2]),
-                                                                       ('epsilon_r', e[3]))))
-    out += [stackup_layer_sexpr('B.Mask', 'Bottom Solder Mask', (('thickness', MASK['thickness']), ('material', '"LPI"'),
-                                                                ('epsilon_r', MASK['er']))),
-            stackup_layer_sexpr('B.Paste', 'Bottom Solder Paste'), stackup_layer_sexpr('B.SilkS', 'Bottom Silk Screen')]
-    return '\t\t(stackup\n%s\t\t\t(copper_finish "%s")\n\t\t\t(dielectric_constraints no)\n\t\t)\n' % (''.join(out), finish)
+    copper = [e[1] for e in entries if e[0] == 'cu']
+    dielectrics = [(e[0], e[1], e[2], e[3], None) for e in entries if e[0] != 'cu']
+    return stackup(copper, dielectrics, mask_thickness=MASK['thickness'], mask_material='LPI', mask_er=MASK['er'],
+                   finish=finish, mask_loss_tangent=None)
 
 
 def thickness(name):
@@ -96,38 +81,14 @@ def copper_count(name):
 
 # ------------------------------------------------------------------ edits
 
-def _block_end(t, i):
-    d, j, ins = 0, i, False
-    while True:
-        c = t[j]
-        if ins:
-            if c == '\\':
-                j += 2
-                continue
-            ins = c != '"'
-        elif c == '"':
-            ins = True
-        elif c == '(':
-            d += 1
-        elif c == ')':
-            d -= 1
-            if d == 0:
-                return j + 1
-        j += 1
-
-
-def apply_stackup(t, name, finish):
-    layers = t[t.index('\t(layers\n'):_block_end(t, t.index('\t(layers\n') + 1)]
-    have = len(re.findall(r'"(?:F|B|In\d+)\.Cu"', layers))
+def apply_stackup(board, name, finish):
+    """Replace the board's stackup and thickness; refuses (exit) when the copper layer count differs."""
+    have = len(board.copper_layers())
     if have != copper_count(name):
         sys.exit('board has %d copper layers, stackup %s has %d: change the board first' % (have, name, copper_count(name)))
-    m = re.search(r'\n\t\t\(stackup\n', t)
-    if m:
-        e = _block_end(t, m.start() + 3)
-        t = t[:m.start() + 1] + t[e + 1:] if t[e] == '\n' else t[:m.start() + 1] + t[e:]
-    i = t.index('\t(setup\n') + len('\t(setup\n')
-    t = t[:i] + stackup_sexpr(name, finish) + t[i:]
-    return re.sub(r'(\(general\s*\(thickness )[\d.]+', lambda m: m.group(1) + '%g' % thickness(name), t, count=1)
+    board.set_stackup(stackup_node(name, finish))
+    board.set_thickness(thickness(name))
+    return board
 
 
 def parse_class(spec):
@@ -140,8 +101,11 @@ def parse_class(spec):
     return name, c
 
 
-def apply_project(pro, rules, classes, assigns, patterns):
-    ds = pro.setdefault('board', {}).setdefault('design_settings', {})
+def apply_project(project, rules, classes, assigns, patterns):
+    """project: a kicad_sexpr Project. Rules, net classes (Default first, the user's other classes kept),
+    assignments and patterns."""
+    pro = project.data
+    ds = project.design_settings()
     if rules == 'jlc':
         ds.setdefault('rules', {}).update(JLC_RULES)
         ds['track_widths'] = [0.0, 0.2, 0.3, 0.5, 0.8, 1.2, 2.0]
@@ -158,14 +122,12 @@ def apply_project(pro, rules, classes, assigns, patterns):
     out += [c for n, c in old.items() if n not in want]          # keep classes the user already had
     ns['classes'] = out
     ns.setdefault('meta', {'version': 5})
-    if assigns:
-        a = ns.get('netclass_assignments') or {}
-        a.update(assigns)
-        ns['netclass_assignments'] = a
+    for net, cls in assigns.items():
+        project.assign(net, cls, replace=True)   # KiCad 10's list form: {"VBUS": ["Power"]}
     if patterns:
         ns['netclass_patterns'] = [p for p in ns.get('netclass_patterns') or [] if p['pattern'] not in dict(patterns)] + \
             [{'netclass': c, 'pattern': p} for p, c in patterns]
-    return pro
+    return project
 
 
 def main():
@@ -194,21 +156,21 @@ def main():
         cls, nets = s.split('=', 1)
         assigns.update({n: cls for n in nets.split(',') if n})
     patterns = [(s.split('=', 1)[1], s.split('=', 1)[0]) for s in a.pattern]
-    pro = json.load(open(pro_path))
-    known = {c['name'] for c in pro.get('net_settings', {}).get('classes') or []} | {'Default'} | {n for n, _ in classes}
+    project = Project.load(pro_path)
+    known = {c['name'] for c in project.data.get('net_settings', {}).get('classes') or []} | {'Default'} | \
+        {n for n, _ in classes}
     unknown = sorted(({c for c in assigns.values()} | {c for _, c in patterns}) - known)
     if unknown:
         sys.exit('net class %s is not defined: add --class %s:track=...,clearance=...' % (unknown, unknown[0]))
     if a.stackup:
         if a.stackup not in STACKUPS:
             sys.exit('unknown stackup %s; --list shows the table' % a.stackup)
-        new = apply_stackup(open(pcb_path, encoding='utf-8').read(), a.stackup, a.finish)    # may refuse: write after
-        open(pcb_path, 'w', encoding='utf-8').write(new)
+        apply_stackup(Board.load(pcb_path), a.stackup, a.finish).save()      # may refuse before anything is written
         print('stackup %s (%.3f mm) written to %s' % (a.stackup, thickness(a.stackup), pcb_path))
-    pro = apply_project(pro, a.rules, classes, assigns, patterns)
-    json.dump(pro, open(pro_path, 'w'), indent=2)
+    project = apply_project(project, a.rules, classes, assigns, patterns)
+    project.save()                            # KiCad's JSON layout: sorted keys, 2-space indent, final newline
     print('%s: rules %s; classes %s; %d assignments, %d patterns' % (
-        pro_path, a.rules, [c['name'] for c in pro['net_settings']['classes']], len(assigns), len(patterns)))
+        pro_path, a.rules, [c['name'] for c in project.netclasses()], len(assigns), len(patterns)))
 
 
 if __name__ == '__main__':

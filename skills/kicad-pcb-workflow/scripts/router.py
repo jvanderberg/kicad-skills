@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Routing as data: tracks, vias, zones and keepouts at coordinates you choose, written as KiCad 10 s-expressions.
+"""Routing as data: tracks, vias, zones and keepouts at coordinates you choose, written onto the board by kicad_sexpr.
 
   router.py check board.json plan.py                      # run the plan, print every check result, write nothing
-  router.py apply BOARD.kicad_pcb board.json plan.py [-o OUT.kicad_pcb] [--append]
+  router.py apply BOARD.kicad_pcb board.json plan.py [-o OUT.kicad_pcb] [--append] [--previous OLD.kicad_pcb]
 
 plan.py defines build(r), where r is a Router. board.json comes from kicad-board-review/scripts/boarddump.py (run on
 the board as it is before routing). Runs in the analysis venv (needs shapely): kicad_env.sh sets $PY.
@@ -17,6 +17,9 @@ What it does for you (each one was a real DRC failure on a hand-written router):
 - Every new track segment is checked against other-net copper on its layer and the board edge; problems are logged
   as VIOLATION (the coordinates are yours, so it does not move them) and make the CLI exit 1.
 - Zone fills are not checked (KiCad refills them); DRC (check.sh) stays the authority.
+- Ids are stable: --previous OLD.kicad_pcb (the routed board before regeneration, e.g. `git show HEAD:...`) gives
+  each track, via, zone and keepout the uuid it had there (matched by net + geometry, zones by name); the rest get
+  ids derived from the same keys, so re-running an unchanged plan writes the same bytes.
 
 Library:
   r = Router('pack/board.json')                 # rules: max netclass clearance in board.json, then the .kicad_pro
@@ -28,58 +31,18 @@ Library:
   r.via_field('GND', x0, y0, x1, y1, pitch=1.0) # grid of vias, skipping spots that fail a check
   r.zone(net, layer, pts, prio=10, name='VBUS_IN'); r.rect(net, layer, x0, y0, x1, y1)
   r.keepout(layer, pts, name='AGND_CHG')       # pour-free rule area (tracks, vias, pads still allowed)
-  r.sexpr()                                     # text to insert at the board's top level
+  r.add_to(board)                               # write everything onto a kicad_sexpr Board (then board.save())
 """
-import argparse, fnmatch, importlib.util, json, math, os, re, sys, uuid
+import argparse, fnmatch, importlib.util, json, math, os, sys
 from shapely.geometry import Point, LineString, Polygon
 from shapely.ops import unary_union
 
-
-def kstr(s):
-    return '"' + str(s).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kicad_sexpr import Board  # noqa: E402
 
 
 def _r(v):
     return round(float(v), 4)
-
-
-# ------------------------------------------------------------------ s-expression writers (one per object type)
-
-def segment_sexpr(t):
-    return ('\t(segment\n\t\t(start %s %s)\n\t\t(end %s %s)\n\t\t(width %s)\n\t\t(layer %s)\n\t\t(net %s)\n'
-            '\t\t(uuid "%s")\n\t)\n') % (t['a'][0], t['a'][1], t['b'][0], t['b'][1], t['w'], kstr(t['layer']),
-                                        kstr(t['net']), uuid.uuid4())
-
-
-def via_sexpr(v):
-    return ('\t(via\n\t\t(at %s %s)\n\t\t(size %s)\n\t\t(drill %s)\n\t\t(layers "F.Cu" "B.Cu")\n\t\t(free yes)\n'
-            '\t\t(net %s)\n\t\t(uuid "%s")\n\t)\n') % (v['at'][0], v['at'][1], v['size'], v['drill'], kstr(v['net']),
-                                                      uuid.uuid4())
-
-
-def _pts_sexpr(pts):
-    return ' '.join('(xy %s %s)' % p for p in pts)
-
-
-def zone_sexpr(z):
-    conn = ('(connect_pads yes\n\t\t\t(clearance %s)\n\t\t)' if z['solid'] else
-            '(connect_pads\n\t\t\t(clearance %s)\n\t\t)') % z['clearance']
-    return ('\t(zone\n\t\t(net %s)\n\t\t(layer %s)\n\t\t(uuid "%s")\n%s\t\t(hatch edge 0.5)\n\t\t(priority %d)\n'
-            '\t\t%s\n\t\t(min_thickness %s)\n\t\t(filled_areas_thickness no)\n'
-            '\t\t(fill yes\n\t\t\t(thermal_gap %s)\n\t\t\t(thermal_bridge_width %s)\n\t\t\t(island_removal_mode 0)\n\t\t)\n'
-            '\t\t(polygon\n\t\t\t(pts\n\t\t\t\t%s\n\t\t\t)\n\t\t)\n\t)\n') % (
-        kstr(z['net']), kstr(z['layer']), uuid.uuid4(), '\t\t(name %s)\n' % kstr(z['name']) if z['name'] else '',
-        z['prio'], conn, z['min_thick'], z['thermal_gap'], z['thermal_bridge'], _pts_sexpr(z['pts']))
-
-
-def keepout_sexpr(k):
-    allow = lambda what: 'not_allowed' if what in k['forbid'] else 'allowed'
-    return ('\t(zone\n\t\t(layers %s)\n\t\t(uuid "%s")\n%s\t\t(hatch edge 0.5)\n'
-            '\t\t(connect_pads\n\t\t\t(clearance 0)\n\t\t)\n\t\t(min_thickness 0.25)\n'
-            '\t\t(keepout\n\t\t\t(tracks %s)\n\t\t\t(vias %s)\n\t\t\t(pads %s)\n\t\t\t(copperpour %s)\n'
-            '\t\t\t(footprints %s)\n\t\t)\n\t\t(polygon\n\t\t\t(pts\n\t\t\t\t%s\n\t\t\t)\n\t\t)\n\t)\n') % (
-        ' '.join(kstr(l) for l in k['layers']), uuid.uuid4(), '\t\t(name %s)\n' % kstr(k['name']) if k['name'] else '',
-        allow('tracks'), allow('vias'), allow('pads'), allow('copperpour'), allow('footprints'), _pts_sexpr(k['pts']))
 
 
 # ------------------------------------------------------------------ rules
@@ -346,9 +309,21 @@ class Router:
         self.keepouts.append(dict(layers=layers, pts=[(_r(x), _r(y)) for x, y in pts], name=name, forbid=set(forbid)))
 
     # -------------------------------------------------------------- output
-    def sexpr(self):
-        return ''.join([segment_sexpr(t) for t in self.tracks] + [via_sexpr(v) for v in self.vias] +
-                       [zone_sexpr(z) for z in self.zones] + [keepout_sexpr(k) for k in self.keepouts])
+    def add_to(self, board):
+        """Write the tracks, vias, zones and keepouts onto a kicad_sexpr Board (vias are free: they keep their net)."""
+        for tr in self.tracks:
+            board.segment(tr['a'], tr['b'], tr['w'], tr['layer'], tr['net'])
+        for v in self.vias:
+            board.via(v['at'], v['size'], v['drill'], v['net'], free=True)
+        for z in self.zones:
+            board.zone(z['net'], z['layer'], z['pts'], priority=z['prio'], name=z['name'], clearance=z['clearance'],
+                       min_thickness=z['min_thick'], connect_pads='yes' if z['solid'] else None,
+                       thermal_gap=z['thermal_gap'], thermal_bridge_width=z['thermal_bridge'])
+        for k in self.keepouts:
+            board.rule_area(k['layers'], k['pts'], name=k['name'], tracks='tracks' not in k['forbid'],
+                            vias='vias' not in k['forbid'], pads='pads' not in k['forbid'],
+                            copperpour='copperpour' not in k['forbid'], footprints='footprints' not in k['forbid'])
+        return board
 
     def summary(self):
         return ('%d segments, %d vias, %d zones, %d keepouts; %d track violations, %d rejected vias '
@@ -357,13 +332,13 @@ class Router:
             self.clearance, self.hole_to_hole, self.edge_clearance)
 
 
-def insert_routes(board_text, routes, append=False):
-    """Insert routing text at the board's top level (before the final ')')."""
-    if not append and re.search(r'\n\t\((segment|via|zone)\n', board_text):
+def insert_routes(board, router, append=False):
+    """Add the router's items to a kicad_sexpr Board; refuses a board that already has top-level tracks, vias or
+    zones unless append=True."""
+    if not append and any(board.items(h) for h in ('segment', 'via', 'zone')):
         raise SystemExit('the board already has top-level tracks, vias or zones: regenerate it from its unrouted base '
                          '(the plan is the record), or pass --append to add to it')
-    i = board_text.rstrip().rfind(')')
-    return board_text[:i] + routes + board_text[i:]
+    return router.add_to(board)
 
 
 def _load_plan(path):
@@ -380,6 +355,7 @@ def main():
     c = sub.add_parser('check'); c.add_argument('board_json'); c.add_argument('plan')
     a = sub.add_parser('apply'); a.add_argument('pcb'); a.add_argument('board_json'); a.add_argument('plan')
     a.add_argument('-o', '--out'); a.add_argument('--append', action='store_true')
+    a.add_argument('--previous', help='routed board whose track / via / zone ids to keep')
     for p in (c, a):
         p.add_argument('--clearance', type=float); p.add_argument('--hole-to-hole', type=float)
         p.add_argument('--edge-clearance', type=float)
@@ -391,8 +367,15 @@ def main():
     print(r.summary())
     if args.cmd == 'apply':
         out = args.out or args.pcb
-        t = insert_routes(open(args.pcb).read(), r.sexpr(), args.append)
-        open(out, 'w').write(t)
+        board = Board.load(args.pcb)
+        if args.previous:
+            ids = board.reuse_ids(args.previous)
+            if ids.ambiguous:
+                print('note: %d keys occur more than once in %s (matched in file order), e.g. %s' % (
+                    len(ids.ambiguous), args.previous, ids.ambiguous[:3]))
+        insert_routes(board, r, args.append).save(out)
+        if args.previous:
+            print('%d ids kept from %s' % (board.uuids.reused, args.previous))
         print('wrote', out)
     sys.exit(1 if r.violations or r.rejected else 0)
 

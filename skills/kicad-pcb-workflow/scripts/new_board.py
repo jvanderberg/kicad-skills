@@ -1,33 +1,35 @@
 #!/usr/bin/env python3
 """Build a .kicad_pcb from a schematic's netlist: footprints, symbol links, pad nets, fields, outline, placement.
 
-Run with KiCad's bundled python (it has pcbnew; kicad_env.sh sets $KICAD_PYTHON):
-  $KICAD_PYTHON new_board.py NETLIST.xml OUT.kicad_pcb [--layers 4] [--outline 50x40] [--origin 100,100]
+Plain python 3 (no pcbnew needed; $KICAD_PYTHON works too):
+  python3 new_board.py NETLIST.xml OUT.kicad_pcb [--layers 4] [--outline 50x40] [--origin 100,100]
         [--corner-r 1] [--placement place.json] [--labels labels.json] [--refs silk|fab|hidden] [--project-dir DIR]
 
 KiCad has no command-line "update PCB from schematic". This does what that does for a NEW board, from
-`kicad-cli sch export netlist --format kicadxml`:
-- loads each footprint from the project's fp-lib-table (${KIPRJMOD}) or KiCad's global table / library directory,
-  with the cast, Duplicate() and SetFPID() that pcbnew-api.md's failure table requires;
+`kicad-cli sch export netlist --format kicadxml`, writing every item through kicad_sexpr (Board.add_footprint places
+and flips footprints the way pcbnew does, checked item by item against pcbnew in kicad_sexpr's tests):
+- loads each footprint from the project's fp-lib-table (${KIPRJMOD}) or KiCad's global table / library directory;
 - sets reference, value, the symbol link (sheet path + symbol uuid, so schematic parity works) and every pad's net,
-  escaping "/" as {slash} in auto-generated net names;
-- writes the board, then adds every other schematic field (LCSC, MPN, ...) as a hidden footprint property, as text
-  (SetField would put visible text on F.SilkS);
+  escaping "/" as {slash} in auto-generated net names (kicad_sexpr.board_net_name);
+- adds every other schematic field (LCSC, MPN, ...) as a hidden footprint property (an existing library property of
+  the same name gets the value);
 - --placement JSON {"REF": [x, y, rot] or [x, y, rot, "B"]} in mm relative to --origin (the outline's top-left);
   unplaced parts are staged in a grid to the right of the outline;
 - --outline WxH draws Edge.Cuts (rounded corners with --corner-r);
 - --labels JSON {"REF": ["TEXT", dx, dy] or ["TEXT", dx, dy, rot]} puts a function label next to a footprint on
   F.SilkS and, mirrored, on B.SilkS (solder pads and connectors: say what each one is, see layout-rules.md);
-- --refs: where references go (silk = KiCad default; fab = only on F.Fab for a dense assembled board; hidden).
+- --refs: where references go (silk = KiCad default; fab = only on F.Fab for a dense assembled board; hidden);
+- writes a minimal .kicad_pro next to OUT if there is none (KiCad fills in its defaults; board_setup.py edits it);
+- keeps ids stable: every footprint (and item in it) keeps the uuid it had in --previous (default: OUT, if it
+  exists), matched by reference; new parts get ids derived from their reference, so an unchanged design regenerates
+  byte-identical. --previous none starts from scratch (still deterministic).
 Then: board_setup.py (stackup, rules, net classes), placement, routing (router.py), check.sh.
 Regenerating overwrites OUT: GUI edits made since are lost unless folded into the placement file first.
 """
-import argparse, json, math, os, re, sys, xml.etree.ElementTree as ET
-import uuid
+import argparse, json, os, re, sys, xml.etree.ElementTree as ET
 
-import pcbnew
-
-MM = pcbnew.FromMM
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kicad_sexpr import Board, Project, board_net_name, load  # noqa: E402
 
 
 # ------------------------------------------------------------------ libraries
@@ -52,83 +54,29 @@ def global_fp_table():
 
 
 def read_fp_table(path, prjdir):
+    """{nickname: library directory} from an fp-lib-table, with ${VAR} expanded (KIPRJMOD = prjdir)."""
     libs = {}
     if not path or not os.path.exists(path):
         return libs
     env = dict(os.environ, KIPRJMOD=prjdir)
     env.setdefault('KICAD10_FOOTPRINT_DIR', kicad_fp_dir()); env.setdefault('KICAD9_FOOTPRINT_DIR', kicad_fp_dir())
-    for name, uri in re.findall(r'\(lib\s+\(name\s+"?([^")]+)"?\)\s*\(type\s+"?[^")]+"?\)\s*\(uri\s+"?([^")]+)"?\)', open(path).read()):
-        libs[name] = re.sub(r'\$\{(\w+)\}', lambda m: env.get(m.group(1), m.group(0)), uri)
+    for lib in load(path).nodes('lib'):
+        name, uri = lib.get('name'), lib.get('uri')
+        if name is not None and uri is not None:
+            libs[str(name)] = re.sub(r'\$\{(\w+)\}', lambda m: env.get(m.group(1), m.group(0)), str(uri))
     return libs
-
-
-# ------------------------------------------------------------------ text pass (s-expression writers)
-
-def kstr(s):
-    return '"' + str(s).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
-
-
-def hidden_property_sexpr(key, value):
-    return ('\t\t(property %s %s\n\t\t\t(at 0 0 0)\n\t\t\t(layer "F.Fab")\n\t\t\t(hide yes)\n\t\t\t(uuid "%s")\n'
-            '\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1 1)\n\t\t\t\t\t(thickness 0.15)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n') % (
-        kstr(key), kstr(value), uuid.uuid4())
-
-
-def add_fields(t, fields):
-    """fields {ref: {name: value}}: set existing footprint properties' values, add the rest as hidden properties."""
-    n = 0
-    starts = [m.start() for m in re.finditer(r'\n\t\(footprint "', t)] + [len(t)]
-    out, pos = [], 0
-    for s, e in zip(starts, starts[1:]):
-        seg = t[s:e]
-        m = re.search(r'\(property "Reference" "((?:\\.|[^"\\])*)"', seg)
-        ref = m.group(1) if m else None
-        if ref in fields:
-            add = ''
-            for k, v in fields[ref].items():
-                pat = re.compile(r'\(property %s "(?:\\.|[^"\\])*"' % re.escape(kstr(k)))
-                if pat.search(seg):
-                    seg = pat.sub(lambda _m: '(property %s %s' % (kstr(k), kstr(v)), seg, count=1)
-                else:
-                    add += hidden_property_sexpr(k, v)
-                n += 1
-            i = seg.index('\t\t(property "Reference"')
-            seg = seg[:i] + add + seg[i:]
-        out.append(t[pos:s]); out.append(seg); pos = e
-    out.append(t[pos:])
-    return ''.join(out), n
 
 
 # ------------------------------------------------------------------ board
 
-def board_text_item(b, text, layer, x, y, rot=0, mirror=False, size=1.0):
-    t = pcbnew.PCB_TEXT(b)
-    t.SetText(text); t.SetLayer(layer); t.SetMirrored(mirror)
-    t.SetTextSize(pcbnew.VECTOR2I(MM(size), MM(size))); t.SetTextThickness(MM(0.15))
-    t.SetPosition(pcbnew.VECTOR2I(MM(x), MM(y)))
-    if rot:
-        t.SetTextAngle(pcbnew.EDA_ANGLE(rot, pcbnew.DEGREES_T))
-    b.Add(t)
-
-
-def outline(b, x0, y0, w, h, r):
-    def seg(a, c):
-        s = pcbnew.PCB_SHAPE(b); s.SetShape(pcbnew.SHAPE_T_SEGMENT)
-        s.SetStart(pcbnew.VECTOR2I(MM(a[0]), MM(a[1]))); s.SetEnd(pcbnew.VECTOR2I(MM(c[0]), MM(c[1])))
-        s.SetLayer(pcbnew.Edge_Cuts); s.SetWidth(MM(0.1)); b.Add(s)
-    if r <= 0:
-        pts = [(x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h)]
-        for i in range(4):
-            seg(pts[i], pts[(i + 1) % 4])
-        return
-    seg((x0 + r, y0), (x0 + w - r, y0)); seg((x0 + w, y0 + r), (x0 + w, y0 + h - r))
-    seg((x0 + w - r, y0 + h), (x0 + r, y0 + h)); seg((x0, y0 + h - r), (x0, y0 + r))
-    for cx, cy, sa in ((x0 + w - r, y0 + r, 270), (x0 + w - r, y0 + h - r, 0), (x0 + r, y0 + h - r, 90), (x0 + r, y0 + r, 180)):
-        s = pcbnew.PCB_SHAPE(b); s.SetShape(pcbnew.SHAPE_T_ARC)
-        s.SetCenter(pcbnew.VECTOR2I(MM(cx), MM(cy)))
-        s.SetStart(pcbnew.VECTOR2I(MM(cx + r * math.cos(math.radians(sa))), MM(cy + r * math.sin(math.radians(sa)))))
-        s.SetArcAngleAndEnd(pcbnew.EDA_ANGLE(90, pcbnew.DEGREES_T))
-        s.SetLayer(pcbnew.Edge_Cuts); s.SetWidth(MM(0.1)); b.Add(s)
+def show_fab_reference(fp):
+    """Make the footprint's F.Fab "${REFERENCE}" text visible (what pcbnew's SetVisible(True) does)."""
+    for txt in fp.node.nodes('fp_text'):
+        if str(txt[2]) == '${REFERENCE}' and str(txt.get('layer')) == 'F.Fab':
+            txt.remove_all('hide')
+            eff = txt.find('effects')
+            if eff is not None:
+                eff.remove_all('hide')
 
 
 def natkey(s):
@@ -142,6 +90,7 @@ def main():
     ap.add_argument('--corner-r', type=float, default=0.0)
     ap.add_argument('--placement'); ap.add_argument('--labels'); ap.add_argument('--refs', default='silk', choices=['silk', 'fab', 'hidden'])
     ap.add_argument('--project-dir', help='where fp-lib-table and ${KIPRJMOD} point (default: the output directory)')
+    ap.add_argument('--previous', help='board whose item ids to keep (default: OUT if it exists; "none" = none)')
     a = ap.parse_args()
     prj = os.path.abspath(a.project_dir or os.path.dirname(os.path.abspath(a.out)))
     libs = read_fp_table(global_fp_table(), prj)
@@ -151,7 +100,7 @@ def main():
     labels = json.load(open(a.labels)) if a.labels else {}
 
     root = ET.parse(a.netlist).getroot()
-    comps, fields, missing = [], {}, []
+    comps, missing = [], []
     for c in root.find('components'):
         ref, fp = c.get('ref'), c.findtext('footprint') or ''
         if not fp:
@@ -161,71 +110,65 @@ def main():
         path = (sp.get('tstamps') if sp is not None else '/') + (c.findtext('tstamps') or '').strip()
         f = {e.get('name'): (e.text or '') for e in (c.find('fields') or [])}
         f = {k: v for k, v in f.items() if k not in ('Reference', 'Value', 'Footprint')}
-        if f:
-            fields[ref] = f
-        comps.append(dict(ref=ref, value=c.findtext('value') or '', fp=fp, path=path))
-    pins = {(n.get('ref'), n.get('pin')): net.get('name') for net in root.find('nets') for n in net.findall('node')}
+        comps.append(dict(ref=ref, value=c.findtext('value') or '', fp=fp, path=path, fields=f))
+    pins = {(n.get('ref'), n.get('pin')): board_net_name(net.get('name'))
+            for net in root.find('nets') for n in net.findall('node')}
 
-    b = pcbnew.CreateEmptyBoard()
-    b.SetCopperLayerCount(a.layers)
-    nets = {}
-
-    def net(name):
-        if name.startswith(('Net-(', 'unconnected-(')):
-            name = name.replace('/', '{slash}')       # how KiCad stores "/" in auto-generated net names
-        if name not in nets:
-            nets[name] = pcbnew.NETINFO_ITEM(b, name)
-            b.Add(nets[name])
-        return nets[name]
-
+    previous = a.previous if a.previous is not None else (a.out if os.path.exists(a.out) else 'none')
+    b = Board.new(copper_layers=a.layers)
+    if previous != 'none':
+        ids = b.reuse_ids(previous)
+        if ids.ambiguous:
+            print('note: %d ids in %s have ambiguous keys (matched in file order): %s' % (
+                len(ids.ambiguous), previous, ', '.join(ids.ambiguous[:5])))
+    nets, nfields = set(), 0
     w, h = map(float, a.outline.lower().split('x')) if a.outline else (0.0, 0.0)
     staged = 0
     for c in sorted(comps, key=lambda c: natkey(c['ref'])):
         lib, name = c['fp'].split(':', 1)
         if lib not in libs:
             sys.exit('%s: footprint library "%s" is in neither the project nor the global fp-lib-table' % (c['ref'], lib))
-        f = pcbnew.Cast_to_FOOTPRINT(pcbnew.FootprintLoad(libs[lib], name).Duplicate(False))
-        f.SetFPID(pcbnew.LIB_ID(lib, name))
-        f.SetReference(c['ref']); f.SetValue(c['value'])
-        f.SetPath(pcbnew.KIID_PATH(c['path']))
-        b.Add(f)
+        src = os.path.join(libs[lib], name + '.kicad_mod')
+        if not os.path.exists(src):
+            sys.exit('%s: footprint %s not found (%s)' % (c['ref'], c['fp'], src))
         pl = place.get(c['ref'])
         if pl:
-            if len(pl) > 3 and pl[3] == 'B':
-                f.Flip(f.GetPosition(), pcbnew.FLIP_DIRECTION_TOP_BOTTOM)
-            f.SetPosition(pcbnew.VECTOR2I(MM(ox + pl[0]), MM(oy + pl[1])))
-            f.SetOrientationDegrees(pl[2] if len(pl) > 2 else 0)
+            at, rot, side = (ox + pl[0], oy + pl[1]), (pl[2] if len(pl) > 2 else 0), ('B' if len(pl) > 3 and pl[3] == 'B' else 'F')
         else:
             col, row = divmod(staged, 12)
-            f.SetPosition(pcbnew.VECTOR2I(MM(ox + w + 15 + col * 10), MM(oy + row * 8)))
+            at, rot, side = (ox + w + 15 + col * 10, oy + row * 8), 0, 'F'
             staged += 1
-        for p in f.Pads():
-            n = pins.get((c['ref'], p.GetNumber()))
+        fp = b.add_footprint(src, c['fp'], c['ref'], c['value'], at, rot, side, path=c['path'], fields=c['fields'])
+        nfields += len(c['fields'])
+        pad_nums = {str(p[1]) for p in fp.pads()}
+        for num in sorted(pad_nums):
+            n = pins.get((c['ref'], num))
             if n:
-                p.SetNet(net(n))
+                fp.set_pad_net(num, n)
+                nets.add(n)
         if a.refs != 'silk':
-            f.Reference().SetVisible(False)
+            fp.set_field('Reference', c['ref'], hide=True)
             if a.refs == 'fab':
-                for item in f.GraphicalItems():
-                    if isinstance(item, pcbnew.PCB_TEXT) and item.GetText() == '${REFERENCE}' and item.GetLayer() == pcbnew.F_Fab:
-                        item.SetVisible(True)
+                show_fab_reference(fp)
     for ref, spec in labels.items():
-        f = b.FindFootprintByReference(ref)
-        if f is None:
+        try:
+            fp = b.footprint(ref)
+        except KeyError:
             sys.exit('--labels: no footprint %s' % ref)
         text, dx, dy = spec[0], spec[1], spec[2]
         rot = spec[3] if len(spec) > 3 else 0
-        f.Reference().SetVisible(False)
-        x, y = pcbnew.ToMM(f.GetPosition().x) + dx, pcbnew.ToMM(f.GetPosition().y) + dy
-        board_text_item(b, text, pcbnew.F_SilkS, x, y, rot)
-        board_text_item(b, text, pcbnew.B_SilkS, x, y, rot, mirror=True)
+        fp.set_field('Reference', ref, hide=True)
+        x, y = fp.at[0] + dx, fp.at[1] + dy
+        b.gr_text(text, (x, y), 'F.SilkS', size=1.0, thickness=0.15, angle=rot)
+        b.gr_text(text, (x, y), 'B.SilkS', size=1.0, thickness=0.15, angle=rot)    # mirrored: B.* layer
     if a.outline:
-        outline(b, ox, oy, w, h, a.corner_r)
-    pcbnew.SaveBoard(a.out, b)
-    t, n = add_fields(open(a.out, encoding='utf-8').read(), fields)
-    open(a.out, 'w', encoding='utf-8').write(t)
-    print('wrote %s: %d footprints (%d placed, %d staged), %d nets, %d fields%s' % (
-        a.out, len(comps), len(comps) - staged, staged, len(nets), n,
+        b.outline_rect(ox, oy, w, h, corner_radius=a.corner_r, width=0.1)
+    b.save(a.out)
+    pro = os.path.splitext(a.out)[0] + '.kicad_pro'
+    if not os.path.exists(pro):
+        Project.new(pro).save()
+    print('wrote %s: %d footprints (%d placed, %d staged), %d nets, %d fields, %d ids kept%s' % (
+        a.out, len(comps), len(comps) - staged, staged, len(nets), nfields, b.uuids.reused,
         '; no footprint assigned: ' + ' '.join(missing) if missing else ''))
 
 
