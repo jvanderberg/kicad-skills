@@ -1,16 +1,19 @@
 # KiCad file format: what you need to edit it safely (KiCad 9/10)
 
-Files are s-expressions, tab-indented, one token group per line. `scripts/sexp.py` has `block()` (balanced block that
-respects quoted strings), `blocks()`, `find_ref()`, `kstr()` and a `check` command. Always edit the text with a script
-that asserts each anchor matched exactly once.
+Files are s-expressions, tab-indented, one token group per line. **Read and write them through
+`scripts/kicad_sexpr`** (see its README): it parses any KiCad file into a lossless tree, writes KiCad's own layout,
+escapes strings, creates unique uuids and has builders for the common items, so generators never format text.
+This page explains what is in the files and the rules the layer enforces; the syntax snippets below are for
+reading files and checking output, not templates to paste. `scripts/sexp.py check` still checks any file (balance,
+raw newlines in strings, duplicate uuids).
 
 ## Strings
 
 - **Never put a raw newline in a quoted string.** Write `\n` as the two characters backslash-n. A raw newline in a
   schematic text or property makes KiCad silently drop every item after it in that sheet - no error; ERC still runs;
-  the symbols simply vanish from the netlist. Use `kstr()`; with `re.sub`, pass the replacement as a function
-  (`lambda m: new`) so `\n` in it is not turned into a newline. `sexp.py check` finds these.
-- Escape `"` and `\` inside strings. A board text ending in `\n` doubles its bounding box (silk overlap warnings).
+  the symbols simply vanish from the netlist. kicad_sexpr's writer does this escaping (and `"` / `\`) for every
+  string, so pass plain Python strings and never pre-escape. `sexp.py check` finds raw newlines in any file.
+- A board text ending in a newline doubles its bounding box (silk overlap warnings).
 
 ## Board (`.kicad_pcb`)
 
