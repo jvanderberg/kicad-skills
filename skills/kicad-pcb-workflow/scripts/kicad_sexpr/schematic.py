@@ -9,11 +9,12 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from .common import (SCH_VERSION, Point, Uuids, duplicate_uuids, font_effects, header, norm_angle, rotate, stroke)
+from .common import (SCH_VERSION, IdMap, Point, Uuids, duplicate_uuids, font_effects, header, norm_angle, pt_key,
+                     rotate, stroke)
 from .sexp import Node, Sym, load, save
 from .symbol_lib import Pin, SymbolLibrary, pins_of
 
-__all__ = ['Schematic', 'SchSymbol', 'symbol_point']
+__all__ = ['Schematic', 'SchSymbol', 'symbol_point', 'sch_ids', 'sch_item_key']
 
 # KiCad writes top-level schematic items grouped in this order; new items are inserted next to their kind.
 _ORDER = ['version', 'generator', 'generator_version', 'uuid', 'paper', 'title_block', 'lib_symbols', 'bus_alias',
@@ -39,6 +40,57 @@ def symbol_point(lx: float, ly: float, at: Point, angle: float = 0, mirror: Opti
     elif mirror is not None:
         raise ValueError("mirror must be None, 'x' or 'y'")
     return _sch_round(at[0] + vx), _sch_round(at[1] + vy)
+
+
+# -------------------------------------------------------------------- stable item keys (for uuids)
+
+def _xy(n: Node) -> Point:
+    a = n.need('at')
+    return a.number(1), a.number(2)
+
+
+def sch_item_key(n: Node) -> Optional[str]:
+    """Stable name of a top-level schematic item: ``symbol/R1/1`` (power and other '#' symbols by lib id and
+    position, since their references are renumbered freely), ``wire/<ends>``, ``junction/<at>``, ``label/NAME/<at>``,
+    ``text/TEXT/<at>``, ``sheet/NAME``; None for kinds no builder makes."""
+    h = n.head
+    if h == 'symbol':
+        ref = next((str(p[2]) for p in n.nodes('property') if p[1] == 'Reference'), '')
+        if ref.startswith('#') or not ref:
+            return 'symbol/%s@%s' % (n.get('lib_id'), pt_key(_xy(n)))
+        return 'symbol/%s/%s' % (ref, n.get('unit', 1))
+    if h in ('wire', 'bus', 'polyline'):
+        pts = n.find('pts')
+        return '%s/%s' % (h, pt_key(*[(x.number(1), x.number(2)) for x in pts.nodes('xy')] if pts is not None else []))
+    if h in ('junction', 'no_connect'):
+        return '%s/%s' % (h, pt_key(_xy(n)))
+    if h in ('label', 'global_label', 'hierarchical_label', 'text'):
+        return '%s/%s/%s' % (h, n[1], pt_key(_xy(n)))
+    if h == 'sheet':
+        return 'sheet/%s' % next((str(p[2]) for p in n.nodes('property') if p[1] == 'Sheetname'), '')
+    return None
+
+
+def sch_ids(tree: Node) -> IdMap:
+    """{stable key: uuid} for a schematic sheet: the sheet itself, symbols and their pins, wires, junctions, labels,
+    texts, sheets and sheet pins. Give it to ``Schematic.reuse_ids`` / ``Schematic.new(previous=...)``."""
+    m = IdMap()
+    u = tree.find('uuid')
+    if u is not None and len(u) > 1:
+        m.put('sheet-root', str(u[1]))
+    for n in tree.nodes():
+        k = sch_item_key(n)
+        if k is None:
+            continue
+        u = n.find('uuid')
+        if u is not None and len(u) > 1:
+            m.put(k, str(u[1]))
+        if n.head in ('symbol', 'sheet'):
+            for pin in n.nodes('pin'):
+                pu = pin.find('uuid')
+                if pu is not None and len(pu) > 1:
+                    m.put('%s/pin/%s' % (k, pin[1]), str(pu[1]))
+    return m
 
 
 class SchSymbol:
@@ -187,7 +239,7 @@ class Schematic:
             raise ValueError('not a schematic: %s' % tree[0])
         self.tree = tree
         self.path = path
-        self.uuids = Uuids()
+        self.uuids = Uuids(seed='kicad_sch:%s' % tree.get('uuid'))     # stable ids: see reuse_ids()
         self.uuids.scan(tree)
         self.project = project or self._guess_project()
         # instance path of this sheet: "/<root uuid>" for a root sheet, "/<root uuid>/<sheet uuid>" for a sub-sheet
@@ -198,12 +250,16 @@ class Schematic:
     @classmethod
     def new(cls, project: str, paper: str = 'A4', title: str = '', date: str = '', rev: str = '',
             company: str = '', comments: Sequence[str] = (), instance_path: Optional[str] = None,
-            root: bool = True) -> 'Schematic':
+            root: bool = True, previous: Optional[Union[str, Node, 'Schematic']] = None) -> 'Schematic':
         """An empty sheet. ``project`` is the project name used in symbol instances (the .kicad_pro stem).
-        Sub-sheets (root=False) need ``instance_path`` = "/<root sheet uuid>/<sheet block uuid>"."""
+        Sub-sheets (root=False) need ``instance_path`` = "/<root sheet uuid>/<sheet block uuid>".
+        ``previous``: an earlier version of this sheet whose ids are reused (see reuse_ids); otherwise ids are derived
+        from the project name and each item's key, so regenerating gives the same file."""
         t = header('kicad_sch', SCH_VERSION, 'eeschema')
-        u = Uuids()
-        t.append(Node('uuid', u.new()))
+        u = Uuids(seed='kicad_sch:%s:%s' % (project, instance_path if not root and instance_path else 'root'))
+        if previous is not None:
+            u.reuse = sch_ids(cls._tree_of(previous))
+        t.append(Node('uuid', u.new('sheet-root')))
         t.append(Node('paper', paper))
         if title or date or rev or company or comments:
             tb = Node('title_block')
@@ -220,6 +276,24 @@ class Schematic:
         s = cls(t, None, project, instance_path)
         s.uuids = u
         return s
+
+    @staticmethod
+    def _tree_of(source: Union[str, Node, 'Schematic']) -> Node:
+        return source.tree if isinstance(source, Schematic) else load(source) if isinstance(source, str) else source
+
+    def reuse_ids(self, previous: Union[str, Node, 'Schematic']) -> IdMap:
+        """Take the ids of a previous version of this sheet (path, tree or Schematic): every item a builder makes
+        from now on whose stable key (sch_item_key) matches an item there gets that item's uuid -- symbols keep their
+        ids by reference, so board footprints linked to them stay linked. Returns the map (``.ambiguous`` lists keys
+        that occurred more than once)."""
+        m = sch_ids(self._tree_of(previous))
+        self.uuids.reuse = m
+        return m
+
+    def _fill_uuid(self, n: Node, key: Optional[str] = None) -> Node:
+        u = n.need('uuid')
+        u[1] = self.uuids.new(key or sch_item_key(n))
+        return n
 
     @classmethod
     def load(cls, path: str, project: Optional[str] = None, instance_path: Optional[str] = None) -> 'Schematic':
@@ -274,7 +348,11 @@ class Schematic:
 
     # ---------------------------------------------------------------- generic
     def add(self, node: Node) -> Node:
-        """Insert any top-level item next to the items of its kind (KiCad's grouping)."""
+        """Insert any top-level item next to the items of its kind (KiCad's grouping). A placeholder
+        ``(uuid "")`` gets the item's stable id."""
+        u = node.find('uuid')
+        if u is not None and len(u) > 1 and u[1] == '':
+            self._fill_uuid(node)
         head = node.head
         kids = [(i, c) for i, c in enumerate(self.tree) if i > 0 and isinstance(c, Node)]
         same = [i for i, c in kids if c.head == head]
@@ -347,10 +425,20 @@ class Schematic:
                    footprint: Optional[str] = None, datasheet: Optional[str] = None,
                    description: Optional[str] = None, fields: Optional[Dict[str, str]] = None,
                    lib: Optional[Union[Node, SymbolLibrary]] = None, in_bom: bool = True, on_board: bool = True,
-                   dnp: bool = False, exclude_from_sim: bool = False, in_pos_files: bool = True) -> SchSymbol:
+                   dnp: bool = False, exclude_from_sim: bool = False, in_pos_files: bool = True,
+                   lib_fields: Optional[Sequence[str]] = None, key: Optional[str] = None,
+                   uuid: Optional[str] = None) -> SchSymbol:
         """Place a symbol. Its library symbol must be embedded already, or given as ``lib``. Fields start where the
         library puts them (offsets rotated/mirrored with the symbol, text angles as in the library); extra
-        ``fields`` are added hidden. Move or show fields afterwards with ``SchSymbol.set_field``."""
+        ``fields`` are added hidden. Move or show fields afterwards with ``SchSymbol.set_field``.
+
+        ``lib_fields``: which library properties the instance copies (default: all of them, as KiCad does when it
+        places a symbol). A generator that decides the field set itself passes e.g. ('Reference', 'Value',
+        'Footprint', 'Datasheet'); Reference and Value are always written, and Footprint / Datasheet / Description
+        are written whenever they are given as arguments.
+
+        The symbol's uuid is stable (previous version's id by reference, else derived from ``key``, default
+        ``symbol/REF/UNIT``); ``uuid`` sets it explicitly."""
         if lib is not None:
             self.embed_symbol(lib_id, lib)
         libsym = self.lib_symbol(lib_id)
@@ -360,7 +448,7 @@ class Schematic:
             n.append(Node('mirror', Sym(mirror)))
         n.extend([Node('unit', unit), Node('body_style', body_style), Node('exclude_from_sim', exclude_from_sim),
                   Node('in_bom', in_bom), Node('on_board', on_board), Node('in_pos_files', in_pos_files),
-                  Node('dnp', dnp), Node('uuid', self.uuids.new())])
+                  Node('dnp', dnp), Node('uuid', '')])
         values = {'Reference': ref, 'Value': value}
         for k, v in (('Footprint', footprint), ('Datasheet', datasheet), ('Description', description)):
             if v is not None:
@@ -369,6 +457,9 @@ class Schematic:
         for lp in libsym.nodes('property'):
             name = str(lp[1])
             if name.startswith('ki_'):
+                continue
+            if lib_fields is not None and name not in lib_fields and name not in ('Reference', 'Value') \
+                    and name not in values:
                 continue
             seen.add(name)
             la = lp.need('at')
@@ -395,8 +486,13 @@ class Schematic:
         for pin in pins_of(libsym, unit, body_style):
             if pin.number not in nums:
                 nums.append(pin.number)
+        if uuid:
+            n.need('uuid')[1] = self.uuids.take(uuid)
+        else:
+            self._fill_uuid(n, key)
+        skey = key or sch_item_key(n)
         for num in nums:
-            n.append(Node('pin', num, Node('uuid', self.uuids.new())))
+            n.append(Node('pin', num, Node('uuid', self.uuids.new('%s/pin/%s' % (skey, num)))))
         n.append(Node('instances', Node('project', self.project,
                                         Node('path', self.instance_path, Node('reference', ref), Node('unit', unit)))))
         self.add(n)
@@ -431,7 +527,7 @@ class Schematic:
             if a == b:
                 continue
             out.append(self.add(Node('wire', Node('pts', Node('xy', a[0], a[1]), Node('xy', b[0], b[1])),
-                                     stroke(width), Node('uuid', self.uuids.new()))))
+                                     stroke(width), Node('uuid', ''))))
         return out
 
     def bus(self, *points: Point, width: float = 0) -> List[Node]:
@@ -440,16 +536,16 @@ class Schematic:
         for a, b in zip(pts, pts[1:]):
             if a != b:
                 out.append(self.add(Node('bus', Node('pts', Node('xy', a[0], a[1]), Node('xy', b[0], b[1])),
-                                         stroke(width), Node('uuid', self.uuids.new()))))
+                                         stroke(width), Node('uuid', ''))))
         return out
 
     def junction(self, at: Point, diameter: float = 0) -> Node:
         return self.add(Node('junction', Node('at', _sch_round(at[0]), _sch_round(at[1])), Node('diameter', diameter),
-                             Node('color', 0, 0, 0, 0), Node('uuid', self.uuids.new())))
+                             Node('color', 0, 0, 0, 0), Node('uuid', '')))
 
     def no_connect(self, at: Point) -> Node:
         return self.add(Node('no_connect', Node('at', _sch_round(at[0]), _sch_round(at[1])),
-                             Node('uuid', self.uuids.new())))
+                             Node('uuid', '')))
 
     @staticmethod
     def _label_justify(angle: float) -> str:
@@ -459,7 +555,7 @@ class Schematic:
         """Local net label; its anchor (``at``) is the connection point."""
         return self.add(Node('label', text, Node('at', _sch_round(at[0]), _sch_round(at[1]), norm_angle(angle)),
                              font_effects(size, justify=(self._label_justify(angle), 'bottom')),
-                             Node('uuid', self.uuids.new())))
+                             Node('uuid', '')))
 
     def global_label(self, text: str, at: Point, angle: float = 0, shape: str = 'bidirectional',
                      size: float = 1.27) -> Node:
@@ -467,7 +563,7 @@ class Schematic:
         x, y = _sch_round(at[0]), _sch_round(at[1])
         return self.add(Node('global_label', text, Node('shape', Sym(shape)), Node('at', x, y, norm_angle(angle)),
                              font_effects(size, justify=(self._label_justify(angle),)),
-                             Node('uuid', self.uuids.new()),
+                             Node('uuid', ''),
                              Node('property', 'Intersheetrefs', '${INTERSHEET_REFS}', Node('at', x, y, 0),
                                   Node('hide', True), Node('show_name', False), Node('do_not_autoplace', False),
                                   font_effects(1.27))))
@@ -477,7 +573,7 @@ class Schematic:
         return self.add(Node('hierarchical_label', text, Node('shape', Sym(shape)),
                              Node('at', _sch_round(at[0]), _sch_round(at[1]), norm_angle(angle)),
                              font_effects(size, justify=(self._label_justify(angle),)),
-                             Node('uuid', self.uuids.new())))
+                             Node('uuid', '')))
 
     def text(self, text: str, at: Point, size: float = 1.27, angle: float = 0, bold: bool = False,
              italic: bool = False, justify: Sequence[str] = ('left', 'bottom')) -> Node:
@@ -485,12 +581,12 @@ class Schematic:
         return self.add(Node('text', text, Node('exclude_from_sim', False),
                              Node('at', _sch_round(at[0]), _sch_round(at[1]), norm_angle(angle)),
                              font_effects(size, bold=bold, italic=italic, justify=justify),
-                             Node('uuid', self.uuids.new())))
+                             Node('uuid', '')))
 
     def polyline(self, points: Sequence[Point], width: float = 0, type_: str = 'default') -> Node:
         """Graphic line (no electrical meaning)."""
         return self.add(Node('polyline', Node('pts', *[Node('xy', _sch_round(a), _sch_round(b)) for a, b in points]),
-                             stroke(width, type_), Node('uuid', self.uuids.new())))
+                             stroke(width, type_), Node('uuid', '')))
 
     def sheet(self, name: str, file: str, at: Point, size: Tuple[float, float],
               pins: Sequence[Tuple[str, str, Point, float]] = (), page: str = '2') -> Node:
@@ -499,14 +595,14 @@ class Schematic:
         x, y = _sch_round(at[0]), _sch_round(at[1])
         n = Node('sheet', Node('at', x, y), Node('size', size[0], size[1]), Node('exclude_from_sim', False),
                  Node('in_bom', True), Node('on_board', True), Node('dnp', False), stroke(0.254, 'solid'),
-                 Node('fill', Node('color', 0, 0, 0, 0)), Node('uuid', self.uuids.new()),
+                 Node('fill', Node('color', 0, 0, 0, 0)), Node('uuid', self.uuids.new('sheet/%s' % name)),
                  Node('property', 'Sheetname', name, Node('at', x, _sch_round(y - 2.54), 0), Node('show_name', False),
                       Node('do_not_autoplace', False), font_effects(1.27)),
                  Node('property', 'Sheetfile', file, Node('at', x, _sch_round(y + size[1] + 2.54), 0),
                       Node('show_name', False), Node('do_not_autoplace', False), font_effects(1.27)))
         for pname, shape, (px, py), pangle in pins:
             n.append(Node('pin', pname, Sym(shape), Node('at', _sch_round(px), _sch_round(py), norm_angle(pangle)),
-                          Node('uuid', self.uuids.new()),
+                          Node('uuid', self.uuids.new('sheet/%s/pin/%s' % (name, pname))),
                           font_effects(1.27, justify=('left' if norm_angle(pangle) == 180 else 'right',))))
         n.append(Node('instances', Node('project', self.project,
                                         Node('path', self.instance_path, Node('page', page)))))

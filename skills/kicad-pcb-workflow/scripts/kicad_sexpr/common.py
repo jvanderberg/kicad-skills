@@ -10,7 +10,7 @@ import uuid as _uuid
 from collections import Counter
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-from .sexp import Node, Sym, num
+from .sexp import Node, Sym, fmt_num, num
 
 KICAD_VERSION = '10.0'
 PCB_VERSION = 20260206
@@ -29,26 +29,96 @@ def header(kind: str, version: int, generator: str) -> Node:
 
 # -------------------------------------------------------------------- uuids
 
+# Fixed namespace for derived uuids (uuid5). Never change it: every generated file's ids depend on it.
+UUID_NAMESPACE = _uuid.UUID('6b1f3c1e-6a43-5c0f-9a52-4b6963616473')
+
+
+class IdMap(Dict[str, str]):
+    """{stable key: uuid} read from an existing file, so a regenerated file keeps the ids its items already had
+    (KiCad GUI edits and committed files included). Two items with the same key get ``key``, ``key#2``, ... in file
+    order (the same suffixes the builders use) and the key is listed in ``ambiguous``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ambiguous: List[str] = []
+
+    def put(self, key: str, uuid: str) -> None:
+        k, n = key, 1
+        while k in self:
+            n += 1
+            k = '%s#%d' % (key, n)
+        if n == 2:
+            self.ambiguous.append(key)
+        self[k] = uuid
+
+
 class Uuids:
-    """Fresh uuids that are unique within one document (existing uuids are registered when a file is loaded)."""
+    """uuids that are unique within one document (existing uuids are registered when a file is loaded).
 
-    def __init__(self, existing: Iterable[str] = ()) -> None:
+    With a ``seed`` (what Board and Schematic use) ids are stable: ``new(key)`` takes a key that names the item
+    (``footprint/R1``, ``segment/GND/F.Cu/1,2/3,4``) and returns, in this order,
+    1. the uuid that key had in the previous version of the file (``reuse``, an IdMap; see Board.reuse_ids /
+       Schematic.reuse_ids), so parts keep their ids across regenerations and GUI edits;
+    2. otherwise uuid5 of the seed and the key: regenerating from scratch gives the same ids, and adding an item
+       does not shift anyone else's.
+    A key whose id is already taken gets ``#2``, ``#3``, ... appended: never a duplicate. Calls without a key get
+    ``~anon/<n>`` (deterministic, but shifted by insertions, so builders always pass keys). Without a seed, ids are
+    random (uuid4)."""
+
+    def __init__(self, existing: Iterable[str] = (), seed: Optional[str] = None,
+                 reuse: Optional[Dict[str, str]] = None) -> None:
         self.used: Set[str] = set(existing)
+        self.seed = seed
+        self.reuse: Dict[str, str] = reuse if reuse is not None else {}
+        self.reused = 0
+        self._anon = 0
 
-    def new(self) -> str:
+    def new(self, key: Optional[str] = None) -> str:
+        if self.seed is None:
+            while True:
+                u = str(_uuid.uuid4())
+                if u not in self.used:
+                    self.used.add(u)
+                    return u
+        if key is None:
+            self._anon += 1
+            key = '~anon/%d' % self._anon
+        k, n = key, 1
         while True:
-            u = str(_uuid.uuid4())
-            if u not in self.used:
-                self.used.add(u)
-                return u
+            old = self.reuse.get(k)
+            if old is not None and old not in self.used:
+                self.used.add(old)
+                self.reused += 1
+                return old
+            if old is None:
+                u = str(_uuid.uuid5(UUID_NAMESPACE, self.seed + '\n' + k))
+                if u not in self.used:
+                    self.used.add(u)
+                    return u
+            n += 1
+            k = '%s#%d' % (key, n)
 
-    def node(self) -> Node:
-        return Node('uuid', self.new())
+    def take(self, u: str) -> str:
+        """Register an explicit uuid; raises if the document already uses it."""
+        u = str(_uuid.UUID(u))
+        if u in self.used:
+            raise ValueError('uuid %s is already used in this document' % u)
+        self.used.add(u)
+        return u
+
+    def node(self, key: Optional[str] = None) -> Node:
+        return Node('uuid', self.new(key))
 
     def scan(self, tree: Node) -> None:
         for n in tree.walk('uuid'):
             if len(n) > 1:
                 self.used.add(str(n[1]))
+
+
+def pt_key(*points: Point) -> str:
+    """Stable text for coordinates in a uuid key: '1.27,2.54/3,4', rounded to 1 um so that a position pcbnew stored
+    as 135.349999 matches 135.35 (items closer than that are told apart by the #2 suffix)."""
+    return '/'.join('%s,%s' % (fmt_num(round(x, 3) + 0.0), fmt_num(round(y, 3) + 0.0)) for x, y in points)
 
 
 def duplicate_uuids(tree: Node) -> List[str]:
@@ -57,11 +127,22 @@ def duplicate_uuids(tree: Node) -> List[str]:
     return sorted(u for u, k in c.items() if k > 1)
 
 
-def refresh_uuids(tree: Node, uuids: Uuids) -> None:
-    """Give every ``(uuid ...)`` below ``tree`` a fresh value (for copies of library or existing items)."""
-    for n in tree.walk('uuid'):
-        del n[1:]
-        n.append(uuids.new())
+def refresh_uuids(tree: Node, uuids: Uuids, prefix: str = '') -> None:
+    """Give every ``(uuid ...)`` below ``tree`` a fresh value (for copies of library or existing items), keyed by
+    ``prefix`` and the item's position (head + ordinal path)."""
+    def walk(n: Node, path: str) -> None:
+        seen: Dict[str, int] = {}
+        for c in n[1:]:
+            if not isinstance(c, Node):
+                continue
+            if c.head == 'uuid':
+                del c[1:]
+                c.append(uuids.new(path))
+                continue
+            k = seen.get(c.head, 0)
+            seen[c.head] = k + 1
+            walk(c, '%s/%s[%d]' % (path, c.head, k))
+    walk(tree, prefix)
 
 
 # -------------------------------------------------------------------- strings

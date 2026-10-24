@@ -228,3 +228,56 @@ def test_other_builders_survive_kicad_resave():
     for head in ('via', 'gr_circle', 'gr_rect', 'gr_poly', 'gr_line'):
         assert len(k2.nodes(head)) == len(k.nodes(head)), head
     assert sorted(str(v[1]) for v in k2.nodes('via')) == ['blind', 'micro']
+
+
+def test_stackup_without_loss_tangents():
+    """A manufacturer table without loss tangents: stackup(..., None) leaves them out and KiCad reads its defaults
+    (re-save shows 0 for the mask, 0.02 for the dielectric) with every other value as written."""
+    from kicad_sexpr import stackup as mk
+    d = tmpdir('stackup_nolt')
+    b = Board.new(2)
+    s = mk([0.035, 0.035], [('core', 1.51, 'FR4', 4.6, None)], mask_loss_tangent=None, finish='None')
+    assert not list(s.walk('loss_tangent'))
+    b.set_stackup(s)
+    b.set_thickness(1.6)
+    b.outline_rect(0, 0, 10, 10)
+    p = os.path.join(d, 's.kicad_pcb')
+    b.save(p)
+    resave(p)
+    k = load(p).find('setup').find('stackup')
+    rows = {str(r[1]): r for r in k.nodes('layer')}
+    assert str(rows['dielectric 1'].get('thickness')) == '1.51' and str(rows['dielectric 1'].get('epsilon_r')) == '4.6'
+    assert str(rows['dielectric 1'].get('loss_tangent')) == '0.02' and str(rows['F.Mask'].get('loss_tangent')) == '0'
+    assert str(k.get('copper_finish')) == 'None'
+
+
+def test_fp_rect_courtyard_is_used_by_drc():
+    """A courtyard made with fp_rect: KiCad keeps it (library upgrade) and DRC reports two such footprints
+    overlapping (courtyards_overlap), so it is a real courtyard."""
+    from kicad_sexpr import Uuids, fp_line, fp_rect, save
+    from helpers import cli
+    d = tmpdir('fprect')
+    lib = os.path.join(d, 'T.pretty')
+    os.makedirs(lib)
+    fp = load(_r0402())
+    for n in list(fp.nodes()):
+        if n.get('layer') == 'F.CrtYd':
+            fp.remove_node(n)
+    u = Uuids(seed='kicad_mod:test')
+    fp.insert_before('pad', fp_rect((-1, -0.6), (1, 0.6), 'F.CrtYd', uuids=u))
+    fp.insert_before('pad', fp_line((-0.5, 0.8), (0.5, 0.8), 'F.SilkS', uuids=u))
+    p = os.path.join(lib, 'R_test.kicad_mod')
+    save(fp, p)
+    r = cli('fp', 'upgrade', '--force', lib)
+    assert r.returncode == 0, r.stdout + r.stderr
+    k = load(p)
+    assert len([n for n in k.nodes('fp_rect') if n.get('layer') == 'F.CrtYd']) == 1
+    assert len([n for n in k.nodes('fp_line') if n.get('layer') == 'F.SilkS']) == len(
+        [n for n in fp.nodes('fp_line') if n.get('layer') == 'F.SilkS'])
+    b = Board.new(2)
+    b.add_footprint(p, 'T:R_test', 'R1', '1k', (10, 10), pad_nets={'1': 'A', '2': 'B'})
+    b.add_footprint(p, 'T:R_test', 'R2', '1k', (11.5, 10), pad_nets={'1': 'C', '2': 'D'})
+    b.outline_rect(0, 0, 20, 20)
+    pcb = os.path.join(d, 'c.kicad_pcb')
+    b.save(pcb)
+    assert drc(pcb, refill=False)['violations'].get('courtyards_overlap', 0) >= 1

@@ -74,6 +74,8 @@ def test_assignments_written_as_kicad_writes_them():
     old.assign('VBUS', 'HighCurrent')
     old.assign('GND', 'Power')
     assert old.data['net_settings']['netclass_assignments'] == {'VBUS': ['Power', 'HighCurrent'], 'GND': ['Power']}
+    old.assign('VBUS', 'Signal', replace=True)
+    assert old.assignments() == {'VBUS': ['Signal'], 'GND': ['Power']}
 
 
 def test_list_assignment_is_used_by_kicad_drc():

@@ -123,8 +123,9 @@ class SymbolLibrary:
         return cls(loads(text), nickname)
 
     @classmethod
-    def new(cls, nickname: str = '') -> 'SymbolLibrary':
-        return cls(header('kicad_symbol_lib', SYMBOL_LIB_VERSION, 'kicad_symbol_editor'), nickname)
+    def new(cls, nickname: str = '', generator: str = 'kicad_symbol_editor') -> 'SymbolLibrary':
+        """An empty library. ``generator`` names the program that wrote it (KiCad's own: kicad_symbol_editor)."""
+        return cls(header('kicad_symbol_lib', SYMBOL_LIB_VERSION, generator), nickname)
 
     def _index(self) -> Dict[str, Node]:
         return {str(s[1]): s for s in self.tree.nodes('symbol')}

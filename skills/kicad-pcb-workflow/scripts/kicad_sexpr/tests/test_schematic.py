@@ -186,3 +186,25 @@ def test_bus_and_polyline_survive_kicad_resave():
     t = loads(resave(p))
     assert len(t.nodes('bus')) == 1 and len(t.nodes('polyline')) == 1
     assert str(t.find('polyline').need('stroke').get('type')) == 'dash'
+
+
+def test_add_symbol_lib_fields_limits_the_copied_properties():
+    """lib_fields: a generator that decides the field set itself gets exactly those properties on the instance;
+    the default copies every library property, as KiCad does (kicad-cli's netlist lists Description empty for an
+    instance without one)."""
+    libs = _libs()
+    s = Schematic.new('lf')
+    s.embed_symbol('Device:R', libs['Device'])
+    s.add_symbol('Device:R', 'R1', '1k', (50.8, 50.8), footprint='Resistor_SMD:R_0402_1005Metric')
+    s.add_symbol('Device:R', 'R2', '1k', (63.5, 50.8), footprint='Resistor_SMD:R_0402_1005Metric', datasheet='',
+                 lib_fields=('Reference', 'Value', 'Footprint', 'Datasheet'), fields={'LCSC': 'C11702'})
+    d = tmpdir('libfields')
+    p = os.path.join(d, 'lf.kicad_sch')
+    s.save(p)
+    assert [str(f[1]) for f in s.symbol('R2').node.nodes('property')] == ['Reference', 'Value', 'Footprint',
+                                                                            'Datasheet', 'LCSC']
+    comps = netlist_components(p)
+    assert comps['R1'].get('Description') == 'Resistor'
+    assert comps['R2']['LCSC'] == 'C11702' and comps['R2'].get('Description', '') == ''
+    assert erc(p).get('lib_symbol_mismatch', 0) == 0
+    assert comps['R2']['_footprint'] == 'Resistor_SMD:R_0402_1005Metric'

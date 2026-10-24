@@ -9,12 +9,12 @@ from __future__ import annotations
 import math
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
-from .common import (FOOTPRINT_VERSION, PCB_VERSION, Point, Uuids, duplicate_uuids, font_effects, header,
-                     norm_angle, r6, refresh_uuids, rotate, stroke, xy_list)
+from .common import (FOOTPRINT_VERSION, PCB_VERSION, IdMap, Point, Uuids, duplicate_uuids, font_effects, header,
+                     norm_angle, pt_key, r6, rotate, stroke, xy_list)
 from .sexp import Node, Sym, load, loads, save
 
 __all__ = ['Board', 'Footprint', 'new_footprint', 'load_footprint', 'flip_footprint_data', 'flip_layer', 'StackupLayer',
-           'stackup', 'copper_layer_names']
+           'stackup', 'copper_layer_names', 'fp_line', 'fp_rect', 'board_ids', 'board_item_key', 'fp_item_key']
 
 # Top-level order KiCad writes; new items go next to their kind.
 _ORDER = ['version', 'generator', 'generator_version', 'general', 'paper', 'title_block', 'layers', 'setup',
@@ -96,26 +96,30 @@ class StackupLayer:
         return n
 
 
-def stackup(copper_thickness: Sequence[float], dielectrics: Sequence[Tuple[str, float, str, float, float]],
+def stackup(copper_thickness: Sequence[float],
+            dielectrics: Sequence[Tuple[str, float, str, float, Optional[float]]],
             mask_thickness: float = 0.01, mask_material: str = 'LPI', mask_er: float = 3.8,
-            finish: str = 'ENIG', dielectric_constraints: bool = False) -> Node:
+            finish: str = 'ENIG', dielectric_constraints: bool = False,
+            mask_loss_tangent: Optional[float] = 0) -> Node:
     """``(stackup ...)`` for an n-layer board: silk, paste, mask, copper/dielectric pairs, mask, paste, silk.
 
     copper_thickness: per copper layer, top to bottom (mm). dielectrics: per gap, top to bottom,
-    (kind 'core'|'prepreg', thickness mm, material, epsilon_r, loss_tangent). The layout matches the stackup
-    block pcbnew writes (checked against KiCad 10 boards)."""
+    (kind 'core'|'prepreg', thickness mm, material, epsilon_r, loss_tangent). A loss tangent of None (dielectric
+    or ``mask_loss_tangent``) leaves the entry out, for a manufacturer table that gives none; KiCad 10.0.1 then uses its
+    defaults (0.02 for a dielectric, 0 for solder mask; checked by re-saving in the tests).
+    The layout matches the stackup block pcbnew writes (checked against KiCad 10 boards)."""
     n = len(copper_thickness)
     if len(dielectrics) != n - 1:
         raise ValueError('%d copper layers need %d dielectrics' % (n, n - 1))
     names = copper_layer_names(n)
     rows = [StackupLayer('F.SilkS', 'Top Silk Screen'), StackupLayer('F.Paste', 'Top Solder Paste'),
-            StackupLayer('F.Mask', 'Top Solder Mask', mask_thickness, mask_material, mask_er, 0)]
+            StackupLayer('F.Mask', 'Top Solder Mask', mask_thickness, mask_material, mask_er, mask_loss_tangent)]
     for i, name in enumerate(names):
         rows.append(StackupLayer(name, 'copper', copper_thickness[i]))
         if i < n - 1:
             kind, th, mat, er, tan = dielectrics[i]
             rows.append(StackupLayer('dielectric %d' % (i + 1), kind, th, mat, er, tan))
-    rows += [StackupLayer('B.Mask', 'Bottom Solder Mask', mask_thickness, mask_material, mask_er, 0),
+    rows += [StackupLayer('B.Mask', 'Bottom Solder Mask', mask_thickness, mask_material, mask_er, mask_loss_tangent),
              StackupLayer('B.Paste', 'Bottom Solder Paste'), StackupLayer('B.SilkS', 'Bottom Silk Screen')]
     s = Node('stackup', *[r.node() for r in rows])
     s.append(Node('copper_finish', finish))
@@ -210,6 +214,91 @@ def flip_footprint_data(fp: Node) -> None:
             s[1:], e[1:] = e[1:], s[1:]
 
 
+# -------------------------------------------------------------------- stable item keys (for uuids)
+
+_GRAPHICS = ('line', 'rect', 'circle', 'arc', 'poly', 'curve', 'bbox')
+
+
+def _layers_text(n: Node) -> str:
+    c = n.find('layer') or n.find('layers')
+    return ','.join(str(v) for v in c[1:]) if c is not None else ''
+
+
+def _points(n: Node, heads: Sequence[str] = ('start', 'mid', 'end', 'center', 'xy')) -> List[Point]:
+    return [(g.number(1), g.number(2)) for g in n.walk() if g.head in heads and g is not n and len(g) > 2]
+
+
+def _zone_key(n: Node, prefix: str = '') -> str:
+    """A named zone is keyed by kind, net, layers and name (its outline can change without a new id); an unnamed
+    one also by its outline."""
+    name = n.get('name')
+    poly = n.find('polygon')
+    where = ('name:%s' % name) if name else pt_key(*(_points(poly, ('xy',)) if poly is not None else []))
+    if n.find('keepout') is not None:
+        return '%srule_area/%s/%s' % (prefix, _layers_text(n), where)
+    return '%szone/%s/%s/%s' % (prefix, n.get('net', ''), _layers_text(n), where)
+
+
+def fp_item_key(c: Node) -> str:
+    """Stable name of an item inside a footprint (local coordinates): ``property:Value``, ``pad:3@-0.48,0``,
+    ``fp_text:user:${REFERENCE}@F.Fab``, ``fp_line/F.SilkS/<points>``."""
+    h = c.head
+    if h == 'property':
+        return 'property:%s' % c[1]
+    if h == 'pad':
+        at = c.find('at')
+        return 'pad:%s@%s' % (c[1], pt_key((at.number(1), at.number(2))) if at is not None else '')
+    if h == 'fp_text':
+        return 'fp_text:%s:%s@%s' % (c[1], c[2] if len(c) > 2 else '', _layers_text(c))
+    if h == 'zone':
+        return _zone_key(c)
+    if h.startswith('fp_'):
+        return '%s/%s/%s' % (h, _layers_text(c), pt_key(*_points(c)))
+    return h
+
+
+def board_item_key(n: Node) -> Optional[str]:
+    """Stable name of a top-level board item: ``footprint/R1``, ``segment/GND/F.Cu/<ends>``, ``via/GND/<at>``,
+    ``zone/GND/In1.Cu/name:GND_PLANE``, ``rule_area/F.Cu/name:X``, ``gr_line/Edge.Cuts/<ends>``,
+    ``gr_text/F.SilkS/TEXT/<at>``; None for kinds no builder makes."""
+    h = n.head
+    if h == 'footprint':
+        ref = next((str(p[2]) for p in n.nodes('property') if p[1] == 'Reference'), '')
+        return 'footprint/%s' % ref
+    if h in ('segment', 'arc'):
+        return '%s/%s/%s/%s' % (h, n.get('net', ''), _layers_text(n), pt_key(*_points(n)))
+    if h == 'via':
+        at = n.need('at')
+        return 'via/%s/%s' % (n.get('net', ''), pt_key((at.number(1), at.number(2))))
+    if h == 'zone':
+        return _zone_key(n)
+    if h == 'gr_text':
+        at = n.need('at')
+        return 'gr_text/%s/%s/%s' % (_layers_text(n), n[1], pt_key((at.number(1), at.number(2))))
+    if h.startswith('gr_') and h[3:] in _GRAPHICS:
+        return '%s/%s/%s' % (h, _layers_text(n), pt_key(*_points(n)))
+    return None
+
+
+def board_ids(tree: Node) -> IdMap:
+    """{stable key: uuid} for every item of a board that a builder could make again (footprints and the items
+    inside them, tracks, vias, zones, rule areas, graphics, texts). Give it to ``Board.reuse_ids``."""
+    m = IdMap()
+    for n in tree.nodes():
+        k = board_item_key(n)
+        if k is None:
+            continue
+        u = n.find('uuid')
+        if u is not None and len(u) > 1:
+            m.put(k, str(u[1]))
+        if n.head == 'footprint':
+            for c in n.nodes():
+                cu = c.find('uuid')
+                if cu is not None and len(cu) > 1:
+                    m.put(k + '/' + fp_item_key(c), str(cu[1]))
+    return m
+
+
 class Footprint:
     """A footprint placed on a board (wraps its node)."""
 
@@ -253,8 +342,10 @@ class Footprint:
         return str(f[2]) if f is not None else ''
 
     def set_field(self, name: str, value: str, hide: Optional[bool] = None, layer: Optional[str] = None,
-                  at: Optional[Point] = None, size: float = 1.0, thickness: float = 0.15) -> Node:
-        """Set (or add, hidden on F.Fab/B.Fab by default) a footprint property. ``at`` is local (unrotated)."""
+                  at: Optional[Point] = None, size: float = 1.0, thickness: float = 0.15,
+                  position: Optional[int] = None) -> Node:
+        """Set (or add, hidden on F.Fab/B.Fab by default) a footprint property. ``at`` is local (unrotated).
+        A new property goes after the last property, or at index ``position`` of the footprint node."""
         f = self.field(name)
         if f is None:
             fab = 'B.Fab' if self.side == 'B' else 'F.Fab'
@@ -262,13 +353,15 @@ class Footprint:
             f = Node('property', name, value, Node('at', x, y, norm_angle(self.angle)), Node('layer', layer or fab))
             if hide is None or hide:
                 f.append(Node('hide', True))
-            f.append(Node('uuid', self.board.uuids.new()))
+            f.append(Node('uuid', self.board.uuids.new('footprint/%s/property:%s' % (self.ref, name))))
             eff = font_effects(size, thickness)
             if self.side == 'B':
                 eff.append(Node('justify', Sym('mirror')))
             f.append(eff)
             props = self.node.nodes('property')
-            self.node.insert(self.node.index(props[-1]) + 1 if props else 3, f)
+            if position is None:
+                position = self.node.index(props[-1]) + 1 if props else 3
+            self.node.insert(position, f)
             return f
         f[2] = value
         if hide is not None:
@@ -329,20 +422,41 @@ class Board:
             raise ValueError('not a board: %s' % tree[0])
         self.tree = tree
         self.path = path
-        self.uuids = Uuids()
+        self.uuids = Uuids(seed='kicad_pcb')       # stable ids: see reuse_ids() and common.Uuids
         self.uuids.scan(tree)
+
+    def reuse_ids(self, previous: Union[str, Node, 'Board']) -> IdMap:
+        """Take the ids of a previous version of this board (path, tree or Board): every item a builder makes from
+        now on whose stable key (board_item_key / fp_item_key) matches an item there gets that item's uuid, so a
+        regenerated board keeps its parts' ids (committed files, GUI edits). Items with no match get ids derived
+        from their key. Returns the map; ``.ambiguous`` lists keys that occurred more than once there."""
+        tree = previous.tree if isinstance(previous, Board) else load(previous) if isinstance(previous, str) else previous
+        m = board_ids(tree)
+        self.uuids.reuse = m
+        return m
+
+    def _fill_uuid(self, n: Node, key: Optional[str] = None) -> Node:
+        """Give the node's placeholder ``(uuid "")`` its stable id."""
+        u = n.need('uuid')
+        u[1] = self.uuids.new(key or board_item_key(n))
+        return n
 
     # ---------------------------------------------------------------- create / load / save
     @classmethod
-    def new(cls, copper_layers: int = 2, thickness: float = 1.6, paper: str = 'A4') -> 'Board':
-        """An empty board with KiCad 10's layer table and default setup (no stackup block; see set_stackup)."""
+    def new(cls, copper_layers: int = 2, thickness: float = 1.6, paper: str = 'A4',
+            previous: Optional[Union[str, Node, 'Board']] = None) -> 'Board':
+        """An empty board with KiCad 10's layer table and default setup (no stackup block; see set_stackup).
+        ``previous``: an earlier version of this board whose item ids are reused (see reuse_ids)."""
         t = header('kicad_pcb', PCB_VERSION, 'pcbnew')
         t.append(Node('general', Node('thickness', thickness), Node('legacy_teardrops', False)))
         t.append(Node('paper', paper))
         t.append(_layer_table(copper_layers))
         t.append(_default_setup())
         t.append(Node('embedded_fonts', False))
-        return cls(t)
+        b = cls(t)
+        if previous is not None:
+            b.reuse_ids(previous)
+        return b
 
     @classmethod
     def load(cls, path: str) -> 'Board':
@@ -382,7 +496,11 @@ class Board:
 
     # ---------------------------------------------------------------- generic
     def add(self, node: Node) -> Node:
-        """Insert any top-level item next to the items of its kind."""
+        """Insert any top-level item next to the items of its kind. A placeholder ``(uuid "")`` gets the item's
+        stable id."""
+        u = node.find('uuid')
+        if u is not None and len(u) > 1 and u[1] == '':
+            self._fill_uuid(node)
         head = node.head
         kids = [(i, c) for i, c in enumerate(self.tree) if i > 0 and isinstance(c, Node)]
         same = [i for i, c in kids if c.head == head]
@@ -443,13 +561,15 @@ class Board:
                       angle: float = 0, side: str = 'F', fields: Optional[Dict[str, str]] = None,
                       pad_nets: Optional[Dict[str, str]] = None, path: Optional[str] = None,
                       sheetname: Optional[str] = None, sheetfile: Optional[str] = None,
-                      hide_reference: Optional[bool] = None) -> Footprint:
+                      hide_reference: Optional[bool] = None, uuid: Optional[str] = None) -> Footprint:
         """Place a library footprint (a .kicad_mod path or its parsed node).
 
         lib_id "Lib:Name" is written as the footprint id. ``path`` links it to its schematic symbol
         ("/<symbol uuid>", or "/<sheet uuid>/<symbol uuid>" on a sub-sheet). ``fields`` become hidden properties
         (existing library properties of the same name get the value). ``pad_nets`` maps pad number -> net name.
-        side 'B' flips the footprint to the back the way pcbnew does. Every item gets a fresh uuid."""
+        side 'B' flips the footprint to the back the way pcbnew does. Every item gets a stable uuid: the one it had in
+        the previous board (reuse_ids), else one derived from the reference and the item (``uuid`` sets the
+        footprint's own id explicitly)."""
         fp = load(source) if isinstance(source, str) else source.deepcopy()
         if fp[0] != 'footprint':
             raise ValueError('not a footprint: %s' % fp[0])
@@ -457,7 +577,10 @@ class Board:
         for h in ('version', 'generator', 'generator_version', 'uuid', 'at', 'path', 'sheetname', 'sheetfile',
                   'locked', 'placed', 'tedit'):
             fp.remove_all(h)
-        refresh_uuids(fp, self.uuids)
+        key = 'footprint/%s' % ref
+        for u in fp.walk('uuid'):                     # library ids are placeholders until the footprint is final
+            del u[1:]
+            u.append('')
         if side == 'B':
             flip_footprint_data(fp)
         elif side != 'F':
@@ -471,7 +594,7 @@ class Board:
         at_node = Node('at', r6(at[0]), r6(at[1]))
         if fa != 0:
             at_node.append(fa)
-        fp.insert(li + 1, Node('uuid', self.uuids.new()))
+        fp.insert(li + 1, Node('uuid', self.uuids.take(uuid) if uuid else self.uuids.new(key)))
         fp.insert(li + 2, at_node)
         # every item with its own uuid needs one (KiCad 10 boards give each property/graphic/pad a uuid)
         for c in fp.nodes():
@@ -480,9 +603,9 @@ class Board:
                 if c.head == 'property' or c.head == 'fp_text':
                     eff = c.find('effects')
                     pos = c.index(eff) if eff is not None else len(c)
-                    c.insert(pos, Node('uuid', self.uuids.new()))
+                    c.insert(pos, Node('uuid', ''))
                 else:
-                    c.append(Node('uuid', self.uuids.new()))
+                    c.append(Node('uuid', ''))
         # text and pad angles are stored absolute (footprint angle + local angle)
         for c in fp.nodes():
             if c.head in ('property', 'fp_text', 'fp_text_box'):
@@ -510,7 +633,8 @@ class Board:
                 if side == 'B':
                     eff.append(Node('justify', Sym('mirror')))
                 fp.insert(pos, Node('property', k, '', Node('at', 0, 0, norm_angle(fa + (180 if side == 'B' else 0))),
-                                    Node('layer', fab), Node('hide', True), Node('uuid', self.uuids.new()), eff))
+                                    Node('layer', fab), Node('hide', True),
+                                    Node('uuid', ''), eff))
                 pos += 1
         if fa % 90 != 0:
             # pcbnew cannot keep a rectangle at a non-right angle: it stores it as a 4-point polygon
@@ -550,8 +674,16 @@ class Board:
         f.set_field('Value', value)
         if hide_reference is not None:
             f.set_field('Reference', ref, hide=hide_reference)
+        # new fields go right after the mandatory ones, before the library's own extra fields (as pcbnew orders them)
+        props = fp.nodes('property')
+        mandatory = [p for p in props if p[1] in ('Reference', 'Value', 'Footprint', 'Datasheet', 'Description')]
+        pos = fp.index(mandatory[-1]) + 1 if mandatory else None
         for k, v in (fields or {}).items():
-            f.set_field(k, v)
+            if f.field(k) is None and pos is not None:
+                f.set_field(k, v, position=pos)
+                pos += 1
+            else:
+                f.set_field(k, v)
         anchor = fp.find('attr') or fp.find('duplicate_pad_numbers_are_jumpers')
         extra = []
         if path is not None:
@@ -570,14 +702,21 @@ class Board:
                 fp.insert(pos + j, item)
         for num, net in (pad_nets or {}).items():
             f.set_pad_net(num, net)
+        for c in fp.nodes():                          # the footprint is final: stable ids for its items
+            u = c.find('uuid')
+            if u is not None and len(u) > 1 and u[1] == '':
+                u[1] = self.uuids.new(key + '/' + fp_item_key(c))
+        for i, u in enumerate(fp.walk('uuid')):       # anything deeper (rare): keyed by position
+            if len(u) > 1 and u[1] == '':
+                u[1] = self.uuids.new('%s/deep[%d]' % (key, i))
         self.add(fp)
         return f
 
     # ---------------------------------------------------------------- copper
-    def segment(self, start: Point, end: Point, width: float, layer: str, net: str) -> Node:
-        return self.add(Node('segment', Node('start', r6(start[0]), r6(start[1])), Node('end', r6(end[0]), r6(end[1])),
-                             Node('width', width), Node('layer', layer), Node('net', net),
-                             Node('uuid', self.uuids.new())))
+    def segment(self, start: Point, end: Point, width: float, layer: str, net: str, key: Optional[str] = None) -> Node:
+        return self.add(self._fill_uuid(Node('segment', Node('start', r6(start[0]), r6(start[1])),
+                                             Node('end', r6(end[0]), r6(end[1])), Node('width', width),
+                                             Node('layer', layer), Node('net', net), Node('uuid', '')), key))
 
     def track(self, points: Sequence[Point], width: float, layer: str, net: str) -> List[Node]:
         """Consecutive segments through the points (zero-length steps skipped)."""
@@ -587,13 +726,15 @@ class Board:
                 out.append(self.segment(a, b, width, layer, net))
         return out
 
-    def arc(self, start: Point, mid: Point, end: Point, width: float, layer: str, net: str) -> Node:
-        return self.add(Node('arc', Node('start', r6(start[0]), r6(start[1])), Node('mid', r6(mid[0]), r6(mid[1])),
-                             Node('end', r6(end[0]), r6(end[1])), Node('width', width), Node('layer', layer),
-                             Node('net', net), Node('uuid', self.uuids.new())))
+    def arc(self, start: Point, mid: Point, end: Point, width: float, layer: str, net: str,
+            key: Optional[str] = None) -> Node:
+        return self.add(self._fill_uuid(Node('arc', Node('start', r6(start[0]), r6(start[1])),
+                                             Node('mid', r6(mid[0]), r6(mid[1])), Node('end', r6(end[0]), r6(end[1])),
+                                             Node('width', width), Node('layer', layer), Node('net', net),
+                                             Node('uuid', '')), key))
 
     def via(self, at: Point, size: float, drill: float, net: str, layers: Tuple[str, str] = ('F.Cu', 'B.Cu'),
-            free: bool = False, via_type: Optional[str] = None) -> Node:
+            free: bool = False, via_type: Optional[str] = None, key: Optional[str] = None) -> Node:
         """A via. ``free=True`` writes ``(free yes)``: KiCad then keeps the given net instead of re-deriving it from
         what the via touches (use it for stitching / thermal vias). via_type: None (through), 'blind', 'micro'."""
         n = Node('via')
@@ -603,18 +744,18 @@ class Board:
                   Node('layers', layers[0], layers[1])])
         if free:
             n.append(Node('free', True))
-        n.extend([Node('net', net), Node('uuid', self.uuids.new())])
-        return self.add(n)
+        n.extend([Node('net', net), Node('uuid', '')])
+        return self.add(self._fill_uuid(n, key))
 
     def zone(self, net: str, layers: Union[str, Sequence[str]], polygon: Sequence[Point], priority: int = 0,
              name: str = '', clearance: float = 0.2, min_thickness: float = 0.2, connect_pads: Optional[str] = 'yes',
              thermal_gap: float = 0.3, thermal_bridge_width: float = 0.4, island_removal_mode: int = 0,
-             hatch: Tuple[str, float] = ('edge', 0.5), filled: bool = False) -> Node:
+             hatch: Tuple[str, float] = ('edge', 0.5), filled: bool = False, key: Optional[str] = None) -> Node:
         """A copper zone. connect_pads: 'yes' (solid), None (thermal reliefs), 'no', 'thru_hole_only'.
         Leave filled=False and let ``kicad-cli pcb drc --refill-zones --save-board`` fill it."""
         n = Node('zone', Node('net', net))
         n.extend(self._zone_layers(layers))
-        n.append(Node('uuid', self.uuids.new()))
+        n.append(Node('uuid', ''))
         if name:
             n.append(Node('name', name))
         n.append(Node('hatch', Sym(hatch[0]), hatch[1]))
@@ -633,18 +774,18 @@ class Board:
                      Node('island_removal_mode', island_removal_mode)])
         n.append(fill)
         n.append(Node('polygon', xy_list(polygon)))
-        return self.add(n)
+        return self.add(self._fill_uuid(n, key))
 
     def rule_area(self, layers: Union[str, Sequence[str]], polygon: Sequence[Point], name: str = '',
                   tracks: bool = True, vias: bool = True, pads: bool = True, copperpour: bool = False,
-                  footprints: bool = True) -> Node:
+                  footprints: bool = True, key: Optional[str] = None) -> Node:
         """A keepout rule area. Each flag says whether that item type is *allowed* inside (default: only copper
         pours are kept out). Written in the form pcbnew 10 saves."""
         def a(ok: bool) -> Sym:
             return Sym('allowed' if ok else 'not_allowed')
         n = Node('zone')
         n.extend(self._zone_layers(layers))
-        n.append(Node('uuid', self.uuids.new()))
+        n.append(Node('uuid', ''))
         if name:
             n.append(Node('name', name))
         n.extend([Node('hatch', Sym('edge'), 0.5), Node('connect_pads', Node('clearance', 0)),
@@ -655,7 +796,7 @@ class Board:
                   Node('fill', Node('thermal_gap', 0.5), Node('thermal_bridge_width', 0.5),
                        Node('island_removal_mode', 0)),
                   Node('polygon', xy_list(polygon))])
-        return self.add(n)
+        return self.add(self._fill_uuid(n, key))
 
     @staticmethod
     def _zone_layers(layers: Union[str, Sequence[str]]) -> List[Node]:
@@ -674,8 +815,8 @@ class Board:
         n.append(Node('layer', layer))
         if net is not None:
             n.append(Node('net', net))
-        n.append(Node('uuid', self.uuids.new()))
-        return self.add(n)
+        n.append(Node('uuid', ''))
+        return self.add(self._fill_uuid(n))
 
     def gr_line(self, start: Point, end: Point, layer: str, width: float = 0.1) -> Node:
         return self._gr('gr_line', [Node('start', r6(start[0]), r6(start[1])), Node('end', r6(end[0]), r6(end[1]))],
@@ -704,8 +845,9 @@ class Board:
         if mirror is None:
             mirror = layer.startswith('B.')
         j = list(justify) + (['mirror'] if mirror else [])
-        return self.add(Node('gr_text', text, Node('at', r6(at[0]), r6(at[1]), norm_angle(angle)), Node('layer', layer),
-                             Node('uuid', self.uuids.new()), font_effects(size, thickness, bold=bold, justify=j)))
+        return self.add(self._fill_uuid(Node('gr_text', text, Node('at', r6(at[0]), r6(at[1]), norm_angle(angle)),
+                                             Node('layer', layer), Node('uuid', ''),
+                                             font_effects(size, thickness, bold=bold, justify=j))))
 
     def outline_rect(self, x: float, y: float, w: float, h: float, corner_radius: float = 0,
                      width: float = 0.1, layer: str = 'Edge.Cuts') -> List[Node]:
@@ -745,3 +887,31 @@ def new_footprint(name: str, layer: str = 'F.Cu', descr: str = '', tags: str = '
     fp.append(Node('embedded_fonts', False))
     return fp
 
+
+
+def _fp_graphic(head: str, geo: List[Node], layer: str, width: float, type_: str, fill: Optional[bool],
+                uuids: Optional[Uuids]) -> Node:
+    n = Node(head, *geo, stroke(width, type_))
+    if fill is not None:
+        n.append(Node('fill', fill))
+    n.append(Node('layer', layer))
+    if uuids is not None:
+        n.append(Node('uuid', uuids.new(fp_item_key(n))))
+    return n
+
+
+def fp_line(start: Point, end: Point, layer: str, width: float = 0.12, type_: str = 'solid',
+            uuids: Optional[Uuids] = None) -> Node:
+    """A footprint line (footprint-local coordinates), for a library footprint node. ``uuids``: give one (scanned
+    from the footprint: ``u = Uuids(seed='kicad_mod:' + name); u.scan(fp)``) to write a derived uuid; KiCad's own
+    library files have none."""
+    return _fp_graphic('fp_line', [Node('start', r6(start[0]), r6(start[1])), Node('end', r6(end[0]), r6(end[1]))],
+                       layer, width, type_, None, uuids)
+
+
+def fp_rect(start: Point, end: Point, layer: str, width: float = 0.05, fill: bool = False, type_: str = 'solid',
+            uuids: Optional[Uuids] = None) -> Node:
+    """A footprint rectangle in the layout KiCad 10 library footprints use (courtyards: F.CrtYd, width 0.05).
+    Insert it into a library footprint node (e.g. ``fp.insert_before('pad', fp_rect(...))``)."""
+    return _fp_graphic('fp_rect', [Node('start', r6(start[0]), r6(start[1])), Node('end', r6(end[0]), r6(end[1]))],
+                       layer, width, type_, fill, uuids)

@@ -11,8 +11,8 @@ hand. Pure Python 3.9+, no dependencies, MIT like the rest of the repo.
   make all the time. Each builder returns the node it inserted, so anything a builder does not cover can still be set
   on that node, or added with `add(Node(...))`.
 - **The format rules live here and nowhere else**: quoting and escaping (`"`, `\`, newline, CR) happen only in the
-  writer, KiCad 10 version headers, fresh uuids that are unique within the document (checked again before every
-  save), `{slash}` in board net names that come from a netlist (`board_net_name()`), and the layouts KiCad 10
+  writer, KiCad 10 version headers, stable uuids that are unique within the document (checked again before every
+  save; see "Stable ids"), `{slash}` in board net names that come from a netlist (`board_net_name()`), and the layouts KiCad 10
   writes (zones, rule areas, stackup, symbol instances, ...).
 
 Why: hand-written format strings in the minipc-power generators caused a stray `'''` inside a format string, a
@@ -47,7 +47,7 @@ sch.save('demo.kicad_sch')                        # refuses to write duplicate u
 ```
 
 `add_symbol` embeds the library symbol in `lib_symbols` (derived `extends` symbols are flattened), writes the
-instance with every library field (positions rotated and mirrored with the symbol), one `(pin ...)` per pin and the
+instance with every library field (or only those named in `lib_fields`) (positions rotated and mirrored with the symbol), one `(pin ...)` per pin and the
 `(instances (project ... (path ...)))` block. Also: `global_label`, `hierarchical_label`, `no_connect`, `bus`,
 `polyline`, `sheet` (hierarchical sheet block with pins), `Schematic.load()` + `symbol(ref)` to edit existing sheets.
 
@@ -100,15 +100,33 @@ Pads, tracks and zones take the name exactly as the board stores it. Names from 
 through `board_net_name()` first (`Net-(U1-EN/UVLO)` -> `Net-(U1-EN{slash}UVLO)`). Local labels on the root sheet
 appear in the netlist as `/NAME`; power symbols and global labels as `NAME`.
 
+### Stable ids
+
+Generated files are deterministic. Every builder gives its item a uuid from a stable key that names it:
+`footprint/R1` (and `footprint/R1/pad:2@0.48,0`, `footprint/R1/property:LCSC`, ... for what is inside),
+`symbol/R1/1` (power symbols by lib id and position, as their `#PWR` numbers are renumbered freely),
+`segment/<net>/<layer>/<ends>`, `via/<net>/<at>`, `zone/<net>/<layers>/name:<name>`, `wire/<ends>`, `label/<text>/<at>`.
+
+1. With a previous version of the file, an item whose key is found there keeps that item's uuid:
+   `Board.new(previous='old.kicad_pcb')`, `Schematic.new(..., previous='old.kicad_sch')`, or `reuse_ids(...)` on any
+   board / sheet. Parts keep their ids across regenerations and GUI edits, and footprints stay linked to their symbols.
+2. Otherwise the uuid is uuid5 of the key, so two builds from scratch are byte-identical and adding an item does not
+   move anyone else's id (KiCad sorts board items by uuid when it saves, so random ids reshuffle the whole file).
+3. A key used twice gets `#2`, `#3`, ...: never a duplicate. Keys that occur more than once in the previous file are
+   matched in file order and listed in the returned map's `.ambiguous`. `key=` / `uuid=` on the builders override.
+
+Files you load keep every id they have; only new items get keys. The writers (`schgen`, `new_board.py`, `router.py
+--previous`) reuse the file they replace by default.
+
 ## Coverage
 
 | | generic tree (lossless read / write) | typed builders |
 |---|---|---|
 | `.kicad_sch` | every item | symbol instances (rotation, mirror, unit, fields, pins, instances), lib_symbols embedding, wire, bus, junction, no_connect, label, global_label, hierarchical_label, text, polyline, sheet + sheet pins, title block |
-| `.kicad_sym` | every item | library symbol (properties, units, pins, rectangle, polyline), flattening of derived symbols, pin list |
+| `.kicad_sym` | every item | library symbol (properties, units, pins, rectangle, polyline), flattening of derived symbols, pin list, library with a named generator |
 | `.kicad_pcb` | every item | header + layer table + setup for N copper layers, stackup, footprints (place / flip / fields / pad nets / pad positions), segment, arc, via (through, blind, micro), copper zone, keepout rule area, gr_line / gr_arc / gr_circle / gr_rect / gr_poly / gr_text, rounded-rectangle outline |
-| `.kicad_mod` | every item | `new_footprint()` skeleton (pads and graphics as plain `Node`s) |
-| `.kicad_pro` (JSON) | everything (dict) | net classes, assignments, patterns, design rules, track / via presets |
+| `.kicad_mod` | every item | `new_footprint()` skeleton, `fp_rect` / `fp_line` (courtyards, silk, fab); pads as plain `Node`s |
+| `.kicad_pro` (JSON) | everything (dict) | net classes, assignments (KiCad 10's list form, several classes per net), patterns, design rules, track / via presets |
 
 Items with no builder are still kept exactly and can be created with `Node(...)`: dimensions, images, groups,
 tables, text boxes, tuning patterns (`generated`), teardrop settings, embedded files, net ties, bus entries,
@@ -139,3 +157,5 @@ symbol and footprint libraries. Tests that need KiCad skip when it is missing (`
   one unit per `add_symbol` call (pin positions and netlists checked for single-unit symbols only).
 - Footprint `add_footprint` does not resolve library nicknames: pass the `.kicad_mod` path.
 - Filled zone polygons are not computed: leave zones unfilled and run `kicad-cli pcb drc --refill-zones --save-board`.
+  KiCad 10.0.1's refill is not always deterministic: on minipc-power, the same input board refilled to one of two
+  results for one zone (8 runs: 5 / 3), so compare generated boards before the refill, or expect that zone to vary.

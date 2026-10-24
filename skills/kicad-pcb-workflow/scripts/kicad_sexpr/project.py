@@ -82,18 +82,19 @@ class Project:
         classes.append(c)
         return c
 
-    def assign(self, net: str, netclass: str) -> None:
+    def assign(self, net: str, netclass: str, replace: bool = False) -> None:
         """Put one net in a class (``netclass_assignments``; net names as in the schematic netlist).
 
         KiCad 10 stores each net's classes as a list (``"VBUS": ["Power"]``) and rewrites the older single-string
         form to a list whenever it saves the project, so this writes a list. A net may carry several classes:
-        assigning another class appends it (no duplicates); the string form in a loaded file is read as one entry."""
+        assigning another class appends it (no duplicates); ``replace=True`` makes this the net's only class. The
+        string form in a loaded file is read as one entry."""
         ns = self._ns()
         a = ns.get('netclass_assignments')
         if not isinstance(a, dict):
             a = {}
             ns['netclass_assignments'] = a
-        cur = self.assignments().get(net, [])
+        cur = [] if replace else self.assignments().get(net, [])
         if netclass not in cur:
             cur.append(netclass)
         a[net] = list(cur)
