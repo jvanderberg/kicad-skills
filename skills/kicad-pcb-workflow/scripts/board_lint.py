@@ -16,6 +16,21 @@ import argparse, json, os, re, sys
 
 import pcbnew
 
+# pcbnew.LoadBoard prints wx's "assert traits failed ... create wxApp before calling this" on every run (KiCad 10.0.x,
+# harmless). Drop exactly that line and pass every other stderr line through: never filter a whole category.
+_WX_NOISE = re.compile(r'stdpbase\.cpp\(\d+\): assert ""traits"" failed in Get\(\): create wxApp before calling this')
+def load_board(path):
+    import tempfile
+    sys.stderr.flush(); saved = os.dup(2)
+    with tempfile.TemporaryFile() as tf:
+        os.dup2(tf.fileno(), 2)
+        try:
+            return pcbnew.LoadBoard(path)
+        finally:
+            os.dup2(saved, 2); os.close(saved); tf.seek(0)
+            for line in tf.read().decode('utf-8', 'replace').splitlines():
+                if not _WX_NOISE.search(line): print(line, file=sys.stderr)
+
 MM = pcbnew.ToMM
 
 
@@ -67,7 +82,7 @@ def main():
     ap.add_argument('board'); ap.add_argument('--no-models', action='store_true'); ap.add_argument('--no-silk', action='store_true')
     ap.add_argument('--no-courtyard', action='store_true'); ap.add_argument('--min-overlap', type=float, default=0.1)
     a = ap.parse_args()
-    b = pcbnew.LoadBoard(a.board)
+    b = load_board(a.board)
     fps = list(b.GetFootprints())
     probs = []
     crt = {}

@@ -7,7 +7,21 @@
 import pcbnew, json, sys, re, os
 src, pack = sys.argv[1], sys.argv[2]
 os.makedirs(pack, exist_ok=True)
-b = pcbnew.LoadBoard(src)
+# pcbnew.LoadBoard prints wx's "assert traits failed ... create wxApp before calling this" on every run (KiCad 10.0.x,
+# harmless). Drop exactly that line and pass every other stderr line through: never filter a whole category.
+_WX_NOISE = re.compile(r'stdpbase\.cpp\(\d+\): assert ""traits"" failed in Get\(\): create wxApp before calling this')
+def load_board(path):
+    import tempfile
+    sys.stderr.flush(); saved = os.dup(2)
+    with tempfile.TemporaryFile() as tf:
+        os.dup2(tf.fileno(), 2)
+        try:
+            return pcbnew.LoadBoard(path)
+        finally:
+            os.dup2(saved, 2); os.close(saved); tf.seek(0)
+            for line in tf.read().decode('utf-8', 'replace').splitlines():
+                if not _WX_NOISE.search(line): print(line, file=sys.stderr)
+b = load_board(src)
 mm = pcbnew.ToMM
 cu = [l for l in b.GetEnabledLayers().CuStack()]
 LN = {l: b.GetLayerName(l) for l in cu}
@@ -63,7 +77,7 @@ for t in b.GetTracks():
                                 layer=b.GetLayerName(t.GetLayer()), net=t.GetNetname()))
 for z in b.Zones():
     zd = dict(net=z.GetNetname(), name=z.GetZoneName(), prio=z.GetAssignedPriority(), keepout=z.GetIsRuleArea(), layers=[], outline=poly_set(z.Outline()),
-              min_w=mm(z.GetMinThickness()), filled={})
+              min_w=mm(z.GetMinThickness()), clearance=mm(z.GetLocalClearance() or 0), filled={})
     for l in cu:
         if z.IsOnLayer(l):
             zd['layers'].append(LN[l])

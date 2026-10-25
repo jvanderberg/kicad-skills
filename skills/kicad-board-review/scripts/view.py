@@ -21,7 +21,7 @@ def col(net):
     h = int(hashlib.md5(net.encode()).hexdigest()[:6], 16)
     return (0.25 + 0.6 * ((h >> 16) & 255) / 255, 0.25 + 0.6 * ((h >> 8) & 255) / 255, 0.25 + 0.6 * (h & 255) / 255)
 sc = 30 / max(x1 - x0, y1 - y0)
-fig, ax = plt.subplots(figsize=(max((x1 - x0) * sc / 2.2, 3), max((y1 - y0) * sc / 2.2, 3)))
+fig, ax = plt.subplots(figsize=(max((x1 - x0) * sc / 2.2, 4), max((y1 - y0) * sc / 2.2, 4)))
 labels = []
 short = lambda n: n.split('/')[-1]
 for z in B['zones']:
@@ -53,8 +53,11 @@ for f in B['footprints']:
 for v in B['vias']:
     if x0 <= v['x'] <= x1 and y0 <= v['y'] <= y1:
         ax.add_patch(plt.Circle((v['x'], v['y']), v['size'] / 2, fc=col(v['net']), ec='k', lw=0.3))
-for x, y, s, fs, c in labels: ax.text(x, y, s, fontsize=fs, color=c, ha='center', va='center')
+# labels only for points inside the window, clipped to the axes (a label anchored outside a small window used to be
+# drawn over the title and the tick labels)
+for x, y, s, fs, c in labels:
+    if x0 <= x <= x1 and y0 <= y <= y1: ax.text(x, y, s, fontsize=fs, color=c, ha='center', va='center', clip_on=True)
 ax.set_xlim(x0, x1); ax.set_ylim(y1, y0); ax.set_aspect('equal')
 ax.set_xticks(np.arange(math.ceil(x0 / gstep) * gstep, x1, gstep)); ax.set_yticks(np.arange(math.ceil(y0 / gstep) * gstep, y1, gstep))
-ax.tick_params(labelsize=6); ax.grid(True, lw=0.2); ax.set_title(L, fontsize=9)
-fig.tight_layout(); fig.savefig(out, dpi=110); print(out)
+ax.tick_params(labelsize=6); ax.grid(True, lw=0.2); ax.set_title('%s  x %g-%g  y %g-%g' % (L, x0, x1, y0, y1), fontsize=8)
+fig.tight_layout(); fig.savefig(out, dpi=110, bbox_inches='tight'); print(out)
