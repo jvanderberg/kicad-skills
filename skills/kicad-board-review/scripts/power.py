@@ -29,8 +29,39 @@ def sinks_of(run):
     if 'sinks' in run: return [(refpad(s), float(i)) for s, i in run['sinks']]
     s = run['sinks_auto']; rx = re.compile(s['ref'])
     pads = sorted({(r, p) for r, p, _, _ in NETS.get(run['net'], []) if rx.search(r) and p == s['pad']}, key=lambda t: natkey(t[0]))
-    assert pads, ('sinks_auto matched nothing', run)
+    if not pads:
+        pads = sorted({(f['ref'], str(q['num'])) for f in B['footprints'] for q in f['pads']
+                       if q['net'] == run['net'] and rx.search(f['ref']) and str(q['num']) == s['pad']}, key=lambda t: natkey(t[0]))
     return [(rp, s['total_amps'] / len(pads)) for rp in pads]
+
+# nets with copper on the board, and where each pad sits now (for "the run names a net the board no longer has")
+NET_COPPER = {t['net'] for t in B['tracks']} | {z['net'] for z in B['zones'] if not z['keepout']} | \
+             {q['net'] for f in B['footprints'] for q in f['pads']} | {v['net'] for v in B['vias']}
+PAD_NET = {(f['ref'], str(q['num'])): q['net'] for f in B['footprints'] for q in f['pads']}
+
+def run_problems(r):
+    """why this run cannot be solved on this board (empty list: it can). Nets are renamed when parts change (KiCad
+    names an unnamed net after one of its pads, e.g. Net-(J3-Pad1) becomes Net-(Q1-D) after a part swap), and refs and
+    pads come and go: each is reported by name instead of crashing the solver or silently dropping the run (R16)."""
+    out = []
+    for k in ('name', 'net', 'source'):
+        if not r.get(k): out.append('run has no "%s"' % k)
+    if out: return out
+    if 'sinks' not in r and 'sinks_auto' not in r: return ['run has neither "sinks" nor "sinks_auto"']
+    net = r['net']
+    ends = [('source', s) for s in r['source']] + [('sink', s) for s, _ in r.get('sinks', [])]
+    if net not in NET_COPPER:
+        now = sorted({'%s -> %s' % (s, PAD_NET[refpad(s)]) for _, s in ends if refpad(s) in PAD_NET})
+        out.append('net %s is not on the board%s' % (net, ('; the run\'s pads are now on: ' + ', '.join(now) +
+                   ' (renamed after a part change? update "net" in review_config.json)') if now else ''))
+    for role, s in ends:
+        rp = refpad(s)
+        if rp[0] not in FP: out.append('%s %s: no part %s on the board' % (role, s, rp[0]))
+        elif rp not in PAD_NET: out.append('%s %s: %s has no pad %s' % (role, s, rp[0], rp[1]))
+        elif PAD_NET[rp] != net and net in NET_COPPER: out.append('%s %s is on net %s, not %s' % (role, s, PAD_NET[rp], net))
+    if not out and 'sinks_auto' in r and not sinks_of(r):
+        out.append('sinks_auto %s matched no pad on net %s' % (r['sinks_auto'], net))
+    return out
 
 def plot(res, name, tag):
     os.makedirs(PACK + 'maps', exist_ok=True)
@@ -71,11 +102,24 @@ def run(r, tag='', plotit=True):
 if a.net:
     r = dict(name='adhoc', net=a.net, source=a.source, h=a.h,
              sinks=[[s.split('=')[0], float(s.split('=')[1])] for s in a.sink])
+    bad = run_problems(r)
+    if bad: sys.exit('power.py: cannot solve this run:\n  ' + '\n  '.join(bad))
     out = run(r, plotit=False)
     for s in out['sinks']: print('  %s:%s %.2f A  drop %.1f mV' % (s['ref'], s['pad'], s['amps'], s['drop_mV']))
     print('  busiest vias (x, y, A):')
     for x, y, i in out['via_amps'][:a.vias]: print('    (%.2f, %.2f)  %.2f A' % (x, y, i))
 else:
     if not CFG.get('power_runs'): print('  !! no power_runs in review_config.json: no DC results (power.md will say so)')
-    runs = [run(r, a.tag) for r in CFG.get('power_runs', [])]
-    json.dump(dict(t_in=T_IN, runs=runs), open(PACK + 'power_runs%s.json' % (('_' + a.tag) if a.tag else ''), 'w'), indent=1)
+    runs, not_run = [], []
+    for r in CFG.get('power_runs', []):
+        bad = run_problems(r)
+        if not bad:
+            try:
+                runs.append(run(r, a.tag)); continue
+            except (AssertionError, ValueError) as e:      # the solver's own checks (no cells on a pad, empty copper)
+                bad = ['solver: %s' % (e,)]
+        nm = r.get('name', '?')
+        print('  !! power run %s NOT RUN: %s' % (nm, '; '.join(bad)), flush=True)
+        not_run.append(dict(name=nm, net=r.get('net'), title=r.get('title', ''), reasons=bad))
+    json.dump(dict(t_in=T_IN, runs=runs, not_run=not_run), open(PACK + 'power_runs%s.json' % (('_' + a.tag) if a.tag else ''), 'w'), indent=1)
+    if not_run: print('  !! %d of %d power runs NOT RUN (listed in power.md\'s coverage)' % (len(not_run), len(not_run) + len(runs)))

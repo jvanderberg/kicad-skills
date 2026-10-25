@@ -45,9 +45,13 @@ OUT, BOT = LAYERS[0], LAYERS[-1]
 RUNS = {}
 for f in sorted(glob.glob(PACK + 'power_runs*.json')):
     tag = os.path.basename(f)[len('power_runs'):-5].lstrip('_')
-    for r in json.load(open(f))['runs']:
+    d_ = json.load(open(f))
+    for r in d_['runs']:
         if r['name'] not in RUNS or r['P_W'] > RUNS[r['name']]['P_W']:
             RUNS[r['name']] = dict(P_W=r['P_W'], I_total=r['I_total'], net=r['net'], tag=tag, file=os.path.basename(f))
+    for r in d_.get('not_run', []):
+        w_ = 'power run %s NOT RUN (%s): %s - its copper loss and current are missing here' % (r['name'], r.get('net'), '; '.join(r['reasons']))
+        if w_ not in TW: TW.append(w_)
 
 # ---------------- heat table
 cfg_src = open(PACK + '.config_source').read().strip() if os.path.exists(PACK + '.config_source') else None

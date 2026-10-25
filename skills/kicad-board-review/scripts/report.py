@@ -7,8 +7,12 @@ def j(name):
     p = PACK + name
     return json.load(open(p)) if os.path.exists(p) else None
 P, E = j('planes.json'), j('emc.json')
-runs = {os.path.basename(f)[len('power_runs'):-5].lstrip('_') or 'default': {r['name']: r for r in json.load(open(f))['runs']}
-        for f in sorted(glob.glob(PACK + 'power_runs*.json'))}
+runs, not_run = {}, {}
+for f in sorted(glob.glob(PACK + 'power_runs*.json')):
+    tag = os.path.basename(f)[len('power_runs'):-5].lstrip('_') or 'default'
+    d = json.load(open(f))
+    runs[tag] = {r['name']: r for r in d['runs']}
+    not_run[tag] = d.get('not_run', [])
 
 def coverage_lines(*covs):
     """the warnings every report starts with: what was not classified, defaulted, derived or skipped"""
@@ -49,7 +53,11 @@ p = ['# Power distribution and planes', '',
      'Hotspots: current per mm of copper width above 75 % of a rough IPC-2221 isolated-trace limit (outer 3.2 A/mm, inner 1.6 A/mm), pessimistic for planes. '
      'Component drops (fuses, FETs, shunts, connectors) are not included. Heat (these copper losses plus every part\'s) and '
      'temperatures: thermal.md.', '']
-p += coverage_lines(P and P.get('coverage'))
+nr = {}
+for tag, lst in not_run.items():
+    for r in lst: nr.setdefault(r['name'], r)
+p += coverage_lines(P and P.get('coverage'), dict(warnings=['power run %s NOT RUN (%s): %s' % (r['name'], r.get('net'), '; '.join(r['reasons']))
+                                                            for r in nr.values()]))
 if not runs:
     p += ['## Runs', '', '- **No DC runs in this pack**: review_config.json has no power_runs (or the pack was built with --no-power). '
           'Nothing below says anything about voltage drop, copper loss or via current.', '']
@@ -62,6 +70,8 @@ for tag, rr in runs.items():
                  '%.1f' % r['R_eff_mohm'] if r.get('R_eff_mohm') is not None else '-',
                  '%.2f @ %.1f,%.1f' % (r['via_amps'][0][2], r['via_amps'][0][0], r['via_amps'][0][1]) if r.get('via_amps') else '-',
                  '; '.join('%s %.1f @ %.1f,%.1f' % (h['layer'], h['A_per_mm'], h['x'], h['y']) for h in hs[:4]) or '-'))
+    for r in not_run.get(tag, []):
+        p.append('| %s | %s | **NOT RUN** | - | - | - | %s |' % (r['name'], r.get('title', ''), '; '.join(r['reasons'])))
     p.append('')
     for name, r in rr.items():
         if len(r['sinks']) > 1:

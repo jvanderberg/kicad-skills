@@ -73,6 +73,34 @@ def test_pours_slots_severity_and_warnings():
     assert 'No DC runs in this pack' in pm and 'VBAT' in pm
 
 
+def test_power_run_on_a_missing_net_is_reported_not_crashed():
+    """a power run whose net was renamed after a part swap (KiCad: Net-(J3-Pad1) -> Net-(Q1-D)), or whose pads are
+    gone, is listed as NOT RUN with the reason and the pads' current nets; the other runs still solve (R16)"""
+    d = tempfile.mkdtemp()
+    build(d)
+    b = json.load(open(os.path.join(d, 'board.json')))
+    b['footprints'].append(dict(ref='R1', value='0R', fp='R_0603', lib='', x=30, y=8, rot=0, side='F',
+                                pads=[pad('1', 'VSYS', 30.5, 8), pad('2', 'GND', 29.5, 8)]))
+    b['tracks'].append(dict(a=[30.5, 8], b=[39.5, 8], w=0.5, layer='F.Cu', net='VSYS'))
+    json.dump(b, open(os.path.join(d, 'board.json'), 'w'))
+    cfg = json.load(open(os.path.join(d, 'review_config.json')))
+    cfg['power_runs'] = [dict(name='vsys_ok', net='VSYS', source=['C1:1'], sinks=[['R1:1', 1.0]]),
+                         dict(name='renamed', net='Net-(J3-Pad1)', source=['C1:1'], sinks=[['R1:1', 1.0]]),
+                         dict(name='gone', net='VSYS', source=['J9:1'], sinks=[['R1:7', 1.0]])]
+    json.dump(cfg, open(os.path.join(d, 'review_config.json'), 'w'))
+    out = run(d, 'power.py', 'planes.py', 'report.py')
+    pr = json.load(open(os.path.join(d, 'power_runs.json')))
+    assert [r['name'] for r in pr['runs']] == ['vsys_ok'], pr['runs']
+    nr = {r['name']: r['reasons'] for r in pr['not_run']}
+    assert set(nr) == {'renamed', 'gone'}, nr
+    assert 'net Net-(J3-Pad1) is not on the board' in nr['renamed'][0] and 'C1:1 -> VSYS' in nr['renamed'][0], nr
+    assert any('no part J9' in x for x in nr['gone']) and any('R1 has no pad 7' in x for x in nr['gone']), nr
+    assert 'power run renamed NOT RUN' in out and '2 of 3 power runs NOT RUN' in out, out
+    pm = open(os.path.join(d, 'power.md')).read()
+    assert pm.index('power run renamed NOT RUN') < pm.index('## Runs'), 'not-run runs belong in the coverage, first'
+    assert '| renamed |  | **NOT RUN** |' in pm, pm
+
+
 def test_absent_ground_net_is_loud():
     d = tempfile.mkdtemp()
     build(d, ground='0V')                 # board ground is called 0V; the config still says GND

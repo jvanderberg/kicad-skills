@@ -24,6 +24,8 @@ def solve(net, source, sinks, h=0.15, t_in=None, region=None, extra_vias=()):
     geo = {L: copper(net, L) for L in LAYERS}
     if region is not None: geo = {L: g.intersection(region) for L, g in geo.items()}
     allg = unary_union([g for g in geo.values() if not g.is_empty])
+    if allg.is_empty:
+        raise ValueError('net %s has no copper%s' % (net, ' inside the region' if region is not None else ' on the board'))
     x0, y0, x1, y1 = allg.bounds
     nx, ny = int((x1 - x0) / h) + 2, int((y1 - y0) / h) + 2
     xs = x0 + (np.arange(nx) + 0.5) * h; ys = y0 + (np.arange(ny) + 0.5) * h
