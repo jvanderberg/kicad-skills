@@ -19,8 +19,10 @@ for k, v in (('LCSC', 'C2869700'), ('Manufacturer', 'Texas Instruments')):
 def lib():
     redrawn = symgen.ic('BOOST1', 5.08, left=[('VIN', ['1'], symgen.PI)], right=[('VOUT', ['2'], symgen.PO)],
                         bottom=[('GND', ['3'], symgen.PI)], inherit=IMPORTED)                  # no datasheet= given
-    res = symgen.ic('R', 2.54, left=[('~', ['1'], symgen.PA)], right=[('~', ['2'], symgen.PA)], ref='R')
-    return symgen.library({'BOOST1': redrawn, 'R': res})
+    res = symgen.ic('R', 2.54, left=[('~', ['1'], symgen.PA)], right=[('~', ['2'], symgen.PA)], ref='R',
+                    datasheet='https://generic.example/resistor-symbol.pdf')   # a generic symbol's link, not a part's
+    blank = symgen.ic('BLANK', 2.54, left=[('~', ['1'], symgen.PA)], right=[('~', ['2'], symgen.PA)], ref='R')
+    return symgen.library({'BOOST1': redrawn, 'R': res, 'BLANK': blank})
 
 
 def test_redraw_inherits_imported_fields():
@@ -35,7 +37,7 @@ def sheet(d, with_blank):
     s.add('P:BOOST1', 'U1', 'TPS61023', 50.8, 50.8)                                     # everything from the library
     s.add('P:R', 'R1', '10k', 30.48, 50.8, footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25744')
     if with_blank:
-        s.add('P:R', 'R2', '1k', 30.48, 60.96, footprint='Resistor_SMD:R_0402_1005Metric')   # no LCSC, no datasheet
+        s.add('P:BLANK', 'R2', '1k', 30.48, 60.96, footprint='Resistor_SMD:R_0402_1005Metric')   # no LCSC, no datasheet
     return s
 
 
@@ -46,7 +48,7 @@ def test_placed_symbols_carry_library_and_lcsc_datasheets():
     parts = partfields.schematic_parts(os.path.join(d, 't.kicad_sch'))
     assert parts['U1']['fields']['Datasheet'] == 'https://www.ti.com/lit/ds/symlink/tps61023.pdf', parts['U1']
     assert parts['U1']['fields']['LCSC'] == 'C2869700' and parts['U1']['fields']['Footprint'] == 'Package_TO_SOT_SMD:SOT-23'
-    assert parts['R1']['fields']['Datasheet'] == 'https://www.lcsc.com/datasheet/C25744.pdf', parts['R1']
+    assert parts['R1']['fields']['Datasheet'] == 'https://www.lcsc.com/datasheet/C25744.pdf', parts['R1']   # the part's own wins
     assert s.field_sources == {'U1': 'library symbol', 'R1': 'LCSC C25744'}, s.field_sources
     r = partfields.check(os.path.join(d, 't.kicad_sch'))
     assert not r['problems'] and r['with_datasheet'] == 2, r

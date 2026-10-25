@@ -279,7 +279,8 @@ class Sch:
         lib = {str(q[1]): str(q[2]) for q in self.used[p.lib_id].nodes('property') if not str(q[1]).startswith('ki_')}
         f = {k: v for k, v in lib.items() if k not in ('Reference', 'Value') and not blank(v)}
         f.update({k: v for k, v in p.fields.items() if not (k in ('Datasheet', 'Description') and blank(v))})
-        ds, src = resolve_datasheet(p.fields.get('Datasheet'), lib.get('Datasheet'), f)
+        part_lib = any(not blank(lib.get(k)) for k in ('LCSC', 'LCSC Part', 'MPN', 'Manufacturer Part'))
+        ds, src = resolve_datasheet(p.fields.get('Datasheet'), lib.get('Datasheet'), f, library_is_part=part_lib)
         if ds:
             f['Datasheet'] = ds
         self.field_sources[p.ref] = src

@@ -42,15 +42,20 @@ def lcsc_datasheet(lcsc):
     return 'https://www.lcsc.com/datasheet/%s.pdf' % lcsc
 
 
-def resolve_datasheet(explicit=None, library_value=None, fields=None):
-    """(value, source) - value is None when nothing upstream had one (the caller must then fail, not write a blank)"""
+def resolve_datasheet(explicit=None, library_value=None, fields=None, library_is_part=True):
+    """(value, source) - value is None when nothing upstream had one (the caller must then fail, not write a blank).
+    Most specific first: the caller's value; a library symbol that is itself one orderable part (an imported symbol
+    carrying an LCSC/MPN field); the LCSC datasheet of the part's own LCSC number; last, a generic library symbol's link
+    (KiCad's Connector symbols point at the USB-C specification, not at the connector fitted)."""
     if not blank(explicit):
         return explicit, 'given'
-    if not blank(library_value):
+    if not blank(library_value) and library_is_part:
         return library_value, 'library symbol'
     c = lcsc_number(fields or {})
     if c:
         return lcsc_datasheet(c), 'LCSC %s' % c
+    if not blank(library_value):
+        return library_value, 'generic library symbol (not part-specific: check it)'
     return None, 'none'
 
 
@@ -164,12 +169,14 @@ def check_links(bom):
         if url not in seen:
             try:
                 r = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=30)
-                data = r.read(400000)
+                data = r.read(400000); ctype = r.headers.get('Content-Type', '')
             except (urllib.error.URLError, OSError) as e:
                 seen[url] = ('error', str(e)[:80]); data = None
             if data is not None:
                 if data.startswith(b'%PDF'):
                     seen[url] = ('pdf', '')
+                elif 'html' not in ctype.lower():
+                    seen[url] = ('error', 'neither a PDF nor a web page (%s)' % (ctype or 'no content type'))
                 else:
                     t = re.search(rb'<title>(.*?)</title>', data, re.I | re.S)
                     seen[url] = ('html', t.group(1).decode('utf-8', 'replace').strip()[:160] if t else '')
