@@ -39,8 +39,8 @@ All tools also work without Claude.
 | `kicad-pcb-workflow/scripts/schgen.py`, `symgen.py` | Generate a readable wire-drawn KiCad 10 schematic and redrawn symbols from python; collision check; locate shorts |
 | `kicad-pcb-workflow/scripts/new_board.py` | New board from the schematic netlist (footprints, symbol links, pad nets, fields, outline, placement, pad labels) - KiCad has no CLI for this |
 | `kicad-pcb-workflow/scripts/board_setup.py` | JLC stackup block, design rules and net classes (pcbnew cannot set a stackup) |
-| `kicad-pcb-workflow/scripts/router.py` | Routing as data: tracks, vias, zones, keepouts by pad name, checked for clearance, hole-to-hole (any net) and board edge before writing |
-| `kicad-pcb-workflow/scripts/board_lint.py` | What DRC misses: footprints without courtyards, missing 3D model files, silk text on part bodies |
+| `kicad-pcb-workflow/scripts/router.py` | Routing as data: tracks, vias, zones, keepouts by pad name, checked for clearance, hole-to-hole (any net), vias on same-net pads and board edge before writing |
+| `kicad-pcb-workflow/scripts/board_lint.py` | What DRC misses: footprints without courtyards, missing 3D model files, silk text on part bodies, vias on pads of their own net |
 | `kicad-pcb-workflow/scripts/nc_audit.py` | Every unused pin, every pin the symbol types no_connect, and every input strapped to a rail, as a decision table with datasheet notes and the pin-table row |
 | `kicad-pcb-workflow/scripts/partfields.py` | Every BOM part has a datasheet link and an LCSC/MPN in schematic and board, and every field matches between them (fails the build otherwise); `--online` checks the links |
 | `kicad-pcb-workflow/scripts/refparts.py` | Each IC's datasheet typical application (parts, values, distance from the pin) against the design: names the part that satisfies each entry, or MISSING / WRONG VALUE / FAR |
@@ -52,12 +52,14 @@ All tools also work without Claude.
 | `kicad-pcb-workflow/scripts/kicad_open.sh` | Is KiCad holding the project open? |
 | `kicad-board-review/scripts/make_pack.sh` | Build the analysis pack: netlist digest, board overview, DC power runs, planes, EMC, heat, DRC; each report starts with its coverage and warnings |
 | `kicad-board-review/scripts/topology.py` | Ground nets, switch nodes, switching ICs and hot-loop candidates derived from the netlist's structure (not net names); writes a starter review config for the board |
-| `kicad-board-review/scripts/power.py` | Resistive-grid DC solver: drop per load, copper loss, current density hotspots, current per via |
+| `kicad-board-review/scripts/power.py` | Resistive-grid DC solver: drop per load, copper loss, current density hotspots, current per via; a run whose net or pads are gone is reported NOT RUN with the reason |
 | `kicad-board-review/scripts/planes.py`, `emc.py` | Ground plane pieces, slots (each with its own size; other nets' pours reported as pours) and stitching; reference continuity ranked by severity, crosstalk, layer changes, hot loops with a DC solve of each return path, Z0 |
 | `kicad-board-review/scripts/thermal.py`, `heat.py`, `thermal_model.py` | Heat-source table per part per corner (every candidate listed, unknown losses as UNKNOWN); steady-state layered thermal solve on the board's copper at a low / nominal / high film coefficient, next to the board-average check; junction estimates; thermal vias per exposed pad; pours under hot parts; ground stitching for heat, with a stitching what-if |
 | `kicad-board-review/scripts/region.py`, `view.py` | List or render the copper inside a box |
-| `pcb-part-selection/scripts/bom_check.py` | Stock, package size and assembly-class sweep of the whole BOM via JLCImport |
-| `pcb-part-selection/scripts/part_gate.py` | Lifecycle (TI product pages) and LCSC stock per exact orderable variant for candidate parts, or for part numbers found in pasted text (e.g. WEBENCH's table view) |
+| `pcb-part-selection/scripts/sourcing.py` | The project's sourcing context (assembler, LCSC warehouse region, quantity, stock policy) in one `sourcing.json`, and searches / stock checks that always name the region; no default region |
+| `pcb-part-selection/scripts/bom_check.py` | Stock (in the assembler's region), stock policy, package size, assembly class, datasheet links and stale derived values for the whole BOM via JLCImport |
+| `pcb-part-selection/scripts/part_gate.py` | Lifecycle (TI product pages) and LCSC stock in the project's region per exact orderable variant or C-number, for candidate parts or for part numbers found in pasted text (e.g. WEBENCH's table view) |
+| `pcb-part-selection/scripts/derived_check.py` | Each derived value (trip current, divider, snubber, thermal estimate) with the part parameters it came from: what depends on a part before a swap, and which values went stale after one |
 | `pcb-part-selection/scripts/datasheet.py` | Fetch a datasheet only if it is really a PDF; find the pages holding a section or figure; render a page and record what it shows in the folder's INDEX.md |
 | `pcb-power-supply/scripts/path_budget.py` | Operating point of a power path with the source's and the path's resistance at every corner, plus transients, against every element's limit (latching trips first); the path's own loss next to the converters', and --json for the review's heat table |
 
@@ -70,7 +72,9 @@ All tools also work without Claude.
 - `rsvg-convert` (librsvg) for `render.py`; poppler (`pdftotext`, `pdftoppm`, `pdfinfo`) for `datasheet.py`.
 - [JLCImport](https://github.com/jvanderberg/kicad_jlcimport) (`jlcimport-cli`) for part search, import and stock checks:
   `pipx install git+https://github.com/jvanderberg/kicad_jlcimport` (checked October 2026). The scripts use
-  `search --region`, which needs v1.6.0 or later; `jlcimport-cli search --help` shows whether you have it.
+  `search --region`, which needs v1.6.0 or later; `jlcimport-cli search --help` shows whether you have it. They always
+  pass the region from the project's `sourcing.json`: without `--region`, jlcimport-cli uses the region its KiCad
+  plugin last saved, which may not be the warehouse your assembler buys from.
 
 Run `skills/kicad-pcb-workflow/scripts/preflight.py` to check all of these at once.
 

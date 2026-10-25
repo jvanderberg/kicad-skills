@@ -109,10 +109,11 @@ input can deliver <W> (<source and what it advertises>) -> pass / fail -> <actio
 |---|---|
 | Fab | JLCPCB |
 | Assembly | JLC economic / standard / hand / mix |
+| Assembler's stock region | global (international JLCPCB) / cn (JLC China) - recorded in `docs/sourcing.json` |
 | Quantity | <fab> / <assembled> |
 | Surface finish, colour | |
 | Smallest package | 0402 |
-| Part policy | in stock at LCSC (<region>) for quantity + attrition; prefer Basic / Preferred Extended |
+| Part policy | in stock at LCSC in the assembler's region for quantity + attrition (+ policy minimum, if any, in `sourcing.json`); prefer Basic / Preferred Extended |
 
 ## 7. Stackup
 
@@ -131,13 +132,16 @@ Values checked on jlcpcb.com on <date>.
 
 ## 8. Component candidates
 
-| Block | Candidate (front-runner first) | LCSC | Stock | Class | Package | Why / concerns |
+| Block | Candidate (front-runner first) | LCSC | Stock (region, date) | Class | Package | Why / concerns |
 |---|---|---|---|---|---|---|
 
 ## 9. Decisions
 
-| Decision | Choice | Reason |
-|---|---|---|
+| Decision | Choice | Reason | Agreed by user (date) |
+|---|---|---|---|
+
+An agreed decision is frozen: changing it later (a substitute part, a new threshold) goes back to the user with the
+reason and options first (R26).
 
 ## 10. Assumptions
 

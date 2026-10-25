@@ -49,7 +49,9 @@ References (read when you reach that step):
   list.
 - **Never decide silently.** Anything you assumed instead of asking - "no MCU", "5 V USB is enough", "the board can be
   45 x 30 mm" - is said to the user in the next summary as an assumption they can overturn, not only written in the
-  document. A default the user never saw is a decision they did not make.
+  document. A default the user never saw is a decision they did not make. The converse holds for the rest of the
+  project: what the user agreed to is frozen, and changing it later goes back to them first (R26, kicad-pcb-workflow
+  `SKILL.md`).
 - **Cover the whole operating envelope**, not the typical case: everything that can happen at once (charging while
   running at peak load, radio TX while a motor starts), the worst case of each input and load, the thermal budget of
   the box, the physical area that is not components (connectors, pads, holes), and what has to run before what. Most
@@ -97,7 +99,10 @@ Work through these levels in order. `references/interview-guide.md` has the deta
    places one side only, and it keeps the order cheap.
 6. **Manufacturing.** JLCPCB fab and assembly unless the user says otherwise: economic vs standard assembly, Basic vs
    Extended parts and the per-part loading fee, 0402 as the smallest practical passive, the quantity, and the fact that
-   every part must be in stock. Facts and sources are in `references/jlcpcb-stackups.md`.
+   every part must be in stock **in the warehouse region the assembler buys from** (international JLCPCB: LCSC
+   `global`; JLC China: `cn` - stock differs between them). Write it down once as the project's `sourcing.json`
+   (pcb-part-selection `sourcing.py init`); every stock lookup reads it. Facts and sources are in
+   `references/jlcpcb-stackups.md`.
 7. **Stackup.** Decide the layer count with the rule below and record the reason.
 8. **Component selection.** For each block, two or three candidate parts or modules, checked with the
    **pcb-part-selection** skill (`part_gate.py`: manufacturer lifecycle and stock of the exact orderable variant;
@@ -106,7 +111,8 @@ Work through these levels in order. `references/interview-guide.md` has the deta
    myTI login when you reach this step. Prefer
    modules for RF and anything hard (certified radio modules avoid antenna design and give a certified radio), common
    parts with good datasheets and reference designs, and parts with second sources. Avoid single-source and NRND/EOL
-   parts. Record the candidates and the reason for the front-runner; final choices can wait for schematic capture.
+   parts. Record the candidates and the reason for the front-runner, each with its stock **and the region and date**
+   it was read for; final choices can wait for schematic capture.
 9. **Write the document** (below) and propose next steps.
 
 ## Choosing the layer count

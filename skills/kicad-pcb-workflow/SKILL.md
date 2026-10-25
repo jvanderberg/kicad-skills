@@ -53,6 +53,18 @@ it and exits 1 on a problem. Example (labelled): minipc-power's 87 BOM parts all
 Datasheet, although JLCImport had written the LCSC link into every imported symbol and every part had an LCSC number:
 the redraw, the placed-symbol writer and the board writer each wrote "" without complaint.
 
+**Approved decisions are frozen; changing one is the user's call (R26).** Anything the user agreed to - a part, a
+threshold or trip current, a behaviour, a value they were shown, a feature, the board size - is frozen. When later work
+finds it cannot stand (the part is not stocked in the assembler's region, a pin cannot escape, a substitute moves a
+derived value past its requirement, a rule cannot be met), stop before editing, and bring the user what changed with
+its evidence, every consequence (pcb-part-selection `derived_check.py deps` lists the values that depended on a
+part), two or three options with their costs, and a recommendation; then wait. A change forced by circumstances is
+still a new decision, and so is everything it drags along (a second part changed to keep a trip current where it
+was). This generalises "later stages check earlier frozen decisions" (R10, `references/layout-stages.md`) to every
+phase, part selection included; pcb-part-selection `SKILL.md` "Substituting a part the user approved" has the
+procedure. Record the user's choice where the decision lives (requirements, design notes, `design-values.json`
+`"approved"`).
+
 **Tools do not assume their environment (R21).** Scripts resolve every path from their arguments, never from the
 current folder (`board_diff.py HEAD hardware/x.kicad_pcb` works from anywhere), find a project's own inputs by one
 convention (`projfiles.py`: the project folder and its parents up to the repository root, each folder and its
@@ -92,8 +104,10 @@ the exact revision and KiCad version in `kicad-skills.lock` and checks it on eve
 
 - Get coordinates from the file, not from guessing at a render: `scripts/sexp.py list|get`, or the board-review
   skill's `region.py` (pads, tracks, zones and vias inside a box, per layer) once a `board.json` dump exists.
-- For a new part: choose and verify it with the **pcb-part-selection** skill first (stock, package, datasheet). Use the
-  datasheet's land pattern and layout example, not just the imported footprint.
+- For a new part: choose and verify it with the **pcb-part-selection** skill first (stock in the project's region from
+  `sourcing.json`, package, datasheet). Use the datasheet's land pattern and layout example, not just the imported
+  footprint. For a **replacement** part: `derived_check.py deps` first (what was computed from the old part), and if
+  the old part was approved by the user, R26 above before any edit.
 - For routing: decide the layer and path, and list what it will cross, pass over, or cut (see layout-rules.md). Look in
   `git log -p` / older revisions for routes that existed before (e.g. escape routing of a part you just removed) - reusing
   them is usually far better than inventing new ones.
@@ -143,8 +157,9 @@ the exact revision and KiCad version in `kicad-skills.lock` and checks it on eve
    netlist export, all diffed against the baseline. Required: **0 unconnected items**, no new errors, parity clean.
 3. Netlist assertions for what you added: `scripts/netspec.py check <spec> <sheet>` against the intended netlist (SPLIT,
    SHORT, MISSING, UNEXPECTED). ERC passing does not prove a symbol was not silently dropped or two nets were not
-   joined. `check.sh` also runs `board_lint.py` (no courtyard, missing 3D models, silk on part bodies) and writes the
-   unused/strapped-pin table (`nc_audit.py`); every pin in it needs a recorded decision before layout.
+   joined. `check.sh` also runs `board_lint.py` (no courtyard, missing 3D models, silk on part bodies, vias on
+   same-net pads) and writes the unused/strapped-pin table (`nc_audit.py`); every pin in it needs a recorded decision
+   before layout.
 4. **Geometry checks DRC cannot do**: does a new track on a plane layer cut that plane (and what return paths cross the
    cut)? Did a via field leave isolated copper or slivers? Did a pour lose connection to a pad? Did a power path neck
    down? Use the board-review skill's scripts (`planes.py`, `power.py --net ...`, `view.py`) for these.
@@ -183,7 +198,9 @@ the exact revision and KiCad version in `kicad-skills.lock` and checks it on eve
 - Routing signals on inner copper the designer kept clear. Follow the board's existing layer discipline; signals on
   plane layers need explicit permission.
 - Routing from scratch next to traces that already exist. Check history for existing routes first.
-- Placing a part that is out of stock. Every new part gets a stock check before it is placed.
+- Placing a part that is out of stock. Every new part gets a stock check before it is placed - in the assembler's
+  region (`sourcing.json`), with the region stated when the part is shown to the user.
+- Substituting for an approved part and fixing up what it breaks without asking. Stop and bring the options (R26).
 - Designing around a part from memory. Read the datasheet first.
 - Sizing power copper to the minimum. When there is room, make it wide.
 - Starting a big rework without a checkpoint. Commit (or ask the user to) first.

@@ -31,6 +31,16 @@ negative lead driving two back-to-back N-FETs (common drain), one blocking charg
   reported to trip somewhere around 3-5 A (practice, unverified - compute it from the actual parts), which a
   multi-amp boost load can exceed: choose lower-R_DS(on) FETs or a protector variant with a higher threshold, and keep
   the trip below what the cells, wiring and connector survive.
+- **The trip current belongs to the FETs as much as to the protector.** Changing the FETs (a substitute for one that
+  is not stocked in the assembler's region, a cheaper or cooler part) moves the trip by the ratio of their R_DS(on),
+  and the protector variant chosen for the old FETs may now trip below the peak load or above what the wiring
+  survives. Record the trip in `design-values.json` with both FETs and the protector's threshold as inputs
+  (pcb-part-selection `derived_check.py`; ref, orderable part, the R_DS(on) condition used, the number). A FET swap then
+  shows the trip as stale; re-derive it at the same corners before going on. If keeping the agreed trip needs another
+  protector variant or threshold, that is a change to an approved value: take the new trip, the options and their
+  heat and stock consequences to the user first (R26). Example (labelled): a substitute FET with about 2.5x the
+  R_DS(on) of the approved one put a 75 mV protector's worst-case trip below the 15 W peak; the variant was being
+  re-picked without asking, after the user had settled the protection values.
 - **Charge overcurrent (OCC)** and zero-volt charging for depleted cells are also typical [TI BQ297xx p1].
 - **Drain:** the protector draws current permanently (BQ2970x: 4 uA typical, 5.5 uA maximum in normal mode
   [TI BQ297xx p5]) - include it in the sleep budget.

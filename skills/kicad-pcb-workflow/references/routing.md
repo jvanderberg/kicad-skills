@@ -49,7 +49,12 @@ error. The board is regenerated from schematic + placement + plan, so the plan i
 nets (the larger of the two nets' net-class clearances, round track ends), the board edge, and **hole-to-hole distance
 to every drilled hole, whatever its net**. The last one matters: a clearance check rightly skips same-net copper, but
 holes must keep apart regardless of net, and a ground stitching pass that drops a via onto a hand-placed ground via is a
-`hole_to_hole` DRC error at 0.000 mm. It logs VIOLATION / REJECTED lines and exits 1 if there are any. It does not model
+`hole_to_hole` DRC error at 0.000 mm. The same goes for pads: a via on or touching a pad of its own net passes DRC and the
+clearance check, and the open barrel wicks solder out of that joint (on one board a via helper dropped a via into the
+neighbouring source pad of a FET). The router rejects it unless the pad is named (`in_pad=('U5', '21')` on `via()` /
+`via_field()` for thermal vias in an exposed pad, ordered filled or tented), and `board_lint.py` (in `check.sh`)
+reports VIA IN PAD on any board, however the via got there. A same-net exemption belongs to the one rule it was made
+for. It logs VIOLATION / REJECTED lines and exits 1 if there are any. It does not model
 custom `.kicad_dru` rules (pass `clearance=` on that call and name the rule) or zone fills. Then run `check.sh` - DRC is
 the authority - and fix every new clearance error and unconnected item.
 

@@ -1,6 +1,6 @@
 ---
 name: pcb-part-selection
-description: Choosing, verifying and sourcing electronic components for a KiCad board assembled at JLCPCB/LCSC (or similar) - finding parts, checking stock and assembly class, reading the datasheet for limits, variants and required external parts, deriving component values from datasheet equations, importing symbols/footprints/3D models, and sweeping the whole BOM before an order. Use it whenever a part is added, swapped or questioned ("what regulator should I use", "is X in stock", "find a replacement", "why is JLC rejecting my BOM"), when calculating divider/inductor/capacitor values from a datasheet, and before any board order.
+description: Choosing, verifying and sourcing electronic components for a KiCad board assembled at JLCPCB/LCSC (or similar) - finding parts, checking stock in the assembler's own warehouse region and assembly class, reading the datasheet for limits, variants and required external parts, deriving component values from datasheet equations, importing symbols/footprints/3D models, and sweeping the whole BOM before an order. Use it whenever a part is added, swapped or questioned ("what regulator should I use", "is X in stock", "find a replacement", "why is JLC rejecting my BOM"), when calculating divider/inductor/capacitor/trip values from a datasheet, whenever a part is substituted (re-derive every value that used it), and before any board order.
 ---
 
 # PCB part selection and sourcing
@@ -24,12 +24,42 @@ orderable part number at one moment**. Before building on any of them:
 - **Distributor stock is not evidence a part is still made.** Read the lifecycle on the manufacturer's product page
   (ACTIVE / NRND / LAST TIME BUY / OBSOLETE). A product page that returns 404, or a datasheet link that returns an HTML
   page instead of a PDF, means treat the part as discontinued until the manufacturer says otherwise.
-`scripts/part_gate.py <names...>` does the lifecycle (TI product pages; other vendors: check by hand) and LCSC stock per
-exact variant in one command; `--from-text` takes pasted text such as a design tool's results table.
+`scripts/part_gate.py <names or C-numbers...>` does the lifecycle (TI product pages; other vendors: check by hand) and
+LCSC stock per exact variant in the project's region in one command; `--from-text` takes pasted text such as a design
+tool's results table.
 
 Statements in these skills about third-party sites and tools (JLC, LCSC, TI, WEBENCH, jlcimport) carry the date they
 were checked. Treat them as hints about where to look: discover the current behaviour (read the page, run `--help`),
 and update the skill text when it has changed.
+
+## Availability is a fact about one warehouse (R24)
+
+A stock figure answers "how many of this exact part can **this assembler** buy, **from where**, **today**, against the
+quantity this order needs" - not "is the part available". LCSC runs two warehouses with separate stock: `global` (what
+international JLCPCB assembly buys from, USD) and `cn` (SZLCSC / JLC China, CNY) (jlcimport-cli 1.6.7 `--help` and
+prices, October 2026). The same C-number can be plentiful in one and absent from the other. Example (labelled): a
+protection FET (Vishay SiSS80DN, C3289423) showed 12,000 in a search, was approved by the user and the block was laid
+out around it; `bom_check.py` then found 0 in the global warehouse the project's assembler buys from. The search had gone to `cn`, because `jlcimport-cli search` takes its region
+from its own config when `--region` is missing, and that config is whatever the KiCad plugin's region menu last used.
+The layout was redone around a substitute, whose higher R_DS(on) then moved the protector's trip current (below).
+
+So:
+- **The project states its sourcing context once**: `sourcing.json` (assembler, region, assembled boards, attrition,
+  stock policy, named exceptions), kept where `projfiles.py` finds project inputs (`docs/` works). Create it at the
+  manufacturing step of the interview: `scripts/sourcing.py init <project> --assembler JLCPCB --region global`.
+  `sourcing.py show` prints what every script will use.
+- **Every lookup reads it and names the region explicitly.** `sourcing.py search`, `sourcing.py stock`, `part_gate.py`
+  and `bom_check.py` pass `--region` from it, print the region and date on their first line, and stop when there is
+  neither a `sourcing.json` nor a `--region`: there is no default. Do not run `jlcimport-cli search` directly; if you
+  must, always pass `--region <the project's region>`. Never rely on a third-party tool's default for a fact that
+  depends on context (R21).
+- **Stock in the other region does not count.** The scripts show it beside a short part, labelled as such, because it
+  is exactly what makes an unorderable part look fine. Pre-order, consignment or another part is the way out, and that
+  is the user's choice.
+- **Check availability at the point of selection, for every candidate, before the user is asked to choose and before
+  any layout work.** Present each candidate as: part, LCSC number, stock **with region and date**, need (per board x
+  boards + attrition), assembly class, price with currency. A candidate shown without its region is not checked.
+- **Re-check at every hand-off** (schematic capture, before layout, before ordering): stock moves daily.
 
 ## Finding candidates
 
@@ -37,14 +67,15 @@ and update the skill text when it has changed.
   hand** (TI WEBENCH: the pcb-power-supply skill's checklist and `webench.md`), then gate its picks. Chargers are not
   covered by WEBENCH; use their datasheets.
 - **Gate every candidate** with `scripts/part_gate.py` before spending design time on it.
-- Search LCSC/JLC with JLCImport's CLI (`https://github.com/jvanderberg/kicad_jlcimport`; install below):
-  `jlcimport-cli search "<keyword | MPN | C-number>" --region global [-t basic|extended|both] [--min-stock 1000] [--csv] -n 15`
-  Basic parts search badly by value; search a family part number (e.g. UNI-ROYAL `0402WGF1003TCE` for 0402 1 %
+- Search LCSC/JLC through the project's sourcing context: `scripts/sourcing.py search "<keyword | MPN>" [-n 15]
+  [-t basic|extended|both] [--min-stock 1000]` (JLCImport's CLI underneath, `https://github.com/jvanderberg/kicad_jlcimport`,
+  with `--region` from `sourcing.json`); `sourcing.py stock C123 C456 --per-board 3` checks exact C-numbers against the
+  order need. Basic parts search badly by value; search a family part number (e.g. UNI-ROYAL `0402WGF1003TCE` for 0402 1 %
   resistors). Many descriptions are Chinese (升降压 = buck-boost, 降压 = buck).
 - Prefer the plentiful variant when choices are equivalent (an automotive-grade version with many times the stock for
   a small premium is often the better buy). Ask the user when the trade-off is real.
-- Check stock **in the region the assembler buys from** (global JLC warehouse vs `--region cn`); they can differ by
-  orders of magnitude, and pre-order/consignment from the other side is sometimes the way out.
+- Stock counts only **in the region the assembler buys from** (R24 above); the other region is information, not
+  supply.
 - Check the assembly class: `curl -sL -A 'Mozilla/5.0' https://jlcpcb.com/partdetail/<C-number> | grep -o 'Economic and Standard\|Standard Only'`.
   "Standard only" parts force the whole order to standard assembly; the same part under another C-number may be
   economic. Each unique Extended part costs a loading fee (about $3) on economic assembly; regulators are almost never
@@ -81,6 +112,39 @@ like: an EN/UVLO divider from the threshold and hysteresis current (and the pin'
 divider from Vref; a frequency-set resistor; a spread-spectrum capacitor from its modulation equation; an inductor
 from ripple and I_sat; a PTC from hold current derating and I_max versus the upstream fuse.
 
+**Every derived value records what it depends on (R25).** A value computed from one part's parameters is right only
+for that part, and nothing in ERC, DRC or a stock check notices when the part changes. Coupled values are easy to
+miss because they live in another block: a protector's over-current trip is its threshold divided by the FETs'
+R_DS(on) (pcb-battery-power `protection-and-safety.md`); a current-limit or sense resistor is sized from a FET or a
+shunt; a snubber or compensation network from a switch's or a capacitor's capacitance; a UVLO divider from an IC's
+threshold; an inductor's I_sat from the converter's current limit; a temperature estimate from a package's psi / theta
+and its copper. Record each one in the project's `design-values.json` (format: `scripts/derived_check.py --help`): the
+value, the equation, where it is written out, and per input the ref, the orderable part (LCSC number or MPN), the
+parameter and the number used, with its datasheet page; mark `"approved"` when the user agreed to it.
+- **Before swapping a part**: `derived_check.py deps SHEET Q2 Q3` lists every recorded value that used it. Re-read
+  each parameter from the new part's datasheet (at the same conditions: Vgs, temperature, corner), re-derive, and
+  update the record. If nothing is listed but something was computed from the part, record it first.
+- **After any part change**: `derived_check.py check SHEET` (bom_check.py runs it) reports every value whose source
+  part changed as STALE, with the number to re-read. A swap is not done while any value is stale.
+- If a re-derived value no longer meets its requirement (the trip falls below the peak load), the fix (another
+  variant, another threshold, another part) changes something the user approved: R26 below.
+
+## Substituting a part the user approved (R26)
+
+A part, threshold or behaviour the user agreed to is a frozen decision (kicad-pcb-workflow `SKILL.md`, "Approved
+decisions are frozen"). When it has to change - no stock in the assembler's region, a footprint that cannot be
+routed, a lifecycle problem, a re-derived value that now fails - stop before editing anything and bring the user:
+1. what changed and the evidence (the stock line with region and date, the failing number);
+2. every consequence, from `derived_check.py deps` and the re-derivation: which values move, from what to what, and
+   whether each still meets its requirement;
+3. two or three options with their costs (a substitute and what else must change with it; pre-order or consignment;
+   relaxing the requirement), and a recommendation.
+Then wait for the choice. A forced substitution is still a new decision: the cascade it starts (a second part to keep
+the trip current, a new threshold) is part of the same question, not a follow-up done silently. Example (labelled):
+after the unorderable FET above, the substitute's ~2.5x higher R_DS(on) moved the over-current trip below the 15 W
+peak, and the protector variant was being re-chosen without asking; the user, who had approved the protection values,
+had to ask why they were changing.
+
 ## Importing into KiCad
 
 **Prefer standard, verified building blocks over imported ones.** Use KiCad's library footprint whenever the package is
@@ -115,16 +179,22 @@ matcher proposed a wrong pin count or body size for most of the parts it was ask
 (pipx brings its own recent pip; a system Python 3.9 with pip 21 could not do an editable `pip install -e` of the
 repository). The `--region` option the
 commands here use appeared in v1.6.0: check with `jlcimport-cli search --help`, and do not use an older prebuilt
-binary that lacks it.
+binary that lacks it. Without `--region`, `search` uses the region saved in its config (`jlcimport.json` in KiCad's
+preferences folder, written by the plugin's region menu; v1.6.7): the skills' scripts always pass it, and
+`preflight.py --project` says when that saved default differs from the project's region.
 
 ## Before every order (and after any part change)
 
-`python3 ${CLAUDE_SKILL_DIR}/scripts/bom_check.py <project>.kicad_sch --boards N [--cli path/to/jlcimport-cli]`
+`python3 ${CLAUDE_SKILL_DIR}/scripts/bom_check.py <project>.kicad_sch [--boards N] [--cli path/to/jlcimport-cli]`
 
-It exports the BOM from the schematic and flags parts with no LCSC number, numbers not found, stock below
-N boards x count + 10 %, packages below 0402, and Extended parts. Re-run it right before ordering - stock moves daily.
+It reads the sourcing context (`sourcing.json`; its first output line names assembler, region, quantity and date),
+exports the BOM from the schematic and flags parts with no LCSC number, numbers not listed in the region, stock below
+boards x count x (1 + attrition) or below the project's stock policy (unless a named exception covers the part),
+packages below 0402, Extended parts, missing datasheet links and stale derived values (`design-values.json`). Re-run it
+right before ordering - stock moves daily.
 Then check by hand that each LCSC number really is the part
 the symbol means (value, voltage, package, pinout): a valid number can still be the wrong part. Parts with no
 substitute (polarity-marked inductors, specific crystals, modules) need a plan before the order: a second source,
-pre-order, or consignment. If the project has a stock policy (e.g. at least 1,000 listed per MPN) apply it, and list
-any user-approved exceptions explicitly.
+pre-order, or consignment. If the project has a stock policy (e.g. at least 1,000 listed per part), put it in
+`sourcing.json` as `min_stock`, with each user-approved exception named (`exceptions`: LCSC number, reason, who
+approved it and when); bom_check applies both and notes exceptions for parts no longer in the BOM.

@@ -127,10 +127,13 @@ roughly 10 / 0.9 + 2 x 4.2 / 0.9, about 20 W - beyond any 5 V USB-C source.
 | Fab and assembler? | JLCPCB fab + JLC economic assembly | Sets capabilities, part library (LCSC) and fees |
 | Assembled by JLC, by hand, or a mix? | JLC assembles SMD, user solders big through-hole | Hand soldering limits package choice (0603+ and no QFN/BGA is a hobby-friendly floor) |
 | Quantity per order? | 5 boards, 2-5 assembled | JLC assembly can populate fewer boards than are fabricated |
+| Which JLC: international (jlcpcb.com) or China (jlc.com)? | International: LCSC **global** warehouse | Stock is per warehouse region (global vs cn): a part can be plentiful in one and absent from the other. Written to `sourcing.json`; every stock lookup reads it |
 | Finish and colour? | HASL (lead-free), green | ENIG for fine-pitch parts or edge contacts |
 
 Defaults to state: smallest passive 0402 (0201 forces standard assembly), each unique Extended part adds a loading
-fee, every part must be in stock at LCSC in the assembler's region at order time.
+fee, every part must be in stock at LCSC in the assembler's region at order time. When this level is answered, write
+the sourcing context: `pcb-part-selection/scripts/sourcing.py init <project> --assembler JLCPCB --region global
+--boards <assembled>` (plus `min_stock` if the user wants a stock policy).
 
 ## 7. Stackup
 
@@ -142,8 +145,11 @@ any DDR/BGA/multiple gigabit links (6+: out of scope). State the decision and th
 
 For each block, list two or three candidates with the **pcb-part-selection** checks:
 
-| Block | Candidate | LCSC | Stock | Class | Package | Why / concerns |
+| Block | Candidate | LCSC | Stock (region, date) | Class | Package | Why / concerns |
 |---|---|---|---|---|---|---|
+
+Fill the stock column from `part_gate.py` / `sourcing.py stock` (the project's region from `sourcing.json`), e.g.
+"2,341 (global, 2026-10-25)"; a figure without its region was not checked for this assembler.
 
 What makes a good hobby candidate: a module for anything RF or hard; a part with a reference design and a large
 community; in stock with thousands available; Basic or Preferred Extended where a choice exists; hand-solderable if the

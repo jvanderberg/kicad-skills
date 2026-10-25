@@ -37,7 +37,8 @@ changes and in the analysis you are given, and try hard to find them. Do not sof
 5. Check every fast and exposed signal: reference continuity, layer changes and return vias, crosstalk, termination,
    length, edge proximity, ESD at connectors.
 6. Check regulator layouts against their datasheet layout examples item by item.
-7. Check sourcing (stock, special parts), assembly constraints, 3D clearances, silkscreen.
+7. Check sourcing (stock in the assembler's region from `sourcing.json`, with the date; special parts), derived values
+   against the fitted parts (`derived_check.py`), assembly constraints, 3D clearances, silkscreen.
 8. Run the mechanical pin audits at the end of `netlist.md` and confirm each flagged pin against its datasheet:
    power pins on unconnected nets, active-low pins tied to a rail, data direction, LED resistor power. Then trace
    every serial/memory/UART line driver-to-receiver against both datasheets yourself - a swapped direction passes

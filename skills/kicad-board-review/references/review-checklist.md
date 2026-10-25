@@ -303,6 +303,14 @@ page that contains the real PDF link.
 - `netdigest.py` prints mechanical audits for these at the end of `netlist.md` - a prompt to check, not a substitute.
 - **Resistor power on high rails:** every LED / pull resistor's I^2 R at the highest rail voltage (a 1 k 0402 on 12 V
   dissipates 100 mW against a 62.5 mW rating; at 24 V a 0402 at 50 % derating allows about 1.4 mA).
+- **Derived values match the parts fitted (R25).** **Output:** `pcb-part-selection/scripts/derived_check.py check SHEET`
+  with no STALE line, and its coverage line (how many values and dependencies were checked, which ICs, FETs,
+  inductors and fuses no value names). Every value computed from a part parameter - a protector's FET-sensed trip
+  current, a current-limit or sense resistor, a snubber or compensation, a UVLO divider, an I_sat margin, a thermal
+  estimate - names the part it was computed for; after any swap the value was re-derived from the new part's
+  datasheet at the same conditions. With no `design-values.json`, re-derive the coupled values by hand for every part
+  changed since they were computed (`board_diff.py` / `git log` on the schematic says which) and record them; report
+  the area NOT CHECKED otherwise.
 
 ## 8. Sourcing and assembly  (the **pcb-part-selection** skill, `bom_check.py`)
 
@@ -310,8 +318,11 @@ page that contains the real PDF link.
   (`kicad-pcb-workflow/scripts/partfields.py check SHEET BOARD`; `netlist.md` section 7 lists BOM parts with no
   link). A blank Datasheet on a part with an LCSC number means a stage threw the link away; it is a finding, and the
   reviewer cannot have read a datasheet the board does not name.
-- Every part in stock for the order quantity plus attrition, in the region the assembler buys from; re-check right
-  before ordering (stock moves daily; a part with a handful of units can sell out or be restocked within a week).
+- Every part in stock for the order quantity plus attrition, **in the region the assembler buys from** (R24).
+  **Output:** `bom_check.py`, whose first line names the assembler, region, quantity and date from the project's
+  `sourcing.json` (a stock figure without its region says nothing about this assembler: LCSC's global and cn
+  warehouses differ, and a part can be plentiful in one and absent from the other). Re-check right before ordering
+  (stock moves daily; a part with a handful of units can sell out or be restocked within a week).
 - Special parts with no substitute (polarity-marked inductors, specific crystals, modules): find the second source or
   plan consignment now, not at order time.
 - Package sizes the assembler can place economically (no 0201 at JLC economic), Economic vs Standard assembly per part,
@@ -321,8 +332,11 @@ page that contains the real PDF link.
   product page = treat as discontinued), and check that each design value came from the datasheet of the exact
   orderable variant fitted. Keyed,
   retained connectors for anything a user plugs in (no bare pin headers in production).
-- A project stock policy is worth stating explicitly (example: at least 1,000 listed units per MPN, with named
-  user-approved exceptions), then checked mechanically.
+- A project stock policy is worth stating explicitly (example: at least 1,000 listed units per part, with named
+  user-approved exceptions), then checked mechanically: `min_stock` and `exceptions` in `sourcing.json`, applied by
+  `bom_check.py`.
+- **Substitutions since the user's approval** are listed with the user's decision on each (R26): a part, threshold or
+  behaviour that changed without one is a finding, whatever the reason for the change.
 - Every polarised or oriented part checked in the assembler's placement preview; fix rotation permanently with
   `Rotation Offset` / `Position Offset` fields on the symbol rather than per order.
 - Fabrication outputs (gerbers, BOM, CPL) regenerated after the last change - compare their timestamps with the board's

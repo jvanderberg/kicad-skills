@@ -46,7 +46,8 @@ At the start, and whenever you deliberately move to a newer kicad-skills:
 
 Keep the project's own kicad-skills inputs where `projfiles.py` finds them (`docs/` at the repository root works):
 `pin-decisions.json`, `drc-accept.json`, `field-exemptions.json`, `reference-parts.json`, `review_config.json`,
-`kicad-skills.lock`.
+`kicad-skills.lock`, `sourcing.json` (assembler and LCSC region: pcb-part-selection `sourcing.py`) and
+`design-values.json` (derived values and the part parameters they came from: `derived_check.py`).
 
 ## 1. Write the circuit down as data first
 

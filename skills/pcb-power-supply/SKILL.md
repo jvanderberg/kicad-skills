@@ -29,7 +29,12 @@ References (read the one you need):
       cover battery chargers: those use the datasheet procedure (pcb-battery-power).
 - [ ] **Gate every candidate for lifecycle and stock** before customising a design around it (pcb-part-selection's
       `part_gate.py`): tool recommendations and distributor stock are snapshots, not evidence the part is made or
-      buyable.
+      buyable. Stock counts only in the assembler's region (the project's `sourcing.json`); show the user each
+      candidate's stock with region and date.
+- [ ] **Record every value derived from a part's parameters** (dividers, current limits, trip currents, snubbers,
+      compensation, inductor I_sat vs current limit, loss and temperature estimates) with the part and parameter it
+      used, in `design-values.json` (pcb-part-selection `derived_check.py`), so a later part swap shows what to
+      re-derive.
 - [ ] **Design for the exact orderable variant** and its own datasheet.
 - [ ] **Collect the layout reference pack** for the chosen part before placement (step 6), including the
       datasheet typical application's full parts list (`reference-parts.json`, checked with `refparts.py`).
@@ -98,6 +103,8 @@ package. A buck at 90 % on the same job dissipates about 0.3 W.
 - **Variant suffixes** change the part (forced PWM vs auto, fixed vs adjustable output, automotive grade, package).
   Read the ordering table, and when you switch to a variant (e.g. because the commercial part is discontinued),
   re-derive every value from that variant's datasheet: equations, references and limits can differ.
+  `derived_check.py deps SHEET U3` lists the recorded values that used the old one; a variant switch on an approved
+  design goes to the user with those consequences first (R26).
 - Stock and assembly class with the **pcb-part-selection** skill. Regulators are rarely JLC Basic; plan for the
   extended-part fee. Prefer the plentiful variant when equivalent.
 - **Run the requirement through TI WEBENCH Power Designer** in the browser when browser tools are available
@@ -124,6 +131,11 @@ Follow the datasheet's "Detailed Design Procedure" first - it is specific to the
 - **Enable/UVLO divider:** from the EN threshold and hysteresis current; check the EN pin's abs max at the highest
   input; set turn-on above where the converter can actually regulate and below the lowest real input.
 - **Bootstrap, soft-start, frequency-set, compensation, spread-spectrum** parts from the datasheet equations.
+- **Record each derived value's inputs** (R25): the value, its equation, and per input the ref, orderable part,
+  parameter and number used, in `design-values.json`. Values here couple across parts more than it looks: the
+  inductor's I_sat is checked against the IC's current limit, the EN divider against the IC's threshold and the
+  source's lowest voltage, the output capacitance against the IC's stable range - change either part and the check is
+  stale. `derived_check.py check` (bom_check runs it) says which.
 
 ## 5. Part it out
 
@@ -179,7 +191,8 @@ exposed pad.
 
 ## 8. Verify
 
-- Calculations reviewed against the datasheet procedure; numbers in the doc.
+- Calculations reviewed against the datasheet procedure; numbers in the doc; `derived_check.py check` reports no stale
+  value (each one's source parts are the parts fitted).
 - Worst-case startup: lowest input after all upstream drops still above UVLO and enough for regulation; highest input
   plus surge below every abs max. "After all upstream drops" means the solved operating point (`path_budget.py`),
   since the drops grow with the current the converter draws at that lower voltage.

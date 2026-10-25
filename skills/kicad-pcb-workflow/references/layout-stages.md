@@ -14,7 +14,13 @@ multi-phase job, not only layout:
    re-run alone.
 3. **Every stage is verified against its reference, not only against generic checks.**
 4. **A later stage checks the earlier stages' frozen decisions for feasibility before treating them as final**, and
-   sends any it cannot honour back to the user as a decision - never a silent shortcut.
+   sends any it cannot honour back to the user as a decision - never a silent shortcut (R10; the general rule is R26 in
+   `SKILL.md`, "Approved decisions are frozen"). Parts are frozen decisions too: a part found unorderable or
+   unroutable during layout is not swapped in the layout script; it goes back with its consequences (pcb-part-selection
+   "Substituting a part the user approved").
+5. **Before a stage spends effort on a part, its availability is re-checked** in the assembler's region
+   (`sourcing.py stock` / `part_gate.py`, region from `sourcing.json`), so a placement or routing stage is never built
+   around a part that cannot be bought.
 
 ## Stages
 
@@ -48,6 +54,8 @@ discover one is not achievable. Before calling placement done:
   routing time.
 - Each block's placement matches its reference figure (hot-loop parts at the pins, quiet-side parts, orientation).
 - `check.sh` courtyard results clean (`board_lint.py` lists footprints with no courtyard: those are invisible to it).
+- Every part in the placement is in stock in the assembler's region today (`bom_check.py`; the first line names the
+  region), and no recorded derived value is stale (`derived_check.py check`, run by bom_check).
 - Report every frozen decision the placement could not honour as an open question with options.
 
 ## The brief (one per stage; template: `assets/layout-brief-template.md`)
