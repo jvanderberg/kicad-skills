@@ -5,7 +5,10 @@
 #  - layer changes: signal vias, the layers they join and the distance to the nearest ground via (return-current path)
 #  - edge proximity of fast nets, switching-node copper area, hot loops (IC pin -> input cap -> ground pin)
 #  - fast-net inventory with closed-form microstrip Z0, and differential pair length/skew
-# Net classes come from review_config.json "net_classes" (regex -> class); classes in "fast_classes" get the full checks.
+# Net classes come from review_config.json "net_classes" (regex -> class) plus switch nodes derived from the netlist
+# (topology.py); classes in "fast_classes" get the full checks. Hot loops are the configured ones plus, for every
+# switching IC without one, the derived candidates. emc.json "coverage" says what was classified, derived, skipped and
+# why; reference spans carry a severity (void > another net's plane > ground edge) so the list can be read in order.
 from shapely.strtree import STRtree
 from common import *
 
@@ -37,6 +40,26 @@ for f in B['footprints']:
         if p['th'] and p['net']: _op[p['net']].append(Point(p['x'], p['y']).buffer(max(p['drill'], 0.3) / 2 + 1.0))
 for v in B['vias']: _op[v['net']].append(Point(v['x'], v['y']).buffer(v['drill'] / 2 + 0.6))
 own_pads = {k: unary_union(v) for k, v in _op.items()}
+# decoupling capacitors per net (one pad on the net, the other on ground), for "over another net's plane" spans
+_decap = {}
+def decap_dist(net, pt):
+    if net not in _decap:
+        _decap[net] = [(r, FP[r]['x'], FP[r]['y']) for r in (TOPO.caps_to_ground(net) if TOPO else []) if r in FP]
+    d = [(math.dist(pt, (x, y)), r) for r, x, y in _decap[net]]
+    return min(d) if d else (None, None)
+def coplanar(L, seg, w):
+    """fraction of the span with same-layer ground pour on both sides (a track running inside a ground pour)"""
+    g = refgeo[L]['gnd']
+    if g.is_empty or seg.geom_type != 'LineString' or seg.length < 0.05: return 0.0
+    fr = []
+    for side in ('left', 'right'):
+        o = seg.parallel_offset(w / 2 + 0.5, side)
+        fr.append(o.intersection(g).length / o.length if o.length else 0.0)
+    return round(min(fr), 2)
+def severity(ref, cop):
+    if ref == 'void': return 'high'
+    if ref == 'GND_edge': return 'low'
+    return 'low' if cop >= 0.7 else 'medium'
 ref_report = collections.defaultdict(lambda: dict(len=collections.Counter(), spans=[]))
 for t in sig_tracks:
     if not REF[t['layer']]: continue
@@ -53,14 +76,24 @@ for t in sig_tracks:
         if c[i] != 'GND' and L_ >= 0.15:
             seg = LineString([P[i], P[j]]) if j > i else Point(P[i])
             entry = bool(t['net'] in own_pads and seg.distance(own_pads[t['net']]) < 0.05 and seg.length < 1.6)   # expected antipad gap
-            rec['spans'].append(dict(ref=c[i], len=round(L_, 2), at=[round(P[i, 0], 2), round(P[i, 1], 2)], to=[round(P[j, 0], 2), round(P[j, 1], 2)], pad_entry=entry))
+            sp_ = dict(ref=c[i], len=round(L_, 2), at=[round(P[i, 0], 2), round(P[i, 1], 2)], to=[round(P[j, 0], 2), round(P[j, 1], 2)], pad_entry=entry)
+            if not entry:
+                sp_['coplanar_gnd'] = coplanar(t['layer'], seg, t['w'])
+                if c[i] not in ('void', 'GND_edge'):
+                    d_, r_ = decap_dist(c[i], ((P[i, 0] + P[j, 0]) / 2, (P[i, 1] + P[j, 1]) / 2))
+                    sp_['nearest_decap'] = dict(ref=r_, mm=round(d_, 1)) if r_ else None
+                sp_['severity'] = severity(c[i], sp_['coplanar_gnd'])
+            rec['spans'].append(sp_)
             if entry: rec['len']['pad_entry'] += L_; rec['len'][c[i]] -= L_
         i = j + 1
 refout = []
+SEV = {'high': 0, 'medium': 1, 'low': 2}
 for (net, L), rec in sorted(ref_report.items(), key=lambda kv: natkey(kv[0][0])):
+    spans = [x for x in rec['spans'] if not x['pad_entry']]
+    sev = min((x['severity'] for x in spans), key=SEV.get, default=None)
     refout.append(dict(net=net, cls=cls(net), layer=L, ref_layer=REF[L][0], length=round(sum(rec['len'].values()), 2), over_gnd=round(rec['len']['GND'], 2),
                        not_over_gnd={k: round(v, 2) for k, v in rec['len'].items() if k not in ('GND', 'pad_entry') and v > 0.05},
-                       spans=sorted([x for x in rec['spans'] if not x['pad_entry']], key=lambda s: -s['len'])[:8]))
+                       severity=sev, spans=sorted(spans, key=lambda s: (SEV[s['severity']], -s['len']))[:8]))
 
 segs = [(t, LineString([t['a'], t['b']])) for t in sig_tracks if t['a'] != t['b']]
 def ang(t): return math.atan2(t['b'][1] - t['a'][1], t['b'][0] - t['a'][0]) % math.pi
@@ -118,23 +151,54 @@ edge = [dict(net=t['net'], layer=t['layer'], dist_mm=round(track_geom(t).distanc
 
 sw = {n: {L: round(copper(n, L).area, 2) for L in LAYERS if not copper(n, L).is_empty} for n in sorted(NETS) if cls(n) == 'switch'}
 def pads_on(ref, net): return [p for p in FP[ref]['pads'] if p['net'] == net] if ref in FP else []
-loops = []
-for hl in CFG.get('hot_loops', []):
+# effective hot loops: every configured one, plus the derived candidates of each switching IC that no configured loop
+# actually checked (a configured entry whose IC or nets do not match this board counts as not configured)
+loops, loop_status = [], []
+def check_loop(hl):
     ic, vin, gn = hl['ic'], hl['in_net'], hl.get('gnd_net', 'GND')
+    st = dict(ic=ic, loop=hl.get('label', vin), in_net=vin, gnd_net=gn, source=hl['source'])
+    loop_status.append(st)
     ipads, gp = pads_on(ic, vin), pads_on(ic, gn)
-    if not ipads or not gp: continue
+    if ic not in FP: st['status'] = 'NOT CHECKED: %s is not on the board' % ic; return
+    if not ipads: st['status'] = 'NOT CHECKED: no pad of %s is on %s' % (ic, vin); return
+    if not gp: st['status'] = 'NOT CHECKED: no pad of %s is on %s' % (ic, gn); return
     s1 = {r for r, _, _, _ in NETS.get(vin, [])}; s2 = {r for r, _, _, _ in NETS.get(gn, [])}
-    for c in sorted([r for r in s1 & s2 if r.startswith('C')], key=natkey):
+    caps = [r for r in s1 & s2 if r.startswith('C') and pads_on(r, vin) and pads_on(r, gn)]
+    if not caps: st['status'] = 'FAIL: no capacitor between %s and %s' % (vin, gn); return
+    rows = []
+    for c in sorted(caps, key=natkey):
         cv, cg = pads_on(c, vin)[0], pads_on(c, gn)[0]
         a_ = min(ipads, key=lambda p: math.dist((p['x'], p['y']), (cv['x'], cv['y']))); g_ = min(gp, key=lambda p: math.dist((p['x'], p['y']), (cg['x'], cg['y'])))
         dv = math.dist((a_['x'], a_['y']), (cv['x'], cv['y']))
-        if dv > 15: continue
         lp = Polygon([(a_['x'], a_['y']), (cv['x'], cv['y']), (cg['x'], cg['y']), (g_['x'], g_['y'])])
-        loops.append(dict(ic=ic, loop=hl.get('label', vin), cap=c, cap_value=NL['components'].get(c, {}).get('value', ''), pin_to_cap_mm=round(dv, 2),
-                          gnd_pin_to_cap_mm=round(math.dist((g_['x'], g_['y']), (cg['x'], cg['y'])), 2),
-                          plan_loop_area_mm2=round(abs(lp.area) if lp.is_valid else lp.buffer(0).area, 2),
-                          note='distances are pad centre to pad centre; subtract pad half-widths for edge-to-edge'))
+        rows.append(dict(ic=ic, loop=st['loop'], source=hl['source'], cap=c, cap_value=NL['components'].get(c, {}).get('value', ''),
+                         farads=parse_value(NL['components'].get(c, {}).get('value', '')), pin_to_cap_mm=round(dv, 2),
+                         gnd_pin_to_cap_mm=round(math.dist((g_['x'], g_['y']), (cg['x'], cg['y'])), 2),
+                         plan_loop_area_mm2=round(abs(lp.area) if lp.is_valid else lp.buffer(0).area, 2),
+                         ic_pin=a_['num'], ic_gnd_pin=g_['num'], cap_pad=cv['num'], cap_gnd_pad=cg['num'],
+                         note='distances are pad centre to pad centre; subtract pad half-widths for edge-to-edge'))
+    near = [r for r in rows if r['pin_to_cap_mm'] <= 15]
+    if not near:
+        n0 = min(rows, key=lambda r: r['pin_to_cap_mm'])
+        st['status'] = 'FAIL: nearest capacitor %s (%s) is %.1f mm from the pin' % (n0['cap'], n0['cap_value'], n0['pin_to_cap_mm']); return
+    loops.extend(near)
+    nearest = min(near, key=lambda r: r['pin_to_cap_mm'])
+    sized = [r for r in near if r['farads']]
+    small = min(sized, key=lambda r: (r['farads'], r['pin_to_cap_mm'])) if sized else None
+    st.update(status='ok', caps=len(near), nearest=dict(cap=nearest['cap'], value=nearest['cap_value'], mm=nearest['pin_to_cap_mm'], area=nearest['plan_loop_area_mm2']),
+              smallest=dict(cap=small['cap'], value=small['cap_value'], mm=small['pin_to_cap_mm']) if small else None)
+for hl in CFG.get('hot_loops', []): check_loop(dict(hl, source='config'))
+covered = {s_['ic'] for s_ in loop_status if s_['status'] == 'ok'}
+if TOPO:
+    for ic, o in TOPO.switching_ics.items():
+        if ic in covered: continue
+        cs = o['hot_loop_candidates']
+        WARN.append('%s (%s) switches %s but no configured hot loop checked it: using %d derived candidate(s) %s - confirm against its datasheet layout' % (
+            ic, o['value'], ', '.join(o['switch_nodes']), len(cs), ', '.join(c['in_net'] for c in cs)))
+        for c in cs: check_loop(dict(ic=ic, in_net=c['in_net'], gnd_net=c['gnd_net'], label=c['label'], source='derived'))
 loops.sort(key=lambda r: (r['ic'], r['loop'], r['pin_to_cap_mm']))
+for st in loop_status:
+    if st['status'] != 'ok': WARN.append('hot loop %s %s: %s' % (st['ic'], st['loop'], st['status']))
 
 inv = []
 for n in sorted({t['net'] for t in sig_tracks if cls(t['net']) in FAST}, key=natkey):
@@ -149,9 +213,63 @@ for a_, b_ in CFG.get('diff_pairs', []):
     la = sum(seg_len(t) for t in B['tracks'] if t['net'] == a_); lb = sum(seg_len(t) for t in B['tracks'] if t['net'] == b_)
     dp.append(dict(pair=[a_, b_], len_mm=[round(la, 2), round(lb, 2)], skew_mm=round(abs(la - lb), 2),
                    coupled=[r for r in xt if {r['net'], r['other']} == {a_, b_}][:2]))
-json.dump(dict(reference=refout, crosstalk=xt, layer_changes=vchg, edge_proximity=edge, switch_copper=sw, hot_loops=loops, fast_nets=inv, diff_pairs=dp,
+# Electrical cross-check of every checked hot loop: pad-to-pad geometry can look tight while the return runs through
+# one small via and an inner layer. A 1 A DC solve (fem.py) from the IC's pins to the nearest capacitor's pad, on the
+# ground side and on the supply side, gives the path resistance, the share of the current that leaves the component
+# layer through vias, and the share carried by the busiest single via.
+def path_check(net, ic, cap, cap_pad, layer):
+    from fem import solve
+    src = [(ic, p['num']) for p in pads_on(ic, net)]
+    pads = [p for r in (ic, cap) for p in FP[r]['pads']]
+    xs = [p['x'] for p in pads]; ys = [p['y'] for p in pads]
+    m = 5.0                                     # copper within 5 mm of the IC and capacitor pads takes part
+    region = box(min(xs) - m, min(ys) - m, max(xs) + m, max(ys) + m)
+    try:
+        res = solve(net, sorted(set(src)), [((cap, cap_pad), 1.0)], h=0.1, region=region)
+    except (AssertionError, ValueError) as ex:
+        return dict(error=str(ex)[:120])
+    # current leaving the component layer through barrels, and current arriving on it through barrels (the IC's own
+    # thermal-via pads can source current on inner layers directly); the larger is the share that left the layer
+    # (barrels of the IC's own plated pads - thermal vias in its exposed pad - are part of the pin, not of the path)
+    own = {(round(p['x'], 3), round(p['y'], 3)) for p in FP[ic]['pads'] if p['th']}
+    fl = [f for f in res['link_flows'] if layer in (f[2], f[3]) and (round(f[0], 3), round(f[1], 3)) not in own]
+    out_ = sum(max(0.0, I if La == layer else -I) for x, y, La, Lb, I in fl)
+    in_ = sum(max(0.0, -I if La == layer else I) for x, y, La, Lb, I in fl)
+    va = [v for v in res['via_amps'] if (round(v[0], 3), round(v[1], 3)) not in own]
+    via = va[0][2] if va else 0.0
+    vd = next((v for v in B['vias'] if va and math.dist((v['x'], v['y']), va[0][:2]) < 0.01), None)
+    r = res['sinks'][0]['drop_mV']
+    return dict(r_mohm=round(r, 2), via_share=round(min(max(out_, in_), 1.0), 2), busiest_via_share=round(min(via, 1.0), 2),
+                busiest_via=dict(at=[round(va[0][0], 2), round(va[0][1], 2)], size=vd['size'] if vd else None, drill=vd['drill'] if vd else None) if va else None,
+                vias_in_region=res['vias'], box_margin_mm=m, suspect=r > 1e4)
+if '--no-solve' not in sys.argv:
+    for st in loop_status:
+        if st['status'] != 'ok': continue
+        n = next(r for r in loops if r['ic'] == st['ic'] and r['loop'] == st['loop'] and r['cap'] == st['nearest']['cap'])
+        cpad = next(p for p in FP[n['cap']]['pads'] if p['num'] == n['cap_gnd_pad'])
+        layer = cpad['layers'][0] if cpad['layers'] else 'F.Cu'
+        st['gnd_return'] = path_check(st['gnd_net'], st['ic'], n['cap'], n['cap_gnd_pad'], layer)
+        st['supply_side'] = path_check(st['in_net'], st['ic'], n['cap'], n['cap_pad'], layer)
+        flags = []
+        for side, d in (('ground return', st['gnd_return']), ('supply side', st['supply_side'])):
+            if d.get('error') or d.get('suspect'): flags.append('%s not solved (%s)' % (side, d.get('error') or 'grid artefact'))
+            elif d['busiest_via_share'] > 0.5:
+                bv = d['busiest_via']
+                flags.append('%s: %.0f %% through one via%s at %s (path %.1f mOhm)' % (side, 100 * d['busiest_via_share'],
+                             ' (%g/%g mm)' % (bv['size'], bv['drill']) if bv and bv['size'] else '', bv['at'] if bv else '?', d['r_mohm']))
+        st['electrical_flags'] = flags
+        if flags: WARN.append('hot loop %s %s (cap %s): %s' % (st['ic'], st['loop'], n['cap'], '; '.join(flags)))
+
+coverage = dict(warnings=WARN, classes={c: dict(count=len(v), nets=v[:40]) for c, v in classification_coverage().items()},
+                derived_switch_nodes=[dict(net=n, why=e['why'], cls=cls_how(n)[0], how=cls_how(n)[1]) for n, e in (TOPO.switch_nodes.items() if TOPO else [])],
+                switching_ics={ic: dict(value=o['value'], switch_nodes=o['switch_nodes'], topology=o['topology_hint'], hot_loops='config' if ic in covered else 'derived')
+                               for ic, o in (TOPO.switching_ics.items() if TOPO else [])},
+                hot_loops=loop_status, ground_nets=sorted(GND))
+json.dump(dict(coverage=coverage, reference=refout, crosstalk=xt, layer_changes=vchg, edge_proximity=edge, switch_copper=sw, hot_loops=loops, fast_nets=inv, diff_pairs=dp,
                stackup=dict(ref_layer=REF, height_mm=H, er=ER),
                notes=dict(z0='Hammerstad microstrip over the nearest copper layer (zero thickness); inner layers treated the same way, so stripline Z0 is overstated',
                           k='coupling k = 1/(1+(D/h)^2), D centre spacing, h height over the reference; saturated backward crosstalk ~ k/4')),
           open(PACK + 'emc.json', 'w'), indent=1)
-print('emc ok: ref', len(refout), 'xt', len(xt), 'vias', len(vchg), 'edge', len(edge), 'loops', len(loops), 'fast', len(inv))
+print('emc ok: ref', len(refout), 'xt', len(xt), 'vias', len(vchg), 'edge', len(edge), 'loops', len(loops), 'fast', len(inv),
+      '| switch nodes', len(sw), '(derived %d)' % (len(TOPO.switch_nodes) if TOPO else 0), '| hot loops checked', sum(s_['status'] == 'ok' for s_ in loop_status), 'of', len(loop_status))
+for w in WARN: print('  !!', w)

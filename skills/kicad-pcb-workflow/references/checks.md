@@ -13,7 +13,27 @@ Say in the report which checks ran and which blind spots were covered how.
 | 3D render (`render.py --3d`) | what the assembled board looks like | parts with a missing model show as bare pads and look like "nothing there": run `board_lint.py` first |
 | Full-board copper render | coarse layout | once a ground pour exists everything is one colour: use `view.py` (nets coloured and labelled, with a grid) for routing checks |
 | `router.py` checks | new copper clears other nets (net-class clearance), hole-to-hole for every drill, board edge | custom `.kicad_dru` rules, zone fills, thermal reliefs: DRC after applying |
+| `partfields.py check` | every BOM part has a datasheet link and an LCSC/MPN in schematic and board; every schematic field equals the board's | that the link is the right part's datasheet: `--online` checks it loads and names the MPN; that the LCSC number is the right part: `bom_check.py`, by hand |
 | `bom_check.py` / `part_gate.py` | stock now, lifecycle where a product page can be read | that the LCSC number is the part the symbol means (value, voltage, package, pinout): check by hand; stock moves daily: re-run before ordering |
+
+## Coverage is part of the result (R16)
+
+"Nothing found" is a pass only when the check also shows what it looked at. Every check and wrapper states its
+coverage in its output, and a reader treats a result without it as unproven:
+- **What it compared or classified, with counts** (board_diff's "Compared: 106 footprints, 402 copper items, ...";
+  emc.md's routed nets per class and the nets that fell through to "slow"; partfields' "87 BOM parts, 87 with a
+  datasheet link").
+- **Every configured item that matched nothing**, as a warning, never a silent skip (a hot loop whose IC or net is not
+  on the board is "NOT CHECKED", not omitted; a ground net with no copper empties every ground-based check).
+- **Every default or fallback it used** (no config found: say so and which defaults; the starter config is labelled
+  until a person reviews it) and **which project input files it read**, found by one convention (`projfiles.py`), so a
+  wrapper and the project's own build cannot silently disagree.
+- **Every attribute class it does not compare** (board_diff compares every footprint attribute and reports any other
+  difference as "other content"; a diff that sees only geometry reported "0 unexpected" while three parts changed
+  value and LCSC number).
+Example (labelled): the starter review config's switch-node regex matched none of minipc-power's three converters'
+switch nodes (named after a capacitor pad and after U6's L1/L2 pins), and the pack reported "loops 0 fast 0" with no
+warning. The pack now derives switch nodes and hot loops from the netlist and lists what it derived and skipped first.
 
 ## Exemptions: name the item, never the category
 

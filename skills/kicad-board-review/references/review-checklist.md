@@ -4,7 +4,7 @@ What to look at, why it matters, and how to check it with evidence. Each item na
 it. "Example" lines are illustrative, with typical numbers; use them to calibrate what a real problem looks like, not
 as values to reuse.
 
-Contents: 1 Power entry and protection - 2 Copper capacity and heat - 3 Ground and return paths - 4 Regulators and
+Contents: 1 Power entry and protection - 1b Start-up, shutdown and transients - 2 Copper capacity and heat - 3 Ground and return paths - 4 Regulators and
 decoupling - 5 Signal integrity and EMC - 6 ESD and external interfaces - 7 Datasheet compliance and derating -
 8 Sourcing and assembly - 9 Mechanical and silkscreen - 10 Firmware-visible consequences - 11 Audits worth scripting
 
@@ -33,6 +33,11 @@ while others are absent.
 - **Reverse polarity.** Series diode (simple, lossy), P-FET, or ideal-diode controller + N-FET (low loss, needs layout
   care). Check the FET's V_DS and V_GS ratings against the max input plus surge, its R_DS(on) loss at full current,
   and that every part downstream survives the moment before the protection acts.
+- **Operating point with the source's and the path's resistance.** For every power path, solve the current instead
+  of dividing power by voltage: `pcb-power-supply/scripts/path_budget.py` with each element's resistance (cell or
+  cable, FETs at the real gate drive, fuse, BATFET, connector, copper from `power.py`'s R_eff) and the source's corners.
+  Compare the solved current and node voltage with every element's limit, latching trips first (example: 15 W from a
+  3.0 V cell through ~87 mOhm (cell and wiring resistance assumed) is 7.1 A, not 5.6 A, past a charger BATFET trip that latches until USB returns).
 - **Series-path loss and heat.** Add up fuse resistance + FET R_DS(on) + shunt + connector contacts + copper. Example:
   a 3 mOhm fuse, 1.5 mOhm FET, 2 mOhm shunt and some copper at 20 A is roughly 0.2 V and 4 W per path; several such
   paths are real heat that needs copper area and airflow, and a number the user should know.
@@ -56,6 +61,28 @@ while others are absent.
 - **Every output that leaves on a cable** has its own overcurrent element rated for that wire.
 - **A small-signal zener is not a surge clamp.** A 500 mW zener across a rail has a tiny pulse rating; use a TVS rated
   by peak pulse power / I_pp.
+
+## 1b. Start-up, shutdown and transients
+
+A board that is fine in steady state can trip, latch or lose a part in the first millisecond. For every rail:
+- **Each output switch** (load switch, disconnect FET, eFuse, ideal diode): compute its turn-on time from the gate
+  network (gate RC, or Q_g over the drive current) and compare it with the upstream converter's soft-start time. A
+  switch that closes before the converter regulates puts the load capacitance straight on the converter's input path;
+  for a boost that path is always there (VIN -> inductor -> rectifier body diode -> VOUT), so the inrush is limited
+  only by the source and the path.
+- **Inrush current** = C_load x dV/dt for every switch-on and hot-plug, added to the load already running, against
+  every upstream current trip with its delay (protector OCD/SCD delay, BATFET over-current - often immediate and
+  latching - eFuse, PTC/fuse I^2t): `path_budget.py` "transients". Example: a 10 nF gate capacitor turned a P-FET load
+  switch on in ~0.1 ms, ~5 A into 100 uF on top of the running load; 100 nF made it ~1 ms and ~0.5 A.
+- **Datasheet start-up rules**: maximum output capacitance for soft-start, capacitance-ratio rules for disconnect FETs
+  (e.g. capacitance after the FET at most 10x the converter's own output capacitance), required EN delay or sequence.
+- **Sequencing**: which rails come up in which order, from what (EN thresholds and dividers), and what is powered while
+  the controller is not; nothing back-feeds an unpowered rail through an IO pin or a body diode.
+- **Hot-plug**: input capacitance plus cable inductance rings to up to twice the input (pcb-power-supply
+  `input-protection.md`); the peak stays under every abs max on that rail.
+- **Shutdown and brown-out**: output capacitors discharge somewhere defined; a disabled converter is not back-driven by
+  its load; at low battery a load step times the path resistance is smaller than the converter's UVLO hysteresis, or
+  the rail oscillates on and off.
 
 ## 2. Copper capacity and heat  (`power.md`, `power.py`, `view.py`)
 
@@ -114,7 +141,11 @@ while others are absent.
   side; for a buck-boost, both. The capacitor must sit at the pins (measure edge-to-edge; `emc.py` reports pad centres),
   on the same layer, with the ground return directly under or beside it. Compare with the datasheet's layout example
   item by item - it is usually explicit, and small items (a high-frequency capacitor at VOUT, the AGND/PGND tie point)
-  are easy to miss without it. Use the project's layout reference pack and compliance file if it has them
+  are easy to miss without it. Diff the datasheet's typical application against the schematic part by part
+  (`kicad-pcb-workflow/scripts/refparts.py` with the project's `reference-parts.json`; write one if it has none):
+  a vendor tool's BOM or "a capacitor of that kind nearby" is not evidence that the datasheet's part is there.
+  Check each hot loop's electrical numbers in `emc.md` too (ground return resistance, share through the busiest
+  via): a 2 mm loop whose return dives through one 0.2 mm via is not a tight loop. Use the project's layout reference pack and compliance file if it has them
   (kicad-pcb-workflow `layout-stages.md`), and re-tick each rule against a net-coloured render (`view.py`) rather than
   trusting the file: a blanket ground pour or a stitching via beside every pad silently breaks single-point analog
   grounds. A deviation marked "no room" needs evidence of what was tried (smaller package, other value, position).
@@ -199,14 +230,17 @@ Derate everything; datasheet maxima are limits, not targets:
   assume a copper area - check the board gives that area.
 - Every pin of every IC deliberately handled: tied, pulled, or explicitly no-connect per the datasheet (example of what
   goes wrong: mode pins hard-tied to the wrong level, status LEDs fed from a rail that can exceed the pin rating).
-  A no-connect flag makes ERC silent, so audit them: `kicad-pcb-workflow/scripts/nc_audit.py` lists every unused pin
-  and every input strapped to a rail; each row needs the datasheet's pin-table reason.
+  A no-connect flag makes ERC silent, so audit them: `kicad-pcb-workflow/scripts/nc_audit.py` lists every unused pin,
+  every pin the symbol types no_connect, and every input strapped to a rail; each row needs the datasheet's pin-table
+  instruction (`--datasheet REF=ds.pdf` prints it). A symbol's NC type is the symbol author's guess, not a decision:
+  an "NC" pin can be one the datasheet says to ground.
 
 For every IC and every non-trivial discrete:
 - **Absolute maximum per pin**, including pin current limits (example: when a TVS clamps above a sense input's voltage
   abs max, series resistance that keeps the pin current within its few-mA limit is what makes it acceptable).
 - **Required external parts** and their values (series resistors, pull-ups for pins that reset with pull-downs, a pull-
-  up on a second chip select, bootstrap caps).
+  up on a second chip select, bootstrap caps): every part in the datasheet's typical application, matched to the
+  schematic part that satisfies it (`refparts.py`), or a recorded reason it is left out.
 - **Variant suffixes** that change the part: voltage (memories and regulators sold in 3.3 V and 1.8 V versions that
   differ by one suffix letter), forced PWM vs auto light-load mode, automotive vs commercial, package.
 - **Power-up behaviour** (example: some converters need I2C configuration before their output turns on - unacceptable
@@ -234,6 +268,10 @@ page that contains the real PDF link.
 
 ## 8. Sourcing and assembly  (the **pcb-part-selection** skill, `bom_check.py`)
 
+- **Every BOM part has its datasheet link and sourcing data**, in the schematic and on the board, identical in both
+  (`kicad-pcb-workflow/scripts/partfields.py check SHEET BOARD`; `netlist.md` section 7 lists BOM parts with no
+  link). A blank Datasheet on a part with an LCSC number means a stage threw the link away; it is a finding, and the
+  reviewer cannot have read a datasheet the board does not name.
 - Every part in stock for the order quantity plus attrition, in the region the assembler buys from; re-check right
   before ordering (stock moves daily; a part with a handful of units can sell out or be restocked within a week).
 - Special parts with no substitute (polarity-marked inductors, specific crystals, modules): find the second source or

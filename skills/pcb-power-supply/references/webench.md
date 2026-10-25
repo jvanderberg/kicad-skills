@@ -27,7 +27,10 @@ a substitute for reading the datasheet.
    footprint, frequency, ripple, phase margin, package, features such as power good or spread spectrum).
    **Switch to TABLE VIEW and read the page text**: each row then contains the part number, maximum output current,
    efficiency, area, cost, and the full schematic BOM as text - inductor value and DCR, each capacitor's value and ESR
-   and quantity, feedback / enable / frequency / compensation resistor values.
+   and quantity, feedback / enable / frequency / compensation resistor values. **That BOM is a secondary source**: it
+   can omit parts the datasheet's typical application draws (WEBENCH's TPS61088 design had no 1 uF capacitor at VOUT;
+   the datasheet's typical application and layout figure both put one at the VOUT pins). Diff it against the datasheet's
+   list (`reference-parts.json`, SKILL.md step 6), never the other way round.
 6. **Gate the candidates before customising any of them.** A recommendation is a snapshot about TI's catalogue, not
    about what can be bought: on one run the top three picks had 0, 0 and 13 units at LCSC. Paste the table text into
    the pcb-part-selection skill's gate, which finds the part numbers, reads TI's lifecycle status and lists LCSC stock

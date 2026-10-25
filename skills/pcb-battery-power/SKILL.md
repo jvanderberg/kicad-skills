@@ -109,7 +109,8 @@ or a very low-dropout LDO / 100 %-duty buck that accepts losing the tail of the 
 current of every part that stays powered. Measure the battery with a switched or high-value divider, add a fuel
 gauge if state of charge matters, provide a ship-mode or load disconnect for storage, and cut off at low battery in
 firmware **and** in hardware. See `references/power-path-and-gauging.md`; regulator sizing itself is in the
-**pcb-power-supply** skill.
+**pcb-power-supply** skill. Size every current in the battery path from the solved operating point (pcb-power-supply
+"Operating points are solved, not divided"): at an empty cell the path's own resistance can add 20 % to the current.
 
 ## 7. Lay it out
 

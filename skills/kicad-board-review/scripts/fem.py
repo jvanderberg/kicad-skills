@@ -109,6 +109,8 @@ def solve(net, source, sinks, h=0.15, t_in=None, region=None, extra_vias=()):
     for (x, y, La, Lb, a, b, g) in links:
         vi[(round(x, 3), round(y, 3))] = max(vi[(round(x, 3), round(y, 3))], abs(g * (V[a] - V[b])))
     res['via_amps'] = sorted(([x, y, i] for (x, y), i in vi.items()), key=lambda r: -r[2])
+    # signed current through every barrel segment, from layer La to layer Lb (for "how much leaves this layer")
+    res['link_flows'] = [(x, y, La, Lb, float(g * (V[a] - V[b]))) for (x, y, La, Lb, a, b, g) in links]
     res['P_W'] = P
     res['grid'] = dict(x0=x0, y0=y0, h=h, shape=(ny, nx))
     res['_hot'] = hot; res['_V'] = V; res['_idx'] = idx

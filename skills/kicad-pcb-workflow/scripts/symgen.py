@@ -32,9 +32,29 @@ PI, PO, IN, OUT, BI, PA, NC, OC, TS = ('power_in', 'power_out', 'input', 'output
                                        'no_connect', 'open_collector', 'tri_state')
 
 
-def ic(name, half_w, left=(), right=(), top=(), bottom=(), ref='U', desc='', top_pitch=L, footprint='', datasheet=''):
+def _carry(props, inherit):
+    """Fill blank Footprint / Datasheet / Description from the symbol being replaced and append its other
+    properties (LCSC, MPN, Manufacturer...) hidden. A redraw changes the drawing, never the part's data."""
+    if inherit is None:
+        return props
+    old = {str(q[1]): str(q[2]) for q in _node(inherit).nodes('property') if not str(q[1]).startswith('ki_')}
+    have = {str(q[1]) for q in props}
+    for q in props:
+        k = str(q[1])
+        if k in ('Footprint', 'Datasheet', 'Description') and str(q[2]).strip() in ('', '~') and old.get(k, '').strip() not in ('', '~'):
+            q[2] = old[k]
+    for k, v in old.items():
+        if k not in have and k not in ('Reference', 'Value') and v.strip() not in ('', '~'):
+            props.append(lib_property(k, v, hide=True))
+    return props
+
+
+def ic(name, half_w, left=(), right=(), top=(), bottom=(), ref='U', desc='', top_pitch=L, footprint='', datasheet='',
+       inherit=None):
     """Rectangle symbol. Each side is a list of (name, [numbers], type) or None for an empty slot; left/right are
-    listed top to bottom, top/bottom left to right. half_w: half the body width in mm (multiple of 1.27)."""
+    listed top to bottom, top/bottom left to right. half_w: half the body width in mm (multiple of 1.27).
+    inherit: the symbol this one replaces (e.g. the JLCImport symbol, as a node or its text): its Datasheet,
+    Footprint, Description and custom fields fill whatever is not given here, so a redraw drops no data."""
     rows = max(len(left), len(right), 1) + (2 if top else 0) + (2 if bottom else 0)
     half_h = round((rows + 1) * L / 2 / 1.27) * 1.27
     pins, seen = [], set()
@@ -60,7 +80,7 @@ def ic(name, half_w, left=(), right=(), top=(), bottom=(), ref='U', desc='', top
     props = [lib_property('Reference', ref, 0, half_h + 1.27), lib_property('Value', name, 0, -half_h - 1.27),
              lib_property('Footprint', footprint, hide=True), lib_property('Datasheet', datasheet, hide=True),
              lib_property('Description', desc, hide=True)]
-    return lib_symbol(name, props, {(0, 1): [lib_rectangle(-half_w, half_h, half_w, -half_h)], (1, 1): pins})
+    return lib_symbol(name, _carry(props, inherit), {(0, 1): [lib_rectangle(-half_w, half_h, half_w, -half_h)], (1, 1): pins})
 
 
 def _node(sym):
@@ -68,9 +88,9 @@ def _node(sym):
     return sym.deepcopy() if isinstance(sym, Node) else loads(sym)
 
 
-def fet(base, name, D, G, S, desc=''):
+def fet(base, name, D, G, S, desc='', inherit=None):
     """Copy a Device:Q_NMOS / Q_PMOS symbol (node, or its text) and renumber its D/G/S pins to the footprint's pad
-    numbers; extra pads become hidden pins stacked on the same point."""
+    numbers; extra pads become hidden pins stacked on the same point. inherit: as for ic()."""
     t = _node(base)
     old = str(t[1]).split(':', 1)[-1]
     t[1] = name
@@ -100,8 +120,14 @@ def fet(base, name, D, G, S, desc=''):
     for p in t.nodes('property'):
         if p[1] == 'Value':
             p[2] = name
-        elif p[1] == 'Description':
+        elif p[1] == 'Description' and desc:
             p[2] = desc
+    if inherit is not None:
+        props = t.nodes('property')
+        added = _carry(list(props), inherit)[len(props):]
+        pos = t.index(props[-1]) + 1
+        for k, q in enumerate(added):
+            t.insert(pos + k, q)
     return t
 
 

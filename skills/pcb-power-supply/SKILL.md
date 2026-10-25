@@ -18,6 +18,8 @@ References (read the one you need):
 - `references/input-protection.md` - reverse polarity, surge/TVS, hot-plug overshoot, inrush, fusing, UVLO
 - `references/webench.md` - driving TI WEBENCH Power Designer from the browser: what it gives, what needs a login
 - `references/sources.md` - the app notes and datasheets these are drawn from
+- `scripts/path_budget.py` - operating point of a power path with the source and path resistance, at every corner and
+  with transients, against every element's limit
 
 ## Before choosing any switching regulator
 
@@ -29,7 +31,32 @@ References (read the one you need):
       `part_gate.py`): tool recommendations and distributor stock are snapshots, not evidence the part is made or
       buyable.
 - [ ] **Design for the exact orderable variant** and its own datasheet.
-- [ ] **Collect the layout reference pack** for the chosen part before placement (step 6).
+- [ ] **Collect the layout reference pack** for the chosen part before placement (step 6), including the
+      datasheet typical application's full parts list (`reference-parts.json`, checked with `refparts.py`).
+
+## Operating points are solved, not divided (R20)
+
+A current written as P / (eff x V_source) assumes an ideal source and a zero-ohm path. Every source has resistance
+(a cell's internal resistance, a USB cable, a long input lead) and every path adds more (protector FETs, fuse, the
+charger's BATFET, an eFuse, connectors, copper). A switching converter is a constant-power load, so the lower voltage
+at its input makes it draw more current, which lowers the voltage again. For every power path:
+- [ ] List each element with its resistance at typ and max (FET R_DS(on) at the real gate drive and temperature,
+      fuse cold resistance, copper from kicad-board-review's `power.py` R_eff), the source's voltage corners (cell
+      empty / nominal / full, USB 4.75 V at the far end of the cable) and its own resistance.
+- [ ] Solve the operating point at every corner: `scripts/path_budget.py PATH.json` (I x (V - I R) = P). It reports
+      the current, the voltage at the load, every element's limit crossed (latching ones first, in bold), the largest
+      load power each corner can carry and the lowest source voltage that carries the full load - or that no
+      operating point exists (P > V^2 / 4R).
+- [ ] Compare against **every** limit along the path, not only the converter's: protector and BATFET over-current
+      (and whether they latch: a BQ25606 BATFET over-current turns the battery off until USB returns), fuse and
+      PTC derating, connector rating, converter UVLO at the solved node voltage, the cell's maximum discharge current.
+- [ ] Add the transients (start-up inrush C x dV/dt through each load switch, load steps, hot-plug) to the steady
+      load at the worst corner, with each trip's delay (`transients` in the same file).
+- [ ] The load-step voltage drop (I_step x R_path) is smaller than the converter's UVLO hysteresis, or the converter
+      can oscillate on and off at low battery.
+Example (labelled): minipc-power's 15 W at 88.5 % from a 3.0 V cell is 5.6 A by division; with ~87 mOhm of cell (20 mOhm assumed), FETs,
+fuse, BATFET and copper it is 7.1 A at 2.4 V - past the BATFET's latching 6.0 A trip and below the 5 V boost's UVLO.
+15 W needs about 3.35 V at the cell.
 
 ## 1. Pin down the requirement
 
@@ -106,10 +133,13 @@ calculations and chosen values in the design doc.
 ## 6. Gather the layout reference pack
 
 Before placing a converter, collect its layout references into the project (e.g. `docs/layout-refs/<part>/`), with a
-README that states the order of authority and names the file and page of each figure:
+README that states the order of authority, and an `INDEX.md` that names the file, source and page of each figure:
 1. **The datasheet's Layout Guidelines text and Layout Example figure** - primary; they win any conflict. Find the pages
    with pcb-part-selection's `datasheet.py find ds.pdf "Layout Example" "Layout Guidelines"` and render them with
-   `datasheet.py page` (record e.g. "datasheet-p35.png = Figure 12-2, layout example").
+   `datasheet.py page ds.pdf 35 datasheet-p35.png --label "Figure 12-2, layout example"`, which writes the INDEX.md
+   row. Render only the pages that hold the figure or text; `datasheet.py index <folder>` fails while any image in the
+   folder has no row (a folder holding p28 and p29 with no note sent a later session to the documentation-support
+   page instead of the layout example).
 2. **The EVM user guide's layout**, if one exists (the datasheet often names the EVM).
 3. **Vendor tool layouts** (WEBENCH's PCB LAYOUT views and its imported EAGLE/Altium board) - reference only: drawn
    around the tool's BOM and a generic stackup.
@@ -117,6 +147,21 @@ Then write down, per converter, as rules for its layout brief (kicad-pcb-workflo
 hot loop and which parts must sit at which pins, the quiet-side parts, the feedback and sense routing, the ground
 scheme (single-point analog ground?), the switch-node limits, and the thermal-pad via pattern. These references are
 re-read when the block is placed and again when it is routed; the block is checked against them in the compliance file.
+
+**The datasheet's typical application and layout figure are the parts list, not a vendor BOM (R19).** Transcribe
+every part they draw - bootstrap, VCC/LDO bypass, small high-frequency capacitors at the input and output pins,
+snubbers, RC filters on sense or COMP pins, divider and frequency resistors, not only the bulk capacitors - into the
+project's `reference-parts.json` (format in kicad-pcb-workflow `scripts/refparts.py`): the two pins each one sits
+between, its value and tolerance, and from the layout figure how close to the pin it must be. Then
+`refparts.py SHEET [BOARD]` names the schematic part that satisfies each entry, or says MISSING / WRONG VALUE / FAR;
+one schematic part satisfies one entry, so a 47 uF bulk capacitor 3 mm away does not tick "1 uF at the VOUT pins".
+Run it when the schematic is drawn (against WEBENCH's BOM too: a part in the datasheet's list and not in WEBENCH's
+stays unless the datasheet calls it optional) and again after placement with the board. Each compliance row then names
+the part that satisfies it.
+
+**Every unused, NC, DNC or reserved pin gets the pin table's instruction**, whatever type the symbol gives it: "NC"
+can mean "connect to ground for thermal dissipation" (TPS61088-Q1 pins 11/12), "do not connect" or "tie to VIN".
+`nc_audit.py --datasheet U5=ds.pdf --require-notes` lists them with the pin-table row beside each.
 
 ## 7. Lay it out
 
@@ -132,7 +177,11 @@ exposed pad.
 
 - Calculations reviewed against the datasheet procedure; numbers in the doc.
 - Worst-case startup: lowest input after all upstream drops still above UVLO and enough for regulation; highest input
-  plus surge below every abs max.
+  plus surge below every abs max. "After all upstream drops" means the solved operating point (`path_budget.py`),
+  since the drops grow with the current the converter draws at that lower voltage.
+- Start-up, shutdown and transients: kicad-board-review's checklist s1b (every load switch's turn-on vs the
+  converter's soft-start, inrush through body diodes, upstream trips with their delays, datasheet capacitance-ratio
+  rules, hot-plug, shutdown backfeed).
 - Losses and temperature: converter efficiency curve at your operating point x load; LDO P = dV x I; check theta-JA
   against the copper you actually gave it.
 - Layout review (kicad-board-review skill): hot loop distances edge-to-edge, switch node area, FB/EN routing not

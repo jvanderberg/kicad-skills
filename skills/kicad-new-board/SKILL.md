@@ -84,6 +84,8 @@ Work through these levels in order. `references/interview-guide.md` has the deta
    every rail, each load's average and peak current, and protection needs (reverse polarity, fusing, surge, hot-plug).
    Fill in the power budget table. **Check the input against everything that can draw at once**: input power >=
    system peak / efficiency + charge current x charge voltage / charger efficiency (for a 1S lithium cell, 4.2 V).
+   Use the input voltage at the board, after the cable and connector (a 5 V source can arrive below 4.5 V through a
+   long cable at 3 A: pcb-power-supply `path_budget.py`), and the battery current solved with the path's resistance.
    A plain 5 V USB-C input is 15 W at most (5 V / 3 A, and only from a source that advertises it); if the check fails,
    the design needs USB PD or a lower charge current - say so, or the board discharges while plugged in. Detailed
    regulator design belongs to the **pcb-power-supply** skill; batteries, charging and sleep-current budgets to the
@@ -145,7 +147,9 @@ Show the user the finished document (or its key tables) and ask for corrections 
    the board from the schematic's netlist with `new_board.py` (outline, layer count), then `board_setup.py --stackup
    <JLC stackup>` for the physical stackup (from `references/jlcpcb-stackups.md`), design rules with margin inside JLC's
    capabilities (0.15 mm track/space, 0.3/0.6 mm vias) and net classes. Draw the board outline and mounting holes from
-   the physical section first, so placement starts inside real limits.
+   the physical section first, so placement starts inside real limits. If the project is generated from scripts,
+   pin the toolchain first (`references/new-design.md` s0: `preflight.py`, `kicad-skills.lock`, `tools/kskills.py`),
+   so every later regeneration uses the same kicad-skills revision and KiCad version.
 2. **Power design** with the **pcb-power-supply** skill, starting from the power budget table.
 3. **Part checks** with the **pcb-part-selection** skill for every candidate before it goes in the schematic.
 4. **Schematic capture and layout** with the **kicad-pcb-workflow** skill (scripted edits, verify, render, look).

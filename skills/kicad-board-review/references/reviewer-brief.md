@@ -24,7 +24,9 @@ changes and in the analysis you are given, and try hard to find them. Do not sof
    current, required external parts, variant suffix, power-up behaviour, addresses, land pattern. Cite page/section.
 2. Walk every power path from connector to load under normal load, short, reverse polarity, surge, min/max input and
    one-of-several inputs present. Check fuse/PTC coordination and derating, clamp voltage vs downstream abs max,
-   UVLO/EN thresholds vs worst-case input.
+   UVLO/EN thresholds vs worst-case input. Solve the current with the source and path resistance
+   (`pcb-power-supply/scripts/path_budget.py`) rather than accepting P / V, and check start-up: each load switch's
+   turn-on vs its converter's soft-start, inrush vs every upstream trip, and which trips latch.
 3. Use the power results and run your own: neck-downs, thin inner copper, via fields, ground return under full load.
 4. Check every inner-layer track and every slot in a plane: what return current crosses it.
 5. Check every fast and exposed signal: reference continuity, layer changes and return vias, crosstalk, termination,
@@ -36,6 +38,10 @@ changes and in the analysis you are given, and try hard to find them. Do not sof
    every serial/memory/UART line driver-to-receiver against both datasheets yourself - a swapped direction passes
    every automated check.
 9. Look hardest at whatever changed most recently (`git diff` against the last commit or the previous review).
+
+10. Read the pack's "Coverage and warnings" and "What was classified" sections first and attack them: nets that fell
+    through to "slow" but carry fast edges or sensitive signals, derived hot loops that are not the datasheet's,
+    configured items that matched nothing, defaults the pack used. An empty table is not evidence until its coverage is.
 
 **Report** (markdown, written to `<pack_dir>/adversarial_review.md`)
 - Blocker / Major / Minor, numbered. Each: what (refdes, net, coordinates), evidence (pack number, datasheet section,

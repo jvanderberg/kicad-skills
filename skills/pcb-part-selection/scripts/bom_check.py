@@ -6,6 +6,8 @@
 #   - LCSC numbers not found or with stock below what the order needs (count per board x boards, plus 10 % attrition)
 #   - packages smaller than --min-pkg (0201 and 01005 cost extra and yield worse at JLC economic assembly)
 #   - Extended parts (each unique one adds a loading fee at JLC)
+#   - parts whose Datasheet field is blank or KiCad's "~" (the link exists upstream - JLCImport writes the LCSC
+#     datasheet URL - and a stage dropped it; kicad-pcb-workflow/scripts/partfields.py says which stage)
 # Stock moves daily: re-run right before ordering, and never trust a number from an earlier session.
 import argparse, csv, io, json, os, re, shutil, subprocess, sys, tempfile, collections, xml.etree.ElementTree as ET
 ap = argparse.ArgumentParser()
@@ -32,8 +34,9 @@ for c in root.find('components'):
     lc = f.get('LCSC') or f.get('LCSC Part') or f.get('JLCPCB Part #') or ''
     fp = (c.findtext('footprint') or '').split(':')[-1]; val = c.findtext('value') or ''
     if not re.match(r'^C\d+$', lc): missing.append((ref, val, fp)); continue
-    g = groups.setdefault(lc, dict(lcsc=lc, refs=[], value=val, fp=fp, size=pkg_size(fp, val)))
+    g = groups.setdefault(lc, dict(lcsc=lc, refs=[], value=val, fp=fp, size=pkg_size(fp, val), no_ds=[]))
     g['refs'].append(ref)
+    if (f.get('Datasheet') or c.findtext('datasheet') or '').strip() in ('', '~'): g['no_ds'].append(ref)
 
 def lookup(lc):
     r = subprocess.run([a.cli, 'search', lc, '--region', 'global', '--min-stock', '0', '--csv', '-n', '5'], capture_output=True, text=True, timeout=90)
@@ -51,13 +54,14 @@ for lc, g in groups.items():
         if stock < need: flags.append('STOCK %d < need %d' % (stock, need))
         if info.get('Type', '').lower().startswith('ext'): flags.append('extended')
     if g['size'] and SIZES.index(g['size']) < SIZES.index(a.min_pkg): flags.append('package %s below %s' % (g['size'], a.min_pkg))
+    if g['no_ds']: flags.append('NO DATASHEET on %s' % ' '.join(g['no_ds']))
     problems += any(f for f in flags if f != 'extended')
     rows.append(dict(lcsc=lc, refs=g['refs'], value=g['value'], footprint=g['fp'], need=need, stock=(info or {}).get('Stock'), type=(info or {}).get('Type'),
                      part=(info or {}).get('Part'), package=(info or {}).get('Package'), price=(info or {}).get('Price'), flags=flags))
     print('%-11s %-5s %8s  %-26s %-22s %s' % (lc, len(g['refs']), (info or {}).get('Stock', '-'), (g['value'] or '')[:26], ((info or {}).get('Part') or '')[:22],
                                             ', '.join(flags)), flush=True)
-print('\n%d unique LCSC parts, %d with problems, %d extended, %d parts without an LCSC number%s' % (
-    len(rows), problems, sum('extended' in r['flags'] for r in rows), len(missing), ': ' + ', '.join(r for r, _, _ in missing) if missing else ''))
+print('\n%d unique LCSC parts, %d with problems, %d extended, %d without a datasheet link, %d parts without an LCSC number%s' % (
+    len(rows), problems, sum(bool(g['no_ds']) for g in groups.values()), sum('extended' in r['flags'] for r in rows), len(missing), ': ' + ', '.join(r for r, _, _ in missing) if missing else ''))
 print('Also check by hand: the LCSC part really matches the symbol (value, voltage, package, pinout) - a valid number can still be the wrong part.')
 if a.json: json.dump(dict(parts=rows, missing_lcsc=missing, boards=a.boards), open(a.json, 'w'), indent=1)
 sys.exit(1 if problems else 0)

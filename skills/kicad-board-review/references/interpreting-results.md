@@ -35,6 +35,21 @@ via's current, the barrel resistance (about 1.3 mOhm for 0.3 mm / 20 um / 1.6 mm
 rest of the path, and the heat per via (I^2 R, milliwatts). The usual answer: the vias are not the limit; the pour is.
 Uneven sharing (front row takes most) is normal.
 
+## "The pack found nothing" / "0 hot loops"
+
+Read the "Coverage and warnings" section before any table. An empty table under a warning ("hot loop U3: NOT
+CHECKED", "no ground copper on In2.Cu", "review_config.json is the STARTER") means the check did not run on that
+item, not that it passed. Say so in the report, fix the config, and re-run. Derived items (switch nodes, hot loops) are
+labelled; confirm each against the datasheet before relying on it.
+
+## Hot loops: distance and current path
+
+The hot-loop table has pad-to-pad geometry and a DC solve of the same loop. Explain both: the distance and plan area
+say how big the loop is drawn; the solve says where the current actually goes. "One via carries 100 %" means the
+capacitor's ground pad reaches the IC's ground pin only through that via and an inner layer, so the real loop includes
+the board thickness and the via's inductance. The fix is a same-layer path (a short track or pour between the pads),
+then re-run the pack to show the share drop.
+
 ## Grid artefacts and sanity checks
 
 - One sink reporting an absurd drop (megavolts) while others are sane: a pad cell isolated by the grid alignment.

@@ -14,7 +14,19 @@ CFG = json.load(open(PACK + 'review_config.json')) if os.path.exists(PACK + 'rev
 LAYERS = B['layers']
 FP = {f['ref']: f for f in B['footprints']}
 NETS = NL['nets']
-GND = set(CFG.get('ground_nets', ['GND']))
+# Coverage warnings: anything a script could not classify, fell back to a default for, or skipped goes here, and every
+# report prints them at the top. "Nothing found" is only a pass when the coverage says the inputs were seen.
+WARN = []
+if not CFG: WARN.append('no review_config.json in the pack: built-in defaults used (ground from the netlist, name-pattern classes, no hot loops configured, no power runs)')
+elif CFG.get('starter'): WARN.append('review_config.json is the STARTER written by make_pack.sh/topology.py: its derived entries are unreviewed and it has no power runs')
+from topology import Topology
+TOPO = Topology(NL, CFG) if NETS else None
+if TOPO is None: WARN.append('no netlist.json: nothing derived from topology (switch nodes, hot loops, ground)')
+else: WARN += TOPO.warnings + ['underived: ' + u for u in TOPO.underived]
+GND = set(CFG.get('ground_nets') or (TOPO.ground if TOPO and TOPO.ground else ['GND']))
+if not CFG.get('ground_nets'): WARN.append('ground_nets not configured: using %s (%s)' % (sorted(GND), 'derived from the netlist' if TOPO and TOPO.ground else 'built-in default'))
+_routed = {t['net'] for t in B['tracks']} | {z['net'] for z in B['zones'] if not z['keepout']} | {p['net'] for f in B['footprints'] for p in f['pads']}
+if not GND & _routed: WARN.append('none of the ground nets %s has copper on the board: every ground-based check (reference planes, stitching, slots, hot-loop returns) is empty' % sorted(GND))
 
 # stackup: copper thickness and z of each copper layer, dielectric height to the nearest copper neighbours
 def _stack():
@@ -102,9 +114,35 @@ def refpad(s):
 # net classification from review_config.json: first matching rule wins
 _rules = [(re.compile(r['match']), r['class']) for r in CFG.get('net_classes', [])]
 FAST = set(CFG.get('fast_classes', ['usb', 'clock', 'spi', 'qspi', 'switch', 'ethernet', 'hdmi', 'lvds', 'ddr']))
-def cls(n):
-    if n == '' or n in GND: return 'power'
-    for rx, c in _rules:
-        if rx.search(n): return c
-    if re.search(r'(^|[^A-Z])(GND|VCC|VDD|VIN|VBUS|VSYS|\+\d|\d+V\d*$|3V3|5V)', n): return 'power'
-    return 'slow'
+def cls_how(n):
+    """(class, how it was decided). Order: ground, an explicit net_classes rule, a switch node derived from the netlist
+    (inductor + switch pin / active part with no capacitor to ground), the built-in power-name pattern, else 'slow'."""
+    if n == '' or n in GND: return 'power', 'ground'
+    for i, (rx, c) in enumerate(_rules):
+        if rx.search(n): return c, 'rule %d' % (i + 1)
+    if TOPO and n in TOPO.switch_nodes: return 'switch', 'derived: ' + TOPO.switch_nodes[n]['why']
+    if re.search(r'(^|[^A-Z])(GND|VCC|VDD|VIN|VBUS|VSYS|\+\d|\d+V\d*$|3V3|5V)', n): return 'power', 'power-name default'
+    return 'slow', 'fell through'
+def cls(n): return cls_how(n)[0]
+if TOPO:
+    for n, e in TOPO.switch_nodes.items():
+        c, how = cls_how(n)
+        if c != 'switch': WARN.append('%s is a switch node (%s) but %s classes it "%s": its copper, crosstalk and reference checks use that class' % (n, e['why'], how, c))
+    if TOPO.switch_nodes and 'switch' not in FAST: WARN.append('"switch" is not in fast_classes: switch nodes get no crosstalk/reference checks')
+
+def classification_coverage():
+    """per class: the routed nets in it and how they got there; the 'slow' ones are what the SI checks skip"""
+    rows = collections.defaultdict(list)
+    tl = collections.Counter()
+    for t in B['tracks']: tl[t['net']] += seg_len(t)
+    for n in sorted({t['net'] for t in B['tracks']}, key=natkey):
+        c, how = cls_how(n); rows[c].append(dict(net=n, how=how, track_mm=round(tl[n], 1)))
+    return {c: sorted(v, key=lambda r: -r['track_mm']) for c, v in rows.items()}
+
+_UNIT = {'p': 1e-12, 'n': 1e-9, 'u': 1e-6, '\u00b5': 1e-6, 'm': 1e-3, '': 1.0, 'k': 1e3, 'M': 1e6}
+def parse_value(s):
+    """'4.7uF' / '100n' / '1u 25V' / '2R2' -> float in base units (None if not a number)"""
+    m = re.match(r'\s*([\d.]+)\s*([pnu\u00b5mkM]?)', (s or '').replace('R', '.') if re.match(r'^\d+R\d', s or '') else (s or ''))
+    if not m: return None
+    try: return float(m.group(1)) * _UNIT[m.group(2)]
+    except ValueError: return None

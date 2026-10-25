@@ -50,9 +50,15 @@ def run(r, tag='', plotit=True):
     if plotit: plot(res, r['name'], tag)
     worst = max([s['drop_mV'] for s in res['sinks'] if s['amps'] != 0] or [0])
     if worst > 1e5: print('  !! %s: a sink reports %.3g mV, almost certainly a grid artefact; re-run with h=%.2f' % (r['name'], worst, r.get('h', 0.15) * 0.95))
-    print('%-14s %-18s cells %7d  P %.2f W  worst drop %.1f mV  max via %.2f A  (%.0fs)' % (
-        r['name'], r['net'][:18], res['cells'], res['P_W'], worst, res['via_amps'][0][2] if res['via_amps'] else 0, time.time() - t0), flush=True)
-    return dict(name=r['name'], net=r['net'], title=r.get('title', ''), cells=res['cells'], vias=res['vias'], P_W=res['P_W'], sinks=res['sinks'],
+    itot_ = sum(abs(i) for _, i in sinks_of(r))
+    print('%-14s %-18s cells %7d  P %.2f W  worst drop %.1f mV  R_eff %.1f mOhm  max via %.2f A  (%.0fs)' % (
+        r['name'], r['net'][:18], res['cells'], res['P_W'], worst, 1e3 * res['P_W'] / itot_ ** 2 if itot_ else 0, res['via_amps'][0][2] if res['via_amps'] else 0, time.time() - t0), flush=True)
+    itot = sum(abs(s['amps']) for s in res['sinks'])
+    # effective copper resistance of the run: the resistance that dissipates the same loss at the total current. Feed it
+    # to path_budget.py (pcb-power-supply) as the copper element of the path, next to the FETs, fuse and wiring.
+    r_eff = 1e3 * res['P_W'] / itot ** 2 if itot else None
+    return dict(name=r['name'], net=r['net'], title=r.get('title', ''), cells=res['cells'], vias=res['vias'], P_W=res['P_W'], I_total=itot,
+                R_eff_mohm=round(r_eff, 3) if r_eff is not None else None, sinks=res['sinks'],
                 via_amps=res['via_amps'][:20],
                 hotspots=[dict(layer=L, A_per_mm=pk, x=x, y=y, extent_mm=e, over=pk > thr(L)) for L, pk, x, y, e in hs])
 
@@ -64,5 +70,6 @@ if a.net:
     print('  busiest vias (x, y, A):')
     for x, y, i in out['via_amps'][:a.vias]: print('    (%.2f, %.2f)  %.2f A' % (x, y, i))
 else:
+    if not CFG.get('power_runs'): print('  !! no power_runs in review_config.json: no DC results (power.md will say so)')
     runs = [run(r, a.tag) for r in CFG.get('power_runs', [])]
     json.dump(dict(t_in=T_IN, runs=runs), open(PACK + 'power_runs%s.json' % (('_' + a.tag) if a.tag else ''), 'w'), indent=1)

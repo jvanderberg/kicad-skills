@@ -31,27 +31,34 @@ All tools also work without Claude.
 
 | Tool | What it does |
 |---|---|
-| `kicad-pcb-workflow/scripts/check.sh` | DRC (zone refill x2, schematic parity) + ERC on a copy of the project, summarised and diffed against a baseline, known items exempted only by name (`--accept`); runs `board_lint.py` and `nc_audit.py` |
+| `kicad-pcb-workflow/scripts/preflight.py` | Every tool the scripts need (KiCad and its python, the analysis venv, poppler, rsvg, jlcimport), with install hints; with `--project`, the pinned kicad-skills revision |
+| `kicad-pcb-workflow/scripts/skills_rev.py` | Pin the kicad-skills commit and KiCad version a project builds with (`kicad-skills.lock`) and check it on every build; `assets/kskills.py` is the project-side template |
+| `kicad-pcb-workflow/scripts/projfiles.py` | One convention for finding a project's own inputs (pin decisions, DRC and field exemptions, review config, reference parts, lock), used by every wrapper |
+| `kicad-pcb-workflow/scripts/check.sh` | DRC (zone refill x2, schematic parity) + ERC on a copy of the project, summarised and diffed against a baseline, known items exempted only by name (`--accept`); runs `board_lint.py`, `nc_audit.py` and `partfields.py`, with the project's own notes and exemptions |
 | `kicad-pcb-workflow/scripts/netspec.py` | Intended netlist vs KiCad's netlist: SPLIT / SHORT / MISSING / UNEXPECTED |
 | `kicad-pcb-workflow/scripts/schgen.py`, `symgen.py` | Generate a readable wire-drawn KiCad 10 schematic and redrawn symbols from python; collision check; locate shorts |
 | `kicad-pcb-workflow/scripts/new_board.py` | New board from the schematic netlist (footprints, symbol links, pad nets, fields, outline, placement, pad labels) - KiCad has no CLI for this |
 | `kicad-pcb-workflow/scripts/board_setup.py` | JLC stackup block, design rules and net classes (pcbnew cannot set a stackup) |
 | `kicad-pcb-workflow/scripts/router.py` | Routing as data: tracks, vias, zones, keepouts by pad name, checked for clearance, hole-to-hole (any net) and board edge before writing |
 | `kicad-pcb-workflow/scripts/board_lint.py` | What DRC misses: footprints without courtyards, missing 3D model files, silk text on part bodies |
-| `kicad-pcb-workflow/scripts/nc_audit.py` | Every unused pin and every input strapped to a rail, as a decision table with datasheet notes |
+| `kicad-pcb-workflow/scripts/nc_audit.py` | Every unused pin, every pin the symbol types no_connect, and every input strapped to a rail, as a decision table with datasheet notes and the pin-table row |
+| `kicad-pcb-workflow/scripts/partfields.py` | Every BOM part has a datasheet link and an LCSC/MPN in schematic and board, and every field matches between them (fails the build otherwise); `--online` checks the links |
+| `kicad-pcb-workflow/scripts/refparts.py` | Each IC's datasheet typical application (parts, values, distance from the pin) against the design: names the part that satisfies each entry, or MISSING / WRONG VALUE / FAR |
 | `kicad-pcb-workflow/scripts/fpcheck.py`, `add_courtyard.py` | Footprint vs package string and symbol (pad count, body size, numbering); add missing courtyards |
-| `kicad-pcb-workflow/scripts/board_diff.py` | Everything that changed between two board versions (or vs a git revision), with anything outside the expected areas flagged |
+| `kicad-pcb-workflow/scripts/board_diff.py` | Everything that changed between two board (or schematic) versions or vs a git revision, every attribute (fields, pad nets, DNP, models, settings) as well as geometry, with anything outside the expected areas flagged |
 | `kicad-pcb-workflow/scripts/kicad_sexpr/` | The file-format layer: lossless read/write of every KiCad s-expression file in KiCad's own formatting, plus builders for schematics (symbols, wires, labels, sheets), boards (footprints, tracks, vias, zones, keepouts, stackup) and project net classes, with stable uuids (regeneration is byte-identical). Generators and edits use it instead of formatting text; the writers above are built on it |
 | `kicad-pcb-workflow/scripts/sexp.py` | Check s-expression files (balance, raw newlines in strings, duplicate uuids); list/get footprints and symbols |
 | `kicad-pcb-workflow/scripts/render.py` | Render a window of chosen layers by KiCad coordinates to PNG (or a 3D render); also boards without an outline (imported reference layouts) |
 | `kicad-pcb-workflow/scripts/kicad_open.sh` | Is KiCad holding the project open? |
-| `kicad-board-review/scripts/make_pack.sh` | Build the analysis pack: netlist digest, board overview, DC power runs, planes, EMC, DRC |
+| `kicad-board-review/scripts/make_pack.sh` | Build the analysis pack: netlist digest, board overview, DC power runs, planes, EMC, DRC; each report starts with its coverage and warnings |
+| `kicad-board-review/scripts/topology.py` | Ground nets, switch nodes, switching ICs and hot-loop candidates derived from the netlist's structure (not net names); writes a starter review config for the board |
 | `kicad-board-review/scripts/power.py` | Resistive-grid DC solver: drop per load, copper loss, current density hotspots, current per via |
-| `kicad-board-review/scripts/planes.py`, `emc.py` | Ground plane pieces/slots/stitching; reference continuity, crosstalk, layer changes, hot loops, Z0 |
+| `kicad-board-review/scripts/planes.py`, `emc.py` | Ground plane pieces, slots (each with its own size; other nets' pours reported as pours) and stitching; reference continuity ranked by severity, crosstalk, layer changes, hot loops with a DC solve of each return path, Z0 |
 | `kicad-board-review/scripts/region.py`, `view.py` | List or render the copper inside a box |
 | `pcb-part-selection/scripts/bom_check.py` | Stock, package size and assembly-class sweep of the whole BOM via JLCImport |
 | `pcb-part-selection/scripts/part_gate.py` | Lifecycle (TI product pages) and LCSC stock per exact orderable variant for candidate parts, or for part numbers found in pasted text (e.g. WEBENCH's table view) |
-| `pcb-part-selection/scripts/datasheet.py` | Fetch a datasheet only if it is really a PDF; find the pages holding a section or figure; render a page |
+| `pcb-part-selection/scripts/datasheet.py` | Fetch a datasheet only if it is really a PDF; find the pages holding a section or figure; render a page and record what it shows in the folder's INDEX.md |
+| `pcb-power-supply/scripts/path_budget.py` | Operating point of a power path with the source's and the path's resistance at every corner, plus transients, against every element's limit (latching trips first) |
 
 ## Requirements
 
@@ -63,6 +70,8 @@ All tools also work without Claude.
 - [JLCImport](https://github.com/jvanderberg/kicad_jlcimport) (`jlcimport-cli`) for part search, import and stock checks:
   `pipx install git+https://github.com/jvanderberg/kicad_jlcimport` (checked October 2026). The scripts use
   `search --region`, which needs v1.6.0 or later; `jlcimport-cli search --help` shows whether you have it.
+
+Run `skills/kicad-pcb-workflow/scripts/preflight.py` to check all of these at once.
 
 ## Limits
 

@@ -11,8 +11,9 @@ for f in B['footprints']:
                 print('PAD  %-6s %-3s %-20s x %.2f-%.2f y %.2f-%.2f%s' % (f['ref'], p['num'], p['net'][:20], g.bounds[0], g.bounds[2], g.bounds[1], g.bounds[3], ' TH' if p['th'] else ''))
 for z in B['zones']:
     if L in z['layers']:
-        o = Polygon(z['outline'][0][0])
-        if o.intersects(W): print('%s %-16s prio %s outline %s' % ('KEEP' if z['keepout'] else 'ZONE', z['net'][:16] or z['name'], z['prio'], [[round(c, 2) for c in q] for q in z['outline'][0][0]]))
+        for ring, _ in z['outline']:                     # every outline polygon of the zone, not only the first
+            if len(ring) < 3: continue
+            if Polygon(ring).intersects(W): print('%s %-16s prio %s outline %s' % ('KEEP' if z['keepout'] else 'ZONE', z['net'][:16] or z['name'], z['prio'], [[round(c, 2) for c in q] for q in ring]))
 for t in B['tracks']:
     if t['layer'] == L and track_geom(t).intersects(W):
         print('TRK  %-20s %s -> %s w %.2f' % (t['net'][:20], [round(c, 2) for c in t['a']], [round(c, 2) for c in t['b']], t['w']))

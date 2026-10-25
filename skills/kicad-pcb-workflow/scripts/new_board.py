@@ -109,6 +109,11 @@ def main():
         sp = c.find('sheetpath')
         path = (sp.get('tstamps') if sp is not None else '/') + (c.findtext('tstamps') or '').strip()
         f = {e.get('name'): (e.text or '') for e in (c.find('fields') or [])}
+        # every schematic field is carried to the footprint, Datasheet and Description included (KiCad also writes
+        # them as <datasheet>/<description> elements; use those when the field list lacks them)
+        for k, tag in (('Datasheet', 'datasheet'), ('Description', 'description')):
+            if not (f.get(k) or '').strip() and (c.findtext(tag) or '').strip():
+                f[k] = c.findtext(tag).strip()
         f = {k: v for k, v in f.items() if k not in ('Reference', 'Value', 'Footprint')}
         comps.append(dict(ref=ref, value=c.findtext('value') or '', fp=fp, path=path, fields=f))
     pins = {(n.get('ref'), n.get('pin')): board_net_name(net.get('name'))
