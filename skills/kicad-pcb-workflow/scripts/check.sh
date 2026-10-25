@@ -60,7 +60,9 @@ cat "$OUT/nc.log"
 if [ -f "$OUT/nc.md" ]; then echo "$(tail -1 "$OUT/nc.md") (table in $OUT/nc.md)"; else echo "!! nc_audit.py failed (exit $NCRC): no pin audit"; fi
 echo "== part fields (Datasheet + sourcing on every BOM part, schematic <-> board parity of every field)"
 PFRC=0; python3 "$HERE/partfields.py" check "$OUT/proj/$NAME.kicad_sch" "$OUT/proj/$NAME.kicad_pcb" > "$OUT/fields.txt" 2>&1 || PFRC=$?
-grep -E '^(exemptions|[0-9]+ BOM parts|[0-9]+ problem)' "$OUT/fields.txt"; grep -E '^(PROBLEM|ACCEPTED)' "$OUT/fields.txt" | head -12; [ "$PFRC" = 0 ] || echo "!! part-field problems: full list in $OUT/fields.txt"
+# (|| true: under pipefail a grep with nothing to show - a clean board - would end the script with status 1)
+{ grep -E '^(exemptions|[0-9]+ BOM parts|[0-9]+ problem)' "$OUT/fields.txt" || true; }
+{ grep -E '^(PROBLEM|ACCEPTED)' "$OUT/fields.txt" || true; } | head -12; [ "$PFRC" = 0 ] || echo "!! part-field problems: full list in $OUT/fields.txt"
 python3 - "$OUT/drc.json" <<'E'
 import json, sys
 d = json.load(open(sys.argv[1]))
