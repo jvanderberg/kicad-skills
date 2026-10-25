@@ -15,9 +15,12 @@ so a generator describes the design and never formats KiCad text itself:
 | Draw the schematic as wired blocks; geometry checks; locate shorts | `schgen.py` (library) | python3 |
 | Footprint facts: courtyard, pad count / body vs package, pins vs pads | `fpcheck.py` | python3 |
 | Add missing courtyards to imported footprints | `add_courtyard.py` | python3 |
-| Board from the netlist: footprints, symbol links, nets, fields, outline, placement, pad labels | `new_board.py` | python3 |
+| Board from the netlist: footprints, symbol links, nets, fields, assembly attributes (DNP, BOM, position file), outline, placement, pad labels | `new_board.py` | python3 |
 | JLC stackup block, design rules, net classes | `board_setup.py` | python3 |
-| Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely) |
+| Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely; re-runs itself there) |
+| What DRC misses (courtyards, models, silk on bodies, vias in pads, paste on holes, copper under hardware) | `board_lint.py` | `$KICAD_PYTHON` (pcbnew; re-runs itself there) |
+| Is KiCad holding the project? (lock file vs a running editor) | `kicad_locks.py`, `kicad_open.sh` | python3 |
+| Which interpreter has what; run a script that needs pcbnew and shapely | `interp.py which`, `interp.py run` | python3 |
 | Unused and strapped pins as decisions | `nc_audit.py` | python3 |
 | Datasheet typical-application parts vs the schematic | `refparts.py` | python3 |
 | A project's own input files, found one way | `projfiles.py` | python3 |
@@ -97,8 +100,25 @@ through bodies, overlapping bodies) must be empty and `find_merges(s, NETS)` mus
    project's `pin-decisions.json`, found by `projfiles.py`; `--datasheet U5=ds.pdf` prints the pin-table row next to
    each pin).
 4. `python3 scripts/partfields.py check sheet.kicad_sch` - every BOM part has a datasheet link and an LCSC/MPN. Run it
-   again with the board once it exists (`partfields.py check sheet.kicad_sch board.kicad_pcb`): every field must match.
-5. Render the PDF (`kicad-cli sch export pdf`, `pdftoppm -r 150`) and **look at every page**: overlapping text,
+   again with the board once it exists (`partfields.py check sheet.kicad_sch board.kicad_pcb`): every field and every
+   assembly attribute (DNP, in BOM, in position files) must match.
+5. **Reset states of interface lines (R12).** For every control, strobe, enable and chip-select between two chips,
+   write down the level on each side in every state - power-up, the driver in reset, the driver unprogrammed or in its
+   bootloader, the driver unpowered, the receiver in reset - from both datasheets' pin default states (internal pull-up,
+   pull-down, high impedance). Where no strong default holds the line in its safe state, add a resistor to that
+   level. A weak pull-down on one chip against a weak pull-up on the other sits mid-rail on every reset. The review
+   pack's `netlist.md` lists inter-IC control lines with no pull resistor ("reset-state decision needed") as a prompt;
+   record the decision next to the pin decisions.
+6. **Bus and lane order (R10).** For every bus between two packages, compare the pin order on both sides: two chips
+   that number their pins the same way round cannot meet on one layer without reversing the order. Fix the pin
+   assignment now (most MCUs allow remapping), not at layout.
+7. **Assembly method per part (R12, R22).** Assembled, hand-soldered or not fitted, decided on each symbol at capture:
+   `schgen` `add(..., in_bom=False)` for a hand-soldered part (its `in_pos_files` follows), `dnp=True` for not fitted,
+   `in_pos_files=False` on its own when needed. `new_board.py` carries them to the footprint (DNP, exclude from BOM,
+   exclude from position files), so the assembler's BOM and position file follow the schematic; check the exported
+   position file lists only the assembled parts. A part whose orientation matters but which the assembler's library
+   treats as non-polar (an inductor or capacitor with a polarity mark) gets an order note and a placement-preview check.
+8. Render the PDF (`kicad-cli sch export pdf`, `pdftoppm -r 150`) and **look at every page**: overlapping text,
    labels on wires, values on bodies, crossings that could be avoided. A clean ERC is not a readable sheet.
 
 ## 5. Footprints
@@ -134,6 +154,17 @@ python3 scripts/board_setup.py proj.kicad_pro --stackup JLC04161H-7628 --class P
   or they are lost (`board_diff.py HEAD` shows what a regeneration would revert).
 - Then layout in stages with `references/layout-stages.md`, routing with `router.py` (`references/routing.md`), and
   `check.sh` after every stage.
+- **A build script stops at the first failed stage (R28)** and proves each stage wrote its output before the next one
+  reads it:
+  ```bash
+  set -euo pipefail
+  trap 'python3 "$K/kicad_locks.py" status "$HW" --clean >/dev/null || true' EXIT   # locks kicad-cli left
+  rm -f "$S/router.log"
+  $PY "$K/router.py" apply "$PCB" "$S/pack0/board.json" tools/route_plan.py > "$S/router.log" 2>&1 || rc=$?
+  grep -q '^wrote ' "$S/router.log" || { echo "router did not write the board"; exit 1; }
+  ! grep -E '^ +(VIOLATION|REJECTED)' "$S/router.log" || { echo "router rejected items: fix the plan"; exit 1; }
+  ```
+  Never `|| true` around a generator, and never run DRC or the review pack on a board a failed stage left behind.
 
 ## Example (labelled): what this replaced on one board
 

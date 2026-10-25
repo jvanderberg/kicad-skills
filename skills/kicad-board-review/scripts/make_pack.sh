@@ -2,7 +2,8 @@
 # Build a review pack for a KiCad project.
 #   make_pack.sh PROJECT_DIR PACK_DIR [--no-power] [--inner-um 17.5,35]
 # Steps: copy the board, refill its zones on the copy (never the original), export the netlist, dump geometry, digest the
-# netlist, then run planes / emc / power (if PACK_DIR/review_config.json has power_runs) / thermal and write the reports.
+# netlist, then run planes / islands / emc / decoupling / power (if PACK_DIR/review_config.json has power_runs) / thermal
+# and write the reports. Every stage either writes its output or stops the script (set -e; the scripts exit non-zero).
 # Override tool paths with KICAD_CLI, KICAD_PYTHON and PY (a python with numpy, scipy, shapely>=2, matplotlib).
 set -euo pipefail
 # the project's board: the one named after its .kicad_pro, else the only .kicad_pcb; never "the first one ls prints"
@@ -22,7 +23,10 @@ mkdir -p "$PACK"; PACK="$(cd "$PACK" && pwd)"
 source "$HERE/kicad_env.sh"
 PCB=$(pick_board "$PROJ"); SCH="${PCB%.kicad_pcb}.kicad_sch"
 [ -f "$SCH" ] || { echo "no root schematic next to $PCB"; exit 1; }
-if ls "$PROJ"/*.lck "$PROJ"/~*.lck >/dev/null 2>&1; then echo "note: KiCad lock files present; the pack reads the files as saved on disk"; fi
+# a lock file alone does not mean KiCad is open (kicad-cli leaves them): ask the one owner of that question
+python3 "$HERE/kicad_locks.py" status "$PROJ" | sed 's/^/note: /' || true
+echo "note: the pack reads the project files as saved on disk"
+trap 'rm -f "$PACK/proj"/~*.lck' EXIT
 # work on a copy of the whole project (schematics, project-local libraries and lib tables resolve via ${KIPRJMOD})
 rsync -a --delete --exclude .git --exclude 'production*' --exclude '*-backups' --exclude '*.lck' "$PROJ/" "$PACK/proj/"
 CPCB="$PACK/proj/$(basename "$PCB")"; CSCH="$PACK/proj/$(basename "$SCH")"
@@ -52,7 +56,9 @@ else
 fi
 [ "$STARTER" = 1 ] && POWER=0
 "$PY" "$HERE/planes.py" "$PACK"
+"$PY" "$HERE/islands.py" "$PACK"        # same-net isolation of declared islands, on the filled copper
 "$PY" "$HERE/emc.py" "$PACK"
+"$PY" "$HERE/decoupling.py" "$PACK"     # nearest capacitor per IC supply pin, by copper path
 if [ "$POWER" = 1 ] && "$PY" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("power_runs") else 1)' "$PACK/review_config.json"; then
   for um in ${INNER//,/ }; do "$PY" "$HERE/power.py" "$PACK" --inner-um "$um" --tag "inner_${um}um"; done
 fi

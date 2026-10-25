@@ -37,6 +37,10 @@ def build(r):
 `board.json` is `kicad-board-review/scripts/boarddump.py` run on the unrouted board (or on the board as it is, with
 `apply --append`). Pads are named, so routes follow placement changes; a track touching pads of two nets raises an
 error. The board is regenerated from schematic + placement + plan, so the plan is the record of every route.
+Helpers in the plan (a capacitor's via-and-stub, a fan-out pattern) take every net from the pads they serve
+(`r.net(ref, pad)`), never a net name typed into the helper: a helper reused for parts on another rail then writes the
+wrong net, and only the clearance check stands between that and a short (R17). An override keyed by reference
+(another footprint, another via size for one part) lives where every instance is created, not in one helper (R13).
 - Orthogonal runs with 45 degree corners (offset both coordinates by the same amount at a bend).
 - Lanes on a fixed pitch (track width + clearance + margin, e.g. 0.5 mm for 0.15 mm tracks at 0.15 mm clearance).
 - End exactly on pad centres or on another track's end/vertex - a 0.01 mm miss is an unconnected item.
@@ -55,8 +59,12 @@ neighbouring source pad of a FET). The router rejects it unless the pad is named
 `via_field()` for thermal vias in an exposed pad, ordered filled or tented), and `board_lint.py` (in `check.sh`)
 reports VIA IN PAD on any board, however the via got there. A same-net exemption belongs to the one rule it was made
 for. It logs VIOLATION / REJECTED lines and exits 1 if there are any. It does not model
-custom `.kicad_dru` rules (pass `clearance=` on that call and name the rule) or zone fills. Then run `check.sh` - DRC is
-the authority - and fix every new clearance error and unconnected item.
+custom `.kicad_dru` rules (pass `clearance=` on that call and name the rule) or zone fills. Its clearance check is
+never looser than DRC (exact distances; pad-outline approximation only ever counts against the gap: `checks.md`, R7).
+**After every `apply`, read the log: any VIOLATION or REJECTED line is a failure** (R28) - the board was written, but
+not the board the plan describes. When a router rule becomes stricter, re-run the whole plan and fix every newly
+rejected item in one pass. Then run `check.sh` - DRC is the authority - and fix every new clearance error and
+unconnected item.
 
 ## Generic habits that break datasheet rules
 
@@ -70,6 +78,14 @@ These look tidy and pass DRC, and each one has broken a specific datasheet rule 
 - **Copper on adjacent layers under a switch node**, when the datasheet says no parallel layers under SW.
 - **Feedback and compensation routing near the switch node or inductor**, or a slow signal routed through the reserved
   via site under an IC (allocate those sites in the layer plan first).
+
+## Reference strips and stitching
+
+A ground or plane strip added under a bus, or a pour between lanes, is checked where it acts right after the edit
+(R30): it covers the layer-change vias and the whole track, stubs included (a strip that ends at the vias leaves the
+stubs over the gap), and each pour piece it creates keeps two vias to its plane (a grid stitcher skips spots that
+collide with tracks, so a piece under a bundle can end with one). `kicad-board-review/scripts/pour_check.py BOARD
+--window x0,y0,x1,y1` reports both in seconds; add vias between the lanes or at spots chosen for that piece.
 
 ## 4. Look, and report what it crosses
 

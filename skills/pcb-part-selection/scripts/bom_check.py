@@ -19,6 +19,10 @@ It exports the netlist with kicad-cli, groups parts by LCSC number, looks each o
   - Extended parts (each unique one adds a loading fee at JLC)
   - parts whose Datasheet field is blank or KiCad's "~" (the link exists upstream - JLCImport writes the LCSC
     datasheet URL - and a stage dropped it; kicad-pcb-workflow/scripts/partfields.py says which stage)
+  - ICs whose datasheet is not saved in the project (a PDF in docs/datasheets/ or datasheets/, found from the
+    schematic folder up to the repository root, whose file name contains the part's MPN, value or LCSC number): a
+    reviewer - person or agent - can only check pins and limits against a datasheet it can open (--no-local-datasheets
+    skips it; datasheet.py fetch saves one)
   - derived values whose source part changed (derived_check.py, when the project has a design-values.json): a part
     swap that passes the stock check can still invalidate a trip current, a divider or a thermal estimate
 Stock moves daily: re-run right before ordering, and never trust a number from an earlier session.
@@ -39,7 +43,8 @@ def pkg_size(fp, val):
 
 def export_netlist(sch, kicad_cli):
     xmlp = os.path.join(tempfile.mkdtemp(), 'net.xml')
-    subprocess.run([kicad_cli, 'sch', 'export', 'netlist', '--format', 'kicadxml', '-o', xmlp, sch], check=True,
+    from kicad_locks import cli_run
+    cli_run([kicad_cli, 'sch', 'export', 'netlist', '--format', 'kicadxml', '-o', xmlp, sch], sch, check=True,
                    capture_output=True)
     return xmlp
 
@@ -65,6 +70,41 @@ def bom_groups(xmlp):
         if (f.get('Datasheet') or c.findtext('datasheet') or '').strip() in ('', '~'):
             g['no_ds'].append(ref)
     return groups, missing
+
+
+def datasheet_dir(start):
+    """docs/datasheets or datasheets, from start up to the repository root (projfiles.py's walk), or None"""
+    d = os.path.abspath(start)
+    while True:
+        for c in (os.path.join(d, 'docs', 'datasheets'), os.path.join(d, 'datasheets')):
+            if os.path.isdir(c):
+                return c
+        if os.path.isdir(os.path.join(d, '.git')) or os.path.dirname(d) == d:
+            return None
+        d = os.path.dirname(d)
+
+
+def _norm(s):
+    return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+
+
+def local_datasheets(xmlp, ddir):
+    """[(ref, identity)] of BOM ICs with no PDF in ddir whose name contains their MPN, value or LCSC number"""
+    files = [_norm(os.path.splitext(f)[0]) for f in (os.listdir(ddir) if ddir else []) if f.lower().endswith('.pdf')]
+    out = []
+    for c in ET.parse(xmlp).getroot().find('components'):
+        ref = c.get('ref')
+        if not re.match(r'^(U|IC)\d', ref):
+            continue
+        props = {p.get('name') for p in c.findall('property')}
+        if 'dnp' in props or 'exclude_from_bom' in props:
+            continue
+        f = {e.get('name'): (e.text or '').strip() for e in c.find('fields')} if c.find('fields') is not None else {}
+        ids = [_norm(x) for x in (f.get('MPN'), f.get('Manufacturer Part'), c.findtext('value'), f.get('LCSC'), f.get('LCSC Part'))]
+        ids = [x for x in ids if len(x) >= 4]
+        if not any(i in fn or (len(fn) >= 5 and fn in i) for i in ids for fn in files):
+            out.append((ref, f.get('MPN') or f.get('Manufacturer Part') or c.findtext('value') or ''))
+    return out
 
 
 def check(groups, ctx, cli, min_pkg='0402'):
@@ -103,6 +143,7 @@ def main():
     ap.add_argument('--kicad-cli', default=os.environ.get('KICAD_CLI') or shutil.which('kicad-cli') or '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli')
     ap.add_argument('--netlist', help='use this kicadxml netlist instead of exporting one from the schematic')
     ap.add_argument('--no-derived', action='store_true', help='skip the design-values.json check')
+    ap.add_argument('--no-local-datasheets', action='store_true', help='skip the check that every IC datasheet is saved in the project')
     ap.add_argument('--json', help='also write results here')
     a = ap.parse_args()
     try:
@@ -143,6 +184,15 @@ def main():
         else:
             print('\nDerived values: %s - values computed from a part\'s parameters (trip currents, dividers, '
                   'snubbers, thermal estimates) are not checked against part changes' % msg)
+    nolocal = []
+    if not a.no_local_datasheets:
+        ddir = datasheet_dir(os.path.dirname(os.path.abspath(a.sch)))
+        nolocal = local_datasheets(xmlp, ddir)
+        print('\nLocal datasheets (%s): %s' % (ddir or 'no docs/datasheets folder found', '%d IC(s) without one' % len(nolocal) if nolocal else 'every IC has one'))
+        for ref, ident in nolocal:
+            print('  NO LOCAL DATASHEET %s %s: save it into %s (datasheet.py fetch URL FILE, the MPN in the file name)' % (
+                ref, ident, ddir or 'docs/datasheets/'))
+        problems += len(nolocal)
     used = {r['lcsc'] for r in rows}
     for e in ctx.get('exceptions') or []:
         if e.get('lcsc') not in used:
@@ -150,7 +200,8 @@ def main():
     print('Also check by hand: the LCSC part really matches the symbol (value, voltage, package, pinout) - a valid number can still be the wrong part.')
     if a.json:
         json.dump(dict(parts=rows, missing_lcsc=missing, boards=ctx['boards'], region=ctx['region'], assembler=ctx['assembler'],
-                       date=sourcing.today(), sourcing=ctx['source'], stale_derived=stale), open(a.json, 'w'), indent=1)
+                       date=sourcing.today(), sourcing=ctx['source'], stale_derived=stale,
+                       no_local_datasheet=[r for r, _ in nolocal]), open(a.json, 'w'), indent=1)
     sys.exit(1 if problems else 0)
 
 

@@ -67,6 +67,12 @@ certified use.
 | Connection | Connector or pad | Label | Polarity / keying | Side |
 |---|---|---|---|---|
 
+### Bring-up test points
+
+| Rail or signal | Test point (pad, side) | Ground pad nearby | Expected value |
+|---|---|---|---|
+| <every rail, every ground domain, reset/enable, clocks> | | | |
+
 ## 4. Power
 
 - Source(s): <USB-C 5 V / PD x V / battery chemistry, cells, capacity / DC <nom> V, range <min>-<max> V / external
@@ -82,7 +88,7 @@ certified use.
 
 ### Power budget
 
-| Rail | Load | Avg mA | Peak mA | Notes |
+| Rail | Load | Avg mA | Peak mA | Datasheet tables summed (table, page; what each excludes) |
 |---|---|---|---|---|
 | | **Total (with <x> % margin)** | | | |
 
@@ -102,6 +108,7 @@ input can deliver <W> (<source and what it advertises>) -> pass / fail -> <actio
 | Height limits | top <mm>, bottom <mm> |
 | Assembly side | top only / both |
 | Through-hole parts | |
+| Assembly method per part | assembled / hand-soldered (out of the BOM and the position file) / not fitted (DNP) - set on each symbol at capture |
 
 ## 6. Manufacturing
 

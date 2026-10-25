@@ -39,7 +39,10 @@ the first block's convenient track lands exactly where a later block's mandatory
 block, write a one-page plan:
 - which nets own which plane layers and which pours on the outer layers (and where those pours must stay unbroken);
 - **reserved sites**: thermal and ground vias under each IC's exposed pad, each converter's single-point ground tie,
-  keepout islands for analog grounds, the area under each switch node;
+  keepout islands for analog grounds, the area under each switch node, and **a decoupling site at every power pin of
+  a rail that has no plane** (a rail distributed by tracks, an IC's internal-regulator output): the capacitor at the
+  pin, its ground via beside it, before signal lanes take the space. A rail on a plane is judged by the via-to-plane
+  distance instead. kicad-board-review's `decoupling.py` measures both (path, inductance) once routed;
 - **lanes for board-wide signals** (enables, status, sense lines, buses): which layer, which corridor, in which order;
 - where each block's interface copper lands on its neighbours (which pour or via a block must connect to).
 Route only inside your allocation; a block that needs more goes back to the plan, which is updated first.
@@ -53,7 +56,11 @@ discover one is not achievable. Before calling placement done:
   decision (drop the feature, change the part, change the pinout use) for the user - not something to drop quietly at
   routing time.
 - Each block's placement matches its reference figure (hot-loop parts at the pins, quiet-side parts, orientation).
-- `check.sh` courtyard results clean (`board_lint.py` lists footprints with no courtyard: those are invisible to it).
+- `check.sh` courtyard results clean (`board_lint.py` lists footprints with no courtyard: those are invisible to it),
+  checked at placement and again after every placement change, before routing builds on it (R30): an overlap found
+  after routing moves a part and its tracks.
+- Every bus or lane group can be routed in order on its layer: compare both ends' pin order (kicad-pcb-workflow
+  `references/new-design.md` s4 - this belongs at pin assignment, and placement is the last cheap point to catch it).
 - Every part in the placement is in stock in the assembler's region today (`bom_check.py`; the first line names the
   region), and no recorded derived value is stale (`derived_check.py check`, run by bom_check).
 - Report every frozen decision the placement could not honour as an open question with options.
@@ -72,7 +79,10 @@ discover one is not achievable. Before calling placement done:
 ## The compliance file (`docs/layout-compliance.md`; template: `assets/layout-compliance-template.md`)
 
 One table per block, one row per rule from its references, each with the evidence: where the part or copper is and
-why that satisfies the rule. Rules are checked against the render, not from memory.
+why that satisfies the rule. Rules are checked against the render, not from memory. A rule about connectivity
+(isolated, single-point, quiet or separate ground; a pour that must not join another) is proven on the **filled**
+copper: the `islands.py` row (one piece, joins counted), never "the nets are named differently" or "the outline is
+separate" (R19).
 
 **"Cannot be met" is itself a claim that needs evidence.** A deviation row must record what was tried (package sizes,
 values, positions, layers), what blocked each attempt (which part, which clearance), and the cheaper alternatives
@@ -80,6 +90,22 @@ that were tried first: a smaller package, a different value that still meets the
 Example (labelled): on one board a converter's "bypass cap at the VIN pin" rule was written off as "no room" after
 only a 22 uF 0805 was tried; a 1 uF 0402 fitted. Only after the alternatives are exhausted does the deviation go to the
 user as a decision, with its consequence.
+
+## Copying a reference layout (R27)
+
+A vendor or reference board's block layout is worth copying because of properties that live partly outside the block:
+an island kept off the board-wide pour by other-net copper around it, a keepout, a cut-out on an inner layer, a
+clearance, the land patterns the copper was drawn for. Extracting only the block's own nets keeps the parts and loses
+those, and the copy then fails exactly the rule it was copied for while every check reads "Met" (a merged same-net
+ground is legal copper). So a copy carries its **boundary conditions**:
+- every copper feature of any net within a margin of the block (a few mm), on every layer: pours, keepouts and rule
+  areas, cut-outs and slots, and what each is for;
+- the **land patterns** the reference copper was drawn for (copy the reference's footprints, or prove the target's
+  pads match: pour necks and clearances follow the pads);
+- the isolation intent written down as a rule ("island X meets net Y only at points P"), declared to the review pack
+  (`review_config.json` "islands", kicad-board-review `islands.py`) and proven on the filled copper of the new board,
+  not from net names or outlines (R19).
+Render the reference and the copy side by side at the same scale (`view.py`) with the surrounding copper visible.
 
 ## Per-block routing loop
 

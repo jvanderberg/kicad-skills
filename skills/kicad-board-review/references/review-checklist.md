@@ -172,6 +172,12 @@ A board that is fine in steady state can trip, latch or lose a part in the first
   "needs review", not as proven failures.
 - **Split grounds** (AGND/PGND, analog vs digital): join at the single point the datasheet specifies (often the
   regulator's VCC/AGND capacitor) with a net tie, and make sure no signal crosses the split.
+- **Same-net isolation on the filled copper.** **Output:** `emc.md` "Same-net isolation" with one row per isolation rule
+  in the datasheets (single-point power ground, quiet analog ground, a local pour that must not join the plane): each
+  declared island one piece, no other pad of its net in it, joins as allowed. A single-point ground that merged into
+  the main pour is legal same-net copper - DRC, the hot-loop table and a compliance row written from net names all read
+  it as fine. With no islands declared, report the area NOT CHECKED. A block copied from a reference layout is where
+  this breaks first (kicad-pcb-workflow `layout-stages.md`, R27).
 
 ## 4. Regulators and decoupling  (`emc.md` hot loops, datasheet layout example)
 
@@ -197,9 +203,12 @@ A board that is fine in steady state can trip, latch or lose a part in the first
   datasheet's stable range.
 - **Spread spectrum / dithering.** If the converter supports it, enabling it lowers conducted and radiated peaks for one
   capacitor (check the modulation-frequency equation).
-- **Decoupling.** Every IC power pin has its capacitor within a few mm with a direct via to ground; check the MCU
-  core regulator's special requirements (some MCUs' internal switching regulators need a specific, sometimes
-  polarity-marked, inductor).
+- **Decoupling.** **Output:** `emc.md` "Decoupling": for every IC supply pin the nearest same-net capacitor by copper
+  path (track, plane, vias), its inductance estimate and the capacitor's ground-via distance; every FLAG explained.
+  A rail distributed by tracks (no plane) needs a capacitor at each pin: a cap row several mm away, fed past an
+  inductor or a switch node, is the finding. Quantify the before/after of a move with the same estimate (microstrip
+  per-length inductance, not 1 nH/mm) before recommending it (R29). Check the MCU core regulator's special
+  requirements (some MCUs' internal switching regulators need a specific, sometimes polarity-marked, inductor).
 
 - **LDO heat in small packages.** SOT-23-5 is roughly 200-250 C/W on a typical board: 0.25 W is already a 50-60 C rise.
 - **Inductor package sanity.** A 0603/0805 chip or multilayer "inductor" on a switcher is a red flag; check I_sat and
@@ -226,6 +235,10 @@ A board that is fine in steady state can trip, latch or lose a part in the first
   board on a cable (LED strips, sensors, long buses) is an antenna - series resistance at the driver, filtering, and stitching
   near the connector.
 - **Differential pairs.** Length matched (skew in `diff_pairs`), coupled, same layer, no stubs, impedance near target.
+  **Output:** `emc.md` "Differential pairs": the Zdiff estimate from the measured width and gap and the gap from the
+  pair to the nearest same-layer copper. A pour at its default clearance beside the pair makes it partly coplanar and
+  lowers its impedance: flagged. Close an "impedance unverified" item with the fab's own calculator for the exact
+  stackup (browser automation can drive it), with the pour gap as built, and record the numbers.
 - **I2C and other slow buses.** Slow does not mean immune. Check total bus capacitance (about 10 pF per device plus
   about 1 pF/cm of trace) against the pull-up for the rise time at the chosen speed (t_r ~ 0.85 R C must be under
   1000 ns at 100 kHz, 300 ns at 400 kHz); route away from switching nodes and noisy pours; keep it on outer layers if
@@ -279,6 +292,13 @@ For every IC and every non-trivial discrete:
 - **Required external parts** and their values (series resistors, pull-ups for pins that reset with pull-downs, a pull-
   up on a second chip select, bootstrap caps): every part in the datasheet's typical application, matched to the
   schematic part that satisfies it (`refparts.py`), or a recorded reason it is left out.
+- **Reset states of interface lines.** For every control, strobe, enable and chip select between two chips, the level
+  on each side at power-up, with either chip in reset, unprogrammed or unpowered, from both datasheets' pin default
+  states. `netlist.md` "Control lines between ICs with no pull" lists the candidates; a line held only by two weak
+  internal pulls of opposite sign floats mid-rail on every reset (kicad-pcb-workflow `new-design.md` s4, R12).
+- **Supply current**: the power budget sums every table that states a supply current for the part, per supply domain
+  (core, I/O, PHY, analog, internal regulator), with the tables named; a table "except" a domain leaves it to another
+  table (pcb-part-selection, "Reading the datasheet").
 - **Variant suffixes** that change the part: voltage (memories and regulators sold in 3.3 V and 1.8 V versions that
   differ by one suffix letter), forced PWM vs auto light-load mode, automotive vs commercial, package.
 - **Power-up behaviour** (example: some converters need I2C configuration before their output turns on - unacceptable
@@ -287,8 +307,10 @@ For every IC and every non-trivial discrete:
 - **Pin functions** confirmed in the SDK header or reference design, not from memory.
 - **Land pattern** from the datasheet, compared against the footprint used (imported footprints are often off: pad
   positions, missing courtyards, 3D model offsets).
-Download PDFs and read them (`pdftotext -layout`; render figures with `pdftoppm`). LCSC datasheet links return an HTML
-page that contains the real PDF link.
+Download PDFs and read them (`pdftotext -layout`; render figures with `pdftoppm`); `pcb-part-selection/scripts/datasheet.py
+fetch` follows a distributor's viewer page to its PDF. The project should hold every IC's datasheet (`docs/datasheets/`,
+`bom_check.py` lists those missing): a pinout that cannot be checked against a local datasheet is reported unverified,
+and the missing file is a finding.
 
 - **Data direction: make absolutely sure it is not swapped. Check it twice, then a third time.** A swapped DI/DO,
   TX/RX or MOSI/MISO pair passes ERC, DRC and parity and kills the board. For every serial, memory and UART connection,
@@ -338,7 +360,12 @@ page that contains the real PDF link.
 - **Substitutions since the user's approval** are listed with the user's decision on each (R26): a part, threshold or
   behaviour that changed without one is a finding, whatever the reason for the change.
 - Every polarised or oriented part checked in the assembler's placement preview; fix rotation permanently with
-  `Rotation Offset` / `Position Offset` fields on the symbol rather than per order.
+  `Rotation Offset` / `Position Offset` fields on the symbol rather than per order. A part whose orientation matters
+  but whose class the assembler treats as non-polar (an inductor or a capacitor with a polarity mark) gets an order
+  note as well.
+- **Assembly method per part.** **Output:** the parts in the assembler's BOM and position file against the plan:
+  hand-soldered parts out of both, not-fitted parts DNP (the schematic's attributes carried to the board,
+  `partfields.py` parity). A hand-soldered header in the position file is placed, and charged, by the assembler.
 - Fabrication outputs (gerbers, BOM, CPL) regenerated after the last change - compare their timestamps with the board's
   (stale exports are a common release blocker).
 
@@ -348,7 +375,10 @@ page that contains the real PDF link.
   render in 3D, check model offsets. Run `kicad-pcb-workflow/scripts/board_lint.py` first: a missing 3D model file
   renders as bare pads and looks like an empty spot; it also lists footprints without courtyards (invisible to DRC's
   overlap check) and silkscreen text on other parts' bodies (DRC does not check silk against bodies).
-- Mounting holes: keepout around the screw head and washer; no copper or parts under it unless intended.
+- Mounting holes: keepout around the screw head and washer; no copper or parts under it unless intended. **Output:**
+  `board_lint.py` UNDER HARDWARE (other-net tracks, vias and pads within the hardware radius on **both** outer layers;
+  pours as notes) with the real washer or standoff size (`--hardware-r`): solder mask is not insulation under a metal
+  part torqued onto it.
 - Connectors at the edge, oriented so cables leave the board cleanly; polarity marked.
 - Heat: spread hot parts apart; keep precision analog, electrolytics and oscillators away from FETs and regulators;
   thermal reliefs on pads in big pours so they solder; thermal vias under hot pads but never unfilled via-in-pad on
@@ -366,7 +396,12 @@ page that contains the real PDF link.
 - **Thermal vias:** a 0.3 mm plated via through 1.6 mm is roughly 100-200 C/W each (about 220 C/W at 20 um plating), so
   they work in numbers: about 9 at 1.0-1.2 mm pitch under a 3x3 mm exposed pad, or the datasheet's pattern (put it in
   `thermal.pads` and the pack checks against it). **Output:** `thermal.md` "Exposed pads and thermal vias": per pad the
-  vias in and beside it, their resistance to the nearest plane, the drop at the part's worst loss, and the shortfall.
+  vias in and beside it (within the stated distance), their resistance to the nearest plane and the **solved
+  temperature step** from the pad to the next layer at the part's worst corner, which is what decides. The via-count
+  rule of thumb is a reference, not the finding. Vias beside the pad are the default (the router refuses open vias in
+  pads); via-in-pad is a decision, filled and capped or tented, ordered as such. A part's loss enters the board at its
+  thermal pad or tab when it has one (`thermal.parts.REF.pads` overrides), and every part above the hot threshold
+  needs its datasheet's psi_JB or theta_JC for a junction estimate (the starter config lists them to fill in).
 - **Electrolytic life** roughly doubles per 10 C below its rating (L = L0 x 2^((T_rated - T_actual)/10)): keep them away
   from hot parts.
 - **Test points:** about 1 mm pads at >= 2-2.54 mm pitch, one side, >= 3 mm from the edge for fixtures; SWD and boot
@@ -393,8 +428,9 @@ Some properties are cheap to prove with a script and expensive to discover on a 
   the tracks attached to them.
 - **Kelvin sense:** temporarily give the sense trace its own net name in a copy, run DRC, and confirm it touches only
   the intended shunt pad (not the pour or the power trace beside it).
-- **Paste and vias:** exposed-pad paste coverage (about 50 % in a window pattern is typical), no via drill under a
-  paste aperture, tenting requested for vias near pads.
+- **Paste and vias:** exposed-pad paste coverage (about 50 % in a window pattern is typical), no drill under a paste
+  aperture, tenting requested for vias near pads: `board_lint.py` reports PASTE ON HOLE (library thermal-via
+  footprints included) and the coverage; `--vias-filled` when they are ordered filled and capped.
 - **Capture contract:** `kicad-pcb-workflow/scripts/netspec.py` asserts the topology you meant (SPLIT, SHORT, MISSING,
   UNEXPECTED against an intended netlist). It catches silently dropped symbols, miswired series parts and shorts that
   ERC passes.

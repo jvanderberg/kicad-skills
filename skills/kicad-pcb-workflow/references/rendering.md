@@ -42,5 +42,5 @@ part there" and hides collisions (KiCad 10.0.1's own library references some mod
 
 ## Hygiene
 
-kicad-cli leaves `~board.kicad_pcb.lck` beside the file after renders; `render.py` removes it if it created it. Very
+kicad-cli can leave lock files beside the file after renders; `render.py` removes the ones its own calls created. Very
 large PNGs trip PIL's decompression-bomb check; crop with `magick` or lower the resolution.

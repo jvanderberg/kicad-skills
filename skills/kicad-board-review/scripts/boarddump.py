@@ -4,7 +4,10 @@
 # for the analysis scripts, which run in a normal venv (numpy, scipy, shapely>=2, matplotlib).
 # It never refills zones: refill first with `kicad-cli pcb drc --refill-zones --save-board` on a COPY, so the analysis sees
 # exactly the copper KiCad would plot.
-import pcbnew, json, sys, re, os
+import json, sys, re, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from interp import need; need('pcbnew')            # started with another python: re-run under KiCad's
+import pcbnew
 src, pack = sys.argv[1], sys.argv[2]
 os.makedirs(pack, exist_ok=True)
 # pcbnew.LoadBoard prints wx's "assert traits failed ... create wxApp before calling this" on every run (KiCad 10.0.x,
@@ -52,7 +55,8 @@ if m:
                           er=float(er.group(1)) if er else None))
 stack = [s for s in stack if s['type'] in ('copper', 'core', 'prepreg') or s['name'].startswith('dielectric')]
 
-D = dict(source=os.path.abspath(src), layers=[LN[l] for l in cu], stackup=stack, footprints=[], tracks=[], vias=[], zones=[], netclass={})
+D = dict(source=os.path.abspath(src), layers=[LN[l] for l in cu], stackup=stack, footprints=[], tracks=[], vias=[], zones=[], netclass={},
+         pad_poly=dict(error_mm=0.005, error_side='outside'))
 bb = b.GetBoardEdgesBoundingBox(); D['edge_bbox'] = [mm(bb.GetX()), mm(bb.GetY()), mm(bb.GetRight()), mm(bb.GetBottom())]
 eps = pcbnew.SHAPE_POLY_SET(); b.GetBoardPolygonOutlines(eps, True); D['edge'] = poly_set(eps)
 for f in b.GetFootprints():
@@ -61,7 +65,9 @@ for f in b.GetFootprints():
     for p in f.Pads():
         layers = [LN[l] for l in cu if p.IsOnLayer(l)]
         shp = pcbnew.SHAPE_POLY_SET()
-        p.TransformShapeToPolygon(shp, p.GetPrincipalLayer() if layers else pcbnew.F_Cu, 0, pcbnew.FromMM(0.005), pcbnew.ERROR_INSIDE)
+        # ERROR_OUTSIDE: the polygon contains the true pad (arcs approximated outward), so a clearance measured to it
+        # is never larger than KiCad's (router.py reads 'pad_poly' below and stays at least as strict as DRC)
+        p.TransformShapeToPolygon(shp, p.GetPrincipalLayer() if layers else pcbnew.F_Cu, 0, pcbnew.FromMM(0.005), pcbnew.ERROR_OUTSIDE)
         fd['pads'].append(dict(num=p.GetNumber(), net=p.GetNetname(), x=mm(p.GetPosition().x), y=mm(p.GetPosition().y), layers=layers,
                                th=p.GetAttribute() == pcbnew.PAD_ATTRIB_PTH, drill=mm(p.GetDrillSize().x), poly=poly_set(shp)))
     D['footprints'].append(fd)

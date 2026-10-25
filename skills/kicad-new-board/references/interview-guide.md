@@ -51,6 +51,9 @@ Walk through the list; for each block that exists, ask what it needs to do, not 
 - **User interface:** buttons, encoders, LEDs, buzzer.
 - **Debug and programming:** USB bootloader, SWD/JTAG header, UART console, test points. Default: a debug header and a
   UART console even if USB programming exists, because they are what work when the firmware does not.
+- **Bring-up test points:** a pad for every rail and every ground domain (plus reset/enable and the main clock), each
+  labelled, with a ground pad within probe reach, on one side. Default: yes, all of them - the first power-up is
+  where a missing one costs most (requirements template "Bring-up test points").
 - **Expansion:** headers, Qwiic/STEMMA QT, Grove, a spare I2C/SPI/UART.
 - **What must run before the main processor?** Charger or PMIC configuration, a soft power switch, a fuel gauge, a
   watchdog. Default: nothing, so every such part must be standalone (resistor-configured) - state this as an
@@ -125,7 +128,7 @@ roughly 10 / 0.9 + 2 x 4.2 / 0.9, about 20 W - beyond any 5 V USB-C source.
 | Ask | Default | Why it matters |
 |---|---|---|
 | Fab and assembler? | JLCPCB fab + JLC economic assembly | Sets capabilities, part library (LCSC) and fees |
-| Assembled by JLC, by hand, or a mix? | JLC assembles SMD, user solders big through-hole | Hand soldering limits package choice (0603+ and no QFN/BGA is a hobby-friendly floor) |
+| Assembled by JLC, by hand, or a mix? | JLC assembles SMD, user solders big through-hole | Hand soldering limits package choice (0603+ and no QFN/BGA is a hobby-friendly floor). Record the method per part (assembled / hand-soldered / not fitted): it becomes each symbol's in-BOM, in-position-file and DNP attributes, and the assembler's BOM and position file follow them |
 | Quantity per order? | 5 boards, 2-5 assembled | JLC assembly can populate fewer boards than are fabricated |
 | Which JLC: international (jlcpcb.com) or China (jlc.com)? | International: LCSC **global** warehouse | Stock is per warehouse region (global vs cn): a part can be plentiful in one and absent from the other. Written to `sourcing.json`; every stock lookup reads it |
 | Finish and colour? | HASL (lead-free), green | ENIG for fine-pitch parts or edge contacts |

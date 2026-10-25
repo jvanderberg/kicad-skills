@@ -48,6 +48,13 @@ changes and in the analysis you are given, and try hard to find them. Do not sof
 10. Read the pack's "Coverage and warnings" and "What was classified" sections first and attack them: nets that fell
     through to "slow" but carry fast edges or sensitive signals, derived hot loops that are not the datasheet's,
     configured items that matched nothing, defaults the pack used. An empty table is not evidence until its coverage is.
+11. Every isolation rule in the datasheets (single-point or quiet ground, a pour that must not join the plane): is it
+    declared in "islands" and proven on the filled copper? A same-net merge is invisible to DRC. Every IC supply pin in
+    the "Decoupling" table: is the capacitor at the pin, and is the rail track-fed?
+12. Use the right model for every number you report (kicad-board-review `SKILL.md`, R29): loop inductance of a track
+    over a plane from its microstrip per-length value, not 1 nH/mm; a limit from the part's own datasheet, not a
+    general rule. Datasheets are in `<project>/docs/datasheets/`; a pin you cannot check against one is "unverified",
+    and say which datasheet is missing.
 
 **Report** (markdown, written to `<pack_dir>/adversarial_review.md`)
 - Blocker / Major / Minor, numbered. Each: what (refdes, net, coordinates), evidence (pack number, datasheet section,

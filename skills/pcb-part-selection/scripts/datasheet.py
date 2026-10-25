@@ -8,8 +8,14 @@
   datasheet.py index DIR                            # every image in a reference folder is named in its INDEX.md
 
 fetch: manufacturer "symlink" URLs and distributor datasheet links can return an HTML page instead of the PDF - a
-landing page, a login wall, or a "not found" page for a discontinued part (that itself is a lifecycle warning: check
-the product page). The download is kept only if it starts with %PDF.
+viewer page, a landing page, a login wall, or a "not found" page for a discontinued part (that itself is a lifecycle
+warning: check the product page). The download is kept only if it starts with %PDF. A viewer page that embeds the
+PDF (an iframe / embed / object source, a "pdfUrl" in the page's data, a link ending in .pdf) is followed: the links
+are ranked (embedded viewers first, links naming the requested part's number next; certificates and other parts'
+datasheets last) and the first that is a real PDF is saved, with the link it came from printed. Exit 1: not a PDF
+(nothing saved, the candidate links tried are listed). Exit 2: the server refused a script (HTTP 401/403/429/503 or a
+bot-protection page): nothing saved - open the URL in a browser (the user's, or browser automation), save the PDF as
+OUT, or take it from the manufacturer's product page instead.
 find: prints every page whose text contains each phrase (case-insensitive, whitespace-insensitive), with the matching
 line, so you can name the page that holds a figure or section (e.g. "datasheet-p30.png = Figure 36, layout example")
 in the project's reference notes. pdftotext's font warnings are suppressed.
@@ -18,20 +24,93 @@ reference folder says which file holds the figure (a folder with p28 and p29 and
 documentation-support page instead of the layout example). index: lists images with no INDEX.md row and rows whose
 file is gone; exit 1 if either. Needs poppler (pdftotext, pdftoppm, pdfinfo).
 """
-import argparse, os, re, shutil, subprocess, sys, urllib.error, urllib.request
+import argparse, os, re, shutil, subprocess, sys, urllib.error, urllib.parse, urllib.request
 
 
-def fetch(url, out):
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+      'Accept': 'application/pdf,text/html;q=0.9,*/*;q=0.8'}
+BOT = re.compile(rb'cf-chl|challenge-platform|Just a moment|Attention Required|captcha|Access Denied|bot detection|'
+                 rb'Request unsuccessful|Incapsula|perimeterx|akamai', re.I)
+
+
+def get(url):
+    """(data, HTTP status, content type, final url); network errors become status 0"""
+    req = urllib.request.Request(url, headers=UA)
     try:
         r = urllib.request.urlopen(req, timeout=60)
-        data, status, ctype = r.read(), r.status, r.headers.get('Content-Type', '')
+        return r.read(), r.status, r.headers.get('Content-Type', ''), r.geturl()
     except urllib.error.HTTPError as e:
-        data, status, ctype = e.read(), e.code, e.headers.get('Content-Type', '')
+        return e.read(), e.code, e.headers.get('Content-Type', ''), url
+    except (urllib.error.URLError, OSError) as e:
+        return str(e).encode(), 0, '', url
+
+
+def blocked(data, status):
+    """the reason a server refused a script, or None"""
+    if status in (401, 403, 429, 503):
+        m = BOT.search(data or b'')
+        return 'HTTP %d%s' % (status, ', bot protection ("%s")' % m.group(0).decode('latin-1') if m else '')
+    m = BOT.search(data[:20000] if data else b'')
+    if m and not data.startswith(b'%PDF'):
+        return 'bot-protection page ("%s")' % m.group(0).decode('latin-1')
+    return None
+
+
+def pdf_links(html, base, url):
+    """candidate PDF links in a viewer / product page, best first"""
+    t = html.decode('utf-8', 'replace').replace('\\/', '/').replace('\\u002F', '/')
+    code = set(re.findall(r'C\d{4,}', url)) | set(re.findall(r'[A-Z0-9-]{6,}', os.path.basename(urllib.parse.urlparse(url).path).upper()))
+    found = []
+    for rank, rx in ((0, r'<(?:iframe|embed|object)[^>]+(?:src|data)=["\']([^"\']+)'),
+                     (1, r'"(?:pdfUrl|pdf_url|datasheetUrl|fileUrl)"\s*:\s*"([^"]+)"'),
+                     (2, r'(?:href|src)=["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']'),
+                     (3, r'(https?://[^"\'<>\s]+\.pdf(?:\?[^"\'<>\s]*)?)')):
+        for m in re.finditer(rx, t, re.I):
+            u = urllib.parse.urljoin(base, m.group(1).replace('&amp;', '&'))
+            if not u.lower().startswith('http'):
+                continue
+            score = rank * 10
+            if code and any(c in u.upper() for c in code):
+                score -= 5
+            if re.search(r'certif|rohs|reach|iso|/payment/', u, re.I):
+                score += 50
+            found.append((score, len(found), u))
+    out = []
+    for _, _, u in sorted(found):
+        if u not in out and u != url:
+            out.append(u)
+    return out
+
+
+def fetch(url, out, max_follow=4):
+    """save url as out only if it is (or the page it returns embeds) a real PDF. exit 1 not a PDF, 2 blocked"""
+    data, status, ctype, final = get(url)
+    why = blocked(data, status)
+    if why:
+        sys.stderr.write('blocked: %s for %s - nothing saved. The server refuses scripted downloads. Next step: open the URL '
+                         'in a browser (the user\'s, or browser automation) and save the PDF as %s, or fetch it from the '
+                         'manufacturer\'s product page instead.\n' % (why, url, out))
+        sys.exit(2)
+    tried = []
+    if not data.startswith(b'%PDF') and status and data:
+        for link in pdf_links(data, final, url)[:max_follow]:
+            d2, s2, c2, _ = get(link)
+            tried.append('%s (HTTP %s%s)' % (link, s2, ', PDF' if d2.startswith(b'%PDF') else ''))
+            if d2.startswith(b'%PDF'):
+                print('the page is a viewer: followed its PDF link %s' % link)
+                data, status, ctype = d2, s2, c2
+                break
+            why = blocked(d2, s2)
+            if why:
+                sys.stderr.write('blocked: %s for the embedded PDF %s - nothing saved. Open it in a browser and save it as %s.\n' % (
+                    why, link, out))
+                sys.exit(2)
     if not data.startswith(b'%PDF'):
         title = re.search(rb'<title>(.*?)</title>', data, re.I | re.S)
-        sys.exit('not a PDF: HTTP %s, %s%s - nothing saved. Find the real PDF link on the product page.' % (
-            status, ctype or 'no content type', ', page title "%s"' % title.group(1).decode('utf-8', 'replace').strip()[:80] if title else ''))
+        sys.stderr.write('not a PDF: HTTP %s, %s%s - nothing saved.%s Find the real PDF link on the product page.\n' % (
+            status, ctype or 'no content type', ', page title "%s"' % title.group(1).decode('utf-8', 'replace').strip()[:80] if title else '',
+            (' Links tried: ' + '; '.join(tried) + '.') if tried else ' No PDF link in the page.'))
+        sys.exit(1)
     open(out, 'wb').write(data)
     print('saved %s (%d bytes)' % (out, len(data)))
 
@@ -105,7 +184,7 @@ def index(d):
 
 def main():
     for tool in ('pdftotext', 'pdftoppm', 'pdfinfo'):
-        if not shutil.which(tool):
+        if not shutil.which(tool) and sys.argv[1:2] != ['fetch']:
             sys.exit('%s not found: install poppler (brew install poppler / apt install poppler-utils)' % tool)
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest='cmd', required=True)

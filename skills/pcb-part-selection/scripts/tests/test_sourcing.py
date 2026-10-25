@@ -160,6 +160,20 @@ def test_bom_check_region_summary_and_derived(env):
     assert all('--region' in c for c in calls(env) if c[0] == 'search')
 
 
+def test_bom_check_ics_need_a_local_datasheet(env):
+    """every IC's datasheet is saved in the project (docs/datasheets): found by MPN or value in the file name"""
+    write_sourcing(env)
+    sch = env['proj'] / 'hardware' / 'x.kicad_sch'; sch.write_text('')
+    xml = netlist(env, [comp('U1', 'TPS63802', 'C25076', mpn='TPS63802DLAR'), comp('U2', 'HY2113-GB3A', '', mpn='HY2113-GB3A'),
+                        comp('R7', '100', 'C25076', fp='Resistor_SMD:R_0402_1005Metric')])
+    rc, out = sh(os.path.join(HERE, 'bom_check.py'), str(sch), '--netlist', xml, '--cli', env['cli'], '--no-derived')
+    assert 'no docs/datasheets folder found' in out and 'NO LOCAL DATASHEET U1' in out and 'NO LOCAL DATASHEET U2' in out and rc == 1, out
+    dd = env['proj'] / 'docs' / 'datasheets'; dd.mkdir()
+    (dd / 'tps63802.pdf').write_bytes(b'%PDF'); (dd / 'HY2113-GB3A_protector.pdf').write_bytes(b'%PDF')
+    rc, out = sh(os.path.join(HERE, 'bom_check.py'), str(sch), '--netlist', xml, '--cli', env['cli'], '--no-derived')
+    assert 'every IC has one' in out and 'NO LOCAL DATASHEET' not in out and rc == 0, out
+
+
 def test_derived_check_deps_coverage_and_incomplete(env):
     parts = {'Q2': dict(lcsc='C316138', mpn='', value='DMN1004UFV', footprint=''), 'U3': dict(lcsc='', mpn='HY2113-GB3A', value='HY2113', footprint=''),
              'L1': dict(lcsc='C1', mpn='', value='1u', footprint='')}

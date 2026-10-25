@@ -161,9 +161,26 @@ def pad_cells(ref, only=None):
         if cells: out.append((pg.area / tot, cells, p))
     return li, out
 PART_PADS = {}
+def thermal_pad(ref):
+    """the pad numbers of a part's thermal pad / tab (>= 1 mm^2 and >= 2x the footprint's median pad, 3+ pads), or None"""
+    pads = [p for p in FP[ref]['pads'] if p['poly'] and p['num'] and not p['th']]
+    if len(pads) < 3: return None
+    ar = {}
+    for p in pads: ar[p['num']] = ar.get(p['num'], 0.0) + unary_union(polys(p['poly'])).area
+    med = sorted(unary_union(polys(p['poly'])).area for p in pads)[len(pads) // 2]
+    big = {n for n, a_ in ar.items() if a_ >= 1.0 and a_ >= 2 * med}
+    return big or None
+PLACE_NOTES = []
 def pads_of(ref):
+    """where a part's heat enters the board: thermal.parts.REF.pads if given, else its thermal pad / tab when it has one
+    (the die sits on it; spreading the loss over every pin made a ground pin look like the hot spot), else all its pads"""
     if ref not in PART_PADS:
         only = ((TC.get('parts') or {}).get(ref) or {}).get('pads')
+        if not only and ref in FP:
+            tp = thermal_pad(ref)
+            if tp:
+                only = tp
+                PLACE_NOTES.append('%s: heat placed on its thermal pad %s (thermal.parts.%s.pads overrides)' % (ref, '/'.join(sorted(tp, key=natkey)), ref))
         PART_PADS[ref] = pad_cells(ref, set(only) if only else None)
     return PART_PADS[ref]
 R_BODY = float(TC.get('body_K_W', 1.0))
@@ -284,6 +301,11 @@ CONDUCTION = ('i2r', 'copper', 'path', 'path copper')
 SPLIT = {c: (sum(r['P_W'] for r in HT[c]['rows'] if r['P_W'] and r['kind'] in CONDUCTION),
              sum(r['P_W'] for r in HT[c]['rows'] if r['P_W'] and r['kind'] in ('converter', 'linear', 'fixed'))) for c in CORNERS}
 PART_ROWS = []
+for ref in sorted({r for c in CORNERS for r, p in HT[c]['by_ref'].items() if p >= HOT and r in FP}, key=natkey):
+    pc_ = (TC.get('parts') or {}).get(ref) or {}
+    if pc_.get('psi_jb') is None and pc_.get('theta_jc') is None and re.match(r'^(U|IC|Q)\d', ref):
+        TW.append('%s dissipates %.2f W at some corner but has no psi_jb / theta_jc in thermal.parts: its junction temperature is not '
+                  'estimated (board temperature only) - take them from its datasheet\'s thermal table' % (ref, max(HT[c]['by_ref'].get(ref, 0) for c in CORNERS)))
 refs_hot = sorted({r for c in CORNERS for r, p in HT[c]['by_ref'].items() if p > 0 and r in FP}, key=natkey)
 for ref in refs_hot:
     pc = PARTS_CFG.get(ref, {})
@@ -320,6 +342,7 @@ def rule_vias(w, h_):
     n = lambda s: max(1, int(math.floor((s - 0.6) / 1.0)) + 1) if s > 0.6 else 1
     return n(w) * n(h_)
 EPADS = []
+BESIDE = float(TC.get('via_beside_mm', 1.0))      # vias this close to a thermal pad's edge count for it (no via in the pad)
 for f in sorted(B['footprints'], key=lambda f: natkey(f['ref'])):
     pads = [p for p in f['pads'] if p['poly'] and p['num'] and not p['th']]
     if len(pads) < 3: continue
@@ -334,7 +357,7 @@ for f in sorted(B['footprints'], key=lambda f: natkey(f['ref'])):
         pg = unary_union([unary_union(polys(q['poly'])) for q in pads if q['num'] == p['num']]); A_ = pg.area
         L = p['layers'][0] if p['layers'] else OUT; li = LAYERS.index(L) if L in LAYERS else 0
         inpad = [hh for hh in HOLES if hh['net'] == p['net'] and pg.buffer(0.05).contains(Point(hh['x'], hh['y']))]
-        beside = [hh for hh in HOLES if hh['net'] == p['net'] and hh not in inpad and pg.distance(Point(hh['x'], hh['y'])) <= 1.0]
+        beside = [hh for hh in HOLES if hh['net'] == p['net'] and hh not in inpad and pg.distance(Point(hh['x'], hh['y'])) <= BESIDE]
         gn = sum(via_g_to(hh, li)[0] for hh in inpad); gf = sum(via_g_to(hh, li)[1] for hh in inpad)
         gb = sum(via_g_to(hh, li)[0] for hh in beside)
         other_layers = [L2 for L2 in LAYERS if L2 != L and not geo(p['net'], L2).is_empty] if p['net'] else []
@@ -347,12 +370,31 @@ for f in sorted(B['footprints'], key=lambda f: natkey(f['ref'])):
                  G_near_W_K=gn, G_far_W_K=gf, G_beside_W_K=gb, near_layer=via_g_to(inpad[0], li)[2] if inpad else None,
                  R_K_W=(1 / (gn + gb)) if gn + gb > 0 else None, net_on_other_layers=other_layers, P_max_W=Pm)
         e['dT_vias_K'] = Pm / (gn + gb) if (gn + gb) > 0 and Pm else None
+        # the solved step from the pad to the next layer at the part's worst corner: the number that says whether more
+        # vias would help, instead of a via count alone
+        step = None
+        if Pm and CORNERS:
+            c_w = max(CORNERS, key=lambda c: HT[c]['by_ref'].get(f['ref'], 0.0)); rl = RISE.get((c_w, H_NOM))
+            lj = li + 1 if li < len(LAYERS) - 1 else li - 1
+            m_ = shapely.contains_xy(pg, XC, YC) & INSIDE
+            if rl is not None and m_.any():
+                step = float(np.nanmean(rl[li][m_]) - np.nanmean(rl[lj][m_])); e.update(step_K=step, step_corner=c_w, step_to=LAYERS[lj])
+        nv = len(inpad) + len(beside)
+        fix = ('more vias beside the pad (within %.1f mm of its edge) or a larger same-net pour with vias; vias in the pad only '
+               'filled and capped, or tented, by decision (the router refuses an open via in a pad)' % BESIDE)
         if not other_layers and p['net']:
             e['flag'] = 'net %s has no copper on any other layer: vias here would land on nothing; the heat leaves through the %s pour and FR4' % (p['net'], L)
-        elif len(inpad) < rec:
-            e['flag'] = '%d via(s) in the pad, %d recommended (%s)' % (len(inpad), rec, basis)
-        e['severity'] = ('high' if Pm >= HOT and e.get('flag') and (e['dT_vias_K'] or 99) > 10 else 'medium' if Pm >= HOT and e.get('flag')
-                         else 'low' if e.get('flag') else 'ok')
+        elif step is not None and step >= 3:
+            e['flag'] = '%.1f K from the pad to %s (solved, %s, h %s) with %d via(s) in / %d beside within %.1f mm: %s' % (
+                step, e['step_to'], e['step_corner'], H_NOM, len(inpad), len(beside), BESIDE, fix)
+        elif step is None and nv < rec:
+            e['flag'] = 'not judged (no loss configured for %s): %d via(s) in / %d beside within %.1f mm; %d by %s (reference only)' % (
+                f['ref'], len(inpad), len(beside), BESIDE, rec, basis)
+        if step is not None:
+            e['severity'] = ('high' if Pm >= HOT and step >= 10 else 'medium' if step >= 3 else 'ok') if other_layers or not p['net'] else \
+                            ('high' if Pm >= HOT and (e['dT_vias_K'] or 99) > 10 else 'medium' if Pm >= HOT else 'low')
+        else:
+            e['severity'] = 'medium' if Pm >= HOT and e.get('flag') else 'low' if e.get('flag') else 'ok'
         EPADS.append(e)
 
 # ---------------- the pour under each hot part: what joins it to the next layer, and the solved drop across that
@@ -540,7 +582,7 @@ out = dict(ambient_C=AMB, h_W_m2K=HS, h_bottom_ratio=HB, pitch_mm=PITCH, k_fr4=K
                  for c, v in HT.items()},
            board=[BOARD[k] for k in sorted(BOARD)], board_T_max_C=BOARD_LIM, tau_s=TAU, conduction_vs_conversion_W=SPLIT,
            findings=[dict(severity=a_, text=b_) for a_, b_ in FIND], parts=PART_ROWS, exposed_pads=EPADS, pours=POURS, stitching=STITCH, what_if=WHATIF,
-           coverage=dict(warnings=list(dict.fromkeys(WARN + TW)), candidates=CAND, nodes=MODEL.n, cells=[NY, NX], vias_modelled=len(VIAS),
+           coverage=dict(warnings=list(dict.fromkeys(WARN + TW + PLACE_NOTES)), candidates=CAND, nodes=MODEL.n, cells=[NY, NX], vias_modelled=len(VIAS),
                          holes=len(HOLES), solve_s=round(t_solve, 1)))
 json.dump(out, open(PACK + 'thermal.json', 'w'), indent=1, default=float)
 
@@ -608,14 +650,18 @@ for r in sorted(PART_ROWS, key=lambda r: (-max(HT[c]['by_ref'].get(r['ref'], 0) 
              ' | '.join('%.0f / %s' % (r['T'][hn]['T_board'], f1(r['T'][hn]['Tj'], '%.0f')) if hn in r['T'] else '-' for hn in HS),
              next(iter(r['T'].values()))['tj_how'] if r['T'] else '-', ltxt))
 m += ['', '## Exposed pads and thermal vias', '',
-      'Every pad of 1 mm^2 or more that is at least twice its footprint\'s median pad (exposed pads, FET drain tabs). Via '
-      'conductance is the barrel (k_cu x pi x drill x plating / span) to the nearest layer where the via lands on its own net; '
-      'dT is the drop across the vias if all of the part\'s worst-corner loss went through them (an upper bound).', '',
-      '| Part | Pad | Net | Area mm^2 | In pad / beside | Recommended | R vias (K/W) | dT at max loss | Part max W | Finding |', '|---|---|---|---|---|---|---|---|---|---|']
+      'Every pad of 1 mm^2 or more that is at least twice its footprint\'s median pad (exposed pads, FET drain tabs). Vias '
+      'count when they are in the pad or beside it within %.1f mm of its edge (thermal.via_beside_mm): the router refuses open '
+      'vias in pads, so vias beside the pad are the default and via-in-pad (filled and capped, or tented) is a decision. The '
+      'finding is judged on the solved temperature step from the pad to the next layer at the part\'s worst corner; the via '
+      'count from the datasheet pattern or a rule of thumb is shown for reference. Via conductance is the barrel (k_cu x pi x '
+      'drill x plating / span) to the nearest layer where the via lands on its own net; dT vias is the drop if all of the '
+      'part\'s worst-corner loss went through them (an upper bound).' % BESIDE, '',
+      '| Part | Pad | Net | Area mm^2 | In pad / beside | Reference count | R vias (K/W) | Solved step to next layer | dT vias at max loss | Part max W | Finding |', '|---|---|---|---|---|---|---|---|---|---|---|']
 for e in sorted(EPADS, key=lambda e: ({'high': 0, 'medium': 1, 'low': 2, 'ok': 3}[e['severity']], -e['P_max_W'])):
-    m.append('| %s %s | %s | %s | %.1f | %d / %d | %d | %s | %s | %.2f | %s%s |' % (e['ref'], e['value'], e['pad'], e['net'], e['area_mm2'], e['vias_in_pad'], e['vias_beside'],
-             e['recommended'], f1(e['R_K_W']), f1(e['dT_vias_K'], '%.1f K'), e['P_max_W'], ('**%s**: ' % e['severity']) if e['severity'] in ('high', 'medium') else '', e.get('flag', 'ok')))
-if not EPADS: m.append('| - | none found | | | | | | | | |')
+    m.append('| %s %s | %s | %s | %.1f | %d / %d | %d | %s | %s | %s | %.2f | %s%s |' % (e['ref'], e['value'], e['pad'], e['net'], e['area_mm2'], e['vias_in_pad'], e['vias_beside'],
+             e['recommended'], f1(e['R_K_W']), f1(e.get('step_K'), '%.1f K'), f1(e['dT_vias_K'], '%.1f K'), e['P_max_W'], ('**%s**: ' % e['severity']) if e['severity'] in ('high', 'medium') else '', e.get('flag', 'ok')))
+if not EPADS: m.append('| - | none found | | | | | | | | | |')
 m += ['', '## Pours under hot parts (stitching for heat)', '',
       'For every part at or above %.2f W at some corner, each pour (zone fill) its pads sit on: the same-net vias that join it '
       'to another layer, the FR4 under it, and from the solve at the part\'s worst corner (h %s) the temperature step from the pour '

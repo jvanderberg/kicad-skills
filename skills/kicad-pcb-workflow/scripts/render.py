@@ -7,7 +7,7 @@
 Why this exists: `kicad-cli pcb render --zoom/--pan` frames unpredictably, and a whole-board PNG is too coarse to see a
 0.2 mm sliver. This exports an SVG with a board-sized page (--page-size-mode 2), rasterises it with rsvg-convert, and
 crops by KiCad coordinates (mm, y down), so the window you ask for is the window you get.
-Needs rsvg-convert (librsvg) for 2D. Removes the stale lock file kicad-cli leaves next to the board.
+Needs rsvg-convert (librsvg) for 2D. Removes any lock file its kicad-cli calls leave next to the board (kicad_locks.py).
 Tip: render one or two layers at a time; a stack of every layer is unreadable because pours hide each other.
 Boards without an Edge.Cuts outline (e.g. a vendor reference layout imported with `kicad-cli pcb import`): with
 --window, a temporary copy gets an Edge.Cuts rectangle at the window and is rendered instead; without --window, the
@@ -16,6 +16,8 @@ For routing checks on a board with pours, use kicad-board-review's view.py (ever
 a full-board copper render is one colour once a ground pour exists.
 """
 import argparse, os, re, shutil, subprocess, sys, tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kicad_locks import cleanup_locks  # noqa: E402
 ap = argparse.ArgumentParser()
 ap.add_argument('pcb'); ap.add_argument('out')
 ap.add_argument('--layers', default='F.Cu,F.Silkscreen,F.Courtyard,Edge.Cuts')
@@ -23,16 +25,13 @@ ap.add_argument('--window'); ap.add_argument('--px-per-mm', type=float, default=
 ap.add_argument('--3d', dest='three', action='store_true'); ap.add_argument('--side', default='top')
 ap.add_argument('--kicad-cli', default=os.environ.get('KICAD_CLI') or shutil.which('kicad-cli') or '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli')
 a = ap.parse_args()
-lock = os.path.join(os.path.dirname(os.path.abspath(a.pcb)), '~' + os.path.basename(a.pcb) + '.lck')
-had_lock = os.path.exists(lock)
-
-def cleanup():
-    if not had_lock and os.path.exists(lock): os.remove(lock)
+_locks = cleanup_locks(a.pcb); _locks.__enter__()       # every lock kicad-cli leaves next to the board goes at exit
+import atexit; atexit.register(_locks.__exit__, None, None, None)
 
 if a.three:
     subprocess.run([a.kicad_cli, 'pcb', 'render', '--side', a.side, '-w', '4000', '-h', '2500', '--background', 'opaque', '--quality', 'high',
                     '-o', a.out, a.pcb], check=True, capture_output=True)
-    cleanup(); print(a.out); sys.exit(0)
+    print(a.out); sys.exit(0)
 
 t = open(a.pcb).read()
 # board bbox from Edge.Cuts geometry (endpoints; arcs bulging past their endpoints are rare on outlines)
@@ -69,7 +68,6 @@ if not xs:
 bx0, by0, bx1, by1 = min(xs), min(ys), max(xs), max(ys)
 subprocess.run([a.kicad_cli, 'pcb', 'export', 'svg', '--mode-single', '--page-size-mode', '2', '--exclude-drawing-sheet', '-l', a.layers, '-o', svg, a.pcb],
                check=True, capture_output=True)
-cleanup()
 # the SVG page is the board bbox (plus KiCad's small margin): read its real size in mm
 head = open(svg).read(4000)
 wmm = float(re.search(r'width="([\d.]+)mm"', head).group(1)); hmm = float(re.search(r'height="([\d.]+)mm"', head).group(1))

@@ -13,6 +13,9 @@ and flips footprints the way pcbnew does, checked item by item against pcbnew in
   escaping "/" as {slash} in auto-generated net names (kicad_sexpr.board_net_name);
 - adds every other schematic field (LCSC, MPN, ...) as a hidden footprint property (an existing library property of
   the same name gets the value);
+- carries the schematic's assembly attributes to the footprint: DNP -> dnp, not in BOM -> exclude_from_bom, not in
+  position files -> exclude_from_pos_files (the symbol wins over the library footprint, as KiCad's update does); a
+  symbol excluded from the board gets no footprint. BOM, position file and schematic parity then agree by construction;
 - --placement JSON {"REF": [x, y, rot] or [x, y, rot, "B"]} in mm relative to --origin (the outline's top-left);
   unplaced parts are staged in a grid to the right of the outline;
 - --outline WxH draws Edge.Cuts (rounded corners with --corner-r);
@@ -29,7 +32,33 @@ Regenerating overwrites OUT: GUI edits made since are lost unless folded into th
 import argparse, json, os, re, sys, xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from kicad_sexpr import Board, Project, board_net_name, load  # noqa: E402
+from kicad_sexpr import Board, Node, Project, Sym, board_net_name, load  # noqa: E402
+
+# footprint attributes the schematic owns (netlist property -> footprint attr token), and KiCad's order in (attr ...)
+SCH_ATTRS = (('exclude_from_pos_files', 'exclude_from_pos_files'), ('exclude_from_bom', 'exclude_from_bom'), ('dnp', 'dnp'))
+ATTR_ORDER = ('smd', 'through_hole', 'board_only', 'exclude_from_pos_files', 'exclude_from_bom', 'allow_soldermask_bridges',
+              'allow_missing_courtyard', 'dnp')
+
+
+def set_sch_attrs(fp, flags):
+    """set the footprint's DNP / exclude_from_bom / exclude_from_pos_files to the schematic's (the symbol wins, as in
+    KiCad's update from schematic); library-only attributes (smd, through_hole, board_only, ...) are kept"""
+    node = fp.node
+    attr = node.find('attr')
+    if attr is None:
+        attr = Node('attr')
+        anchor = next((node.find(h) for h in ('sheetfile', 'sheetname', 'path') if node.find(h) is not None), None)
+        props = node.nodes('property')
+        pos = node.index(anchor) + 1 if anchor is not None else (node.index(props[-1]) + 1 if props else len(node))
+        node.insert(pos, attr)
+    toks = [str(x) for x in attr[1:]]
+    managed = {tok for _, tok in SCH_ATTRS}
+    keep = [t for t in toks if t not in managed] + [tok for prop, tok in SCH_ATTRS if prop in flags]
+    keep = sorted(dict.fromkeys(keep), key=lambda t: ATTR_ORDER.index(t) if t in ATTR_ORDER else len(ATTR_ORDER))
+    del attr[1:]
+    attr.extend(Sym(t) for t in keep)
+    if not keep:
+        node.remove_node(attr)
 
 
 # ------------------------------------------------------------------ libraries
@@ -100,7 +129,7 @@ def main():
     labels = json.load(open(a.labels)) if a.labels else {}
 
     root = ET.parse(a.netlist).getroot()
-    comps, missing = [], []
+    comps, missing, offboard = [], [], []
     for c in root.find('components'):
         ref, fp = c.get('ref'), c.findtext('footprint') or ''
         if not fp:
@@ -115,7 +144,13 @@ def main():
             if not (f.get(k) or '').strip() and (c.findtext(tag) or '').strip():
                 f[k] = c.findtext(tag).strip()
         f = {k: v for k, v in f.items() if k not in ('Reference', 'Value', 'Footprint')}
-        comps.append(dict(ref=ref, value=c.findtext('value') or '', fp=fp, path=path, fields=f))
+        # the schematic's assembly attributes (do not populate, not in the BOM, not in the position file): carried to
+        # the footprint, so the BOM, the CPL and schematic parity agree by construction
+        flags = {p.get('name') for p in c.findall('property')}
+        if 'exclude_from_board' in flags:
+            offboard.append(ref)
+            continue
+        comps.append(dict(ref=ref, value=c.findtext('value') or '', fp=fp, path=path, fields=f, flags=flags))
     pins = {(n.get('ref'), n.get('pin')): board_net_name(net.get('name'))
             for net in root.find('nets') for n in net.findall('node')}
 
@@ -127,6 +162,7 @@ def main():
             print('note: %d ids in %s have ambiguous keys (matched in file order): %s' % (
                 len(ids.ambiguous), previous, ', '.join(ids.ambiguous[:5])))
     nets, nfields = set(), 0
+    nattr = {prop: 0 for prop, _ in SCH_ATTRS}
     w, h = map(float, a.outline.lower().split('x')) if a.outline else (0.0, 0.0)
     staged = 0
     for c in sorted(comps, key=lambda c: natkey(c['ref'])):
@@ -144,6 +180,10 @@ def main():
             at, rot, side = (ox + w + 15 + col * 10, oy + row * 8), 0, 'F'
             staged += 1
         fp = b.add_footprint(src, c['fp'], c['ref'], c['value'], at, rot, side, path=c['path'], fields=c['fields'])
+        set_sch_attrs(fp, c['flags'])
+        for prop, _ in SCH_ATTRS:
+            if prop in c['flags']:
+                nattr[prop] += 1
         nfields += len(c['fields'])
         pad_nums = {str(p[1]) for p in fp.pads()}
         for num in sorted(pad_nums):
@@ -172,9 +212,12 @@ def main():
     pro = os.path.splitext(a.out)[0] + '.kicad_pro'
     if not os.path.exists(pro):
         Project.new(pro).save()
-    print('wrote %s: %d footprints (%d placed, %d staged), %d nets, %d fields, %d ids kept%s' % (
-        a.out, len(comps), len(comps) - staged, staged, len(nets), nfields, b.uuids.reused,
-        '; no footprint assigned: ' + ' '.join(missing) if missing else ''))
+    print('wrote %s: %d footprints (%d placed, %d staged), %d nets, %d fields, %d ids kept; attributes from the schematic: '
+          '%d dnp, %d exclude_from_bom, %d exclude_from_pos_files%s%s' % (
+              a.out, len(comps), len(comps) - staged, staged, len(nets), nfields, b.uuids.reused, nattr['dnp'],
+              nattr['exclude_from_bom'], nattr['exclude_from_pos_files'],
+              '; not on the board (schematic says exclude from board): ' + ' '.join(offboard) if offboard else '',
+              '; no footprint assigned: ' + ' '.join(missing) if missing else ''))
 
 
 if __name__ == '__main__':

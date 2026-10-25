@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# Is KiCad holding this project open?  kicad_open.sh PROJECT_DIR
-# Exit 0 = safe to edit files on disk; exit 1 = open (lock files or a running editor). KiCad keeps its own in-memory copy:
-# if you edit a file while it is open, the user's next save silently overwrites your edit (or yours clobbers theirs).
-# Ask the user to save and close, then re-read the files, since they may have changed them.
-P="${1:-.}"
-locks=$(ls "$P"/*.lck "$P"/~*.lck "$P"/.~lock* 2>/dev/null)
-# the editors, not kicad-cli or scripts that merely have "kicad" in their path
-procs=$(pgrep -lf 'KiCad.app/Contents/MacOS/(kicad|pcbnew|eeschema)$|(^|/)(kicad|pcbnew|eeschema)(\.exe)?$' 2>/dev/null || true)
-if [ -n "$locks" ]; then echo "lock files (kicad-cli can leave stale ones behind; if no editor is running, they are safe to delete):"; echo "$locks"; fi
-if [ -n "$procs" ]; then echo "KiCad processes:"; echo "$procs"; fi
-[ -z "$locks" ] && [ -z "$procs" ] && { echo "not open: safe to edit"; exit 0; }
-exit 1
+# Is KiCad holding this project open?  kicad_open.sh PROJECT_DIR [--clean]
+# Exit 0 = safe to edit files on disk (closed, or only stale lock files: --clean deletes them); 1 = an editor holds the
+# folder (or kicad-cli is busy in it); 2 = cannot tell (ask the user). KiCad keeps its own in-memory copy: if you edit a
+# file while it is open, the user's next save silently overwrites your edit (or yours clobbers theirs). Ask the user to
+# save and close, then re-read the files, since they may have changed them.
+# A lock file alone is not "open": kicad-cli leaves them behind. The decision is kicad_locks.py's (one owner).
+exec python3 "$(cd "$(dirname "$0")" && pwd)/kicad_locks.py" status "${1:-.}" "${@:2}"

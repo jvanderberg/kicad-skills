@@ -71,7 +71,8 @@ def parts_from_netlist(xmlp):
 def export_netlist(sch, kicad_cli=None):
     kicad_cli = kicad_cli or os.environ.get('KICAD_CLI') or shutil.which('kicad-cli') or '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli'
     xmlp = os.path.join(tempfile.mkdtemp(), 'net.xml')
-    subprocess.run([kicad_cli, 'sch', 'export', 'netlist', '--format', 'kicadxml', '-o', xmlp, sch], check=True, capture_output=True)
+    from kicad_locks import cli_run
+    cli_run([kicad_cli, 'sch', 'export', 'netlist', '--format', 'kicadxml', '-o', xmlp, sch], sch, check=True, capture_output=True)
     return xmlp
 
 

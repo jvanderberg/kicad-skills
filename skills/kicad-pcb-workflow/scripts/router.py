@@ -19,6 +19,11 @@ What it does for you (each one was a real DRC failure on a hand-written router):
   in_pad=('U5', '21') on via() / via_field(); have the fab fill or tent those.
 - Every new track segment is checked against other-net copper on its layer and the board edge; problems are logged
   as VIOLATION (the coordinates are yours, so it does not move them) and make the CLI exit 1.
+- The check is never looser than DRC: tracks and vias are measured exactly (centre line or centre to the other
+  copper, minus half widths), with no tolerance. Pad outlines are polygons that approximate arcs; board.json says on
+  which side the approximation lies (boarddump.py writes them outside the true pad), and when it lies inside (older
+  dumps) the error is subtracted from the measured gap, never added. A diagonal 0.003 mm inside the clearance is a
+  VIOLATION here, as it is in DRC.
 - Zone fills are not checked (KiCad refills them); DRC (check.sh) stays the authority.
 - Ids are stable: --previous OLD.kicad_pcb (the routed board before regeneration, e.g. `git show HEAD:...`) gives
   each track, via, zone and keepout the uuid it had there (matched by net + geometry, zones by name); the rest get
@@ -38,10 +43,13 @@ Library:
   r.add_to(board)                               # write everything onto a kicad_sexpr Board (then board.save())
 """
 import argparse, fnmatch, importlib.util, json, math, os, sys
-from shapely.geometry import Point, LineString, Polygon
-from shapely.ops import unary_union
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if __name__ == '__main__':
+    from interp import need; need('shapely')            # started with plain python3: re-run under the analysis venv
+from shapely.geometry import Point, LineString, Polygon  # noqa: E402
+from shapely.ops import unary_union  # noqa: E402
+
 from kicad_sexpr import Board  # noqa: E402
 
 
@@ -110,9 +118,14 @@ class Router:
         self.via_size, self.via_drill = via_size, via_drill
         self.layers = self.B['layers']
         edge = unary_union(_polys(self.B.get('edge', [])))
+        self.edge = edge if not edge.is_empty else None
         self.inside = edge.buffer(-self.edge_clearance) if not edge.is_empty else None
         self.pads = {}
-        self.items = []                 # obstacles: dict(net, layers, geom, bounds)
+        self.items = []                 # obstacles: dict(net, layers, geom, bounds, core, r, err)
+        pp = self.B.get('pad_poly') or {}
+        # how far a pad polygon may sit inside the true pad (it then overstates gaps): dumps without the note are
+        # assumed to be the old ERROR_INSIDE ones at 0.005 mm
+        self.pad_err = 0.0 if pp.get('error_side') == 'outside' else float(pp.get('error_mm', 0.005))
         self.holes = []                 # (x, y, drill, what)
         for f in self.B['footprints']:
             for p in f['pads']:
@@ -120,16 +133,17 @@ class Router:
                 d = dict(p, ref=f['ref'], geom=g)
                 self.pads.setdefault((f['ref'], str(p['num'])), []).append(d)
                 if p['layers']:
-                    self._add(p['net'], self.layers if p.get('th') else p['layers'], g)
+                    # straight-edged pads (rectangles, trapezoids: few vertices) are exact; only arcs carry the error
+                    arcs = sum(len(ring) for ring, _ in p['poly']) > 8
+                    self._add(p['net'], self.layers if p.get('th') else p['layers'], g, err=self.pad_err if arcs else 0.0)
                 if p.get('drill'):
                     self.holes.append((p['x'], p['y'], p['drill'], 'pad %s.%s' % (f['ref'], p['num'])))
         for t in self.B.get('tracks', []):
-            pts = [t['a'], t['m'], t['b']] if t.get('arc') else [t['a'], t['b']]
-            g = LineString(pts).buffer(t['w'] / 2, 8) if t['a'] != t['b'] else Point(t['a']).buffer(t['w'] / 2, 8)
-            self._add(t['net'], [t['layer']], g)
+            core, r = self._track_core(t)
+            self._add(t['net'], [t['layer']], core.buffer(r, 8), core, r)
         self.old_vias = []
         for v in self.B.get('vias', []):
-            self._add(v['net'], self.layers, Point(v['x'], v['y']).buffer(v['size'] / 2, 16))
+            self._add(v['net'], self.layers, Point(v['x'], v['y']).buffer(v['size'] / 2, 16), Point(v['x'], v['y']), v['size'] / 2)
             self.holes.append((v['x'], v['y'], v['drill'], 'via %s' % v['net']))
             self.old_vias.append(((v['x'], v['y']), v['size']))
         self.tracks, self.vias, self.zones, self.keepouts = [], [], [], []
@@ -137,8 +151,33 @@ class Router:
         self.violations = 0
         self.rejected = 0
 
-    def _add(self, net, layers, geom):
-        self.items.append(dict(net=net, layers=set(layers), geom=geom, bounds=geom.bounds))
+    def _add(self, net, layers, geom, core=None, r=0.0, err=0.0):
+        """an obstacle: geom (for bounds and pad tests) and, for exact distances, core + r (a track's centre line and
+        half width, a via's centre and radius; a pad's polygon with r 0). err: how much the polygon may overstate a gap"""
+        core = geom if core is None else core
+        self.items.append(dict(net=net, layers=set(layers), geom=geom, bounds=core.buffer(r).bounds if r else core.bounds,
+                               core=core, r=r, err=err))
+
+    @staticmethod
+    def _track_core(t):
+        """exact centre line of a board.json track (arcs densified; the half width grows by the chord's sagitta)"""
+        if not t.get('arc'):
+            return (LineString([t['a'], t['b']]) if t['a'] != t['b'] else Point(t['a'])), t['w'] / 2
+        a, m, b = t['a'], t['m'], t['b']
+        ax, ay, bx, by, mx, my = a[0], a[1], b[0], b[1], m[0], m[1]
+        d = 2 * (ax * (by - my) + bx * (my - ay) + mx * (ay - by))
+        if abs(d) < 1e-12:
+            return LineString([a, m, b]), t['w'] / 2
+        ux = ((ax ** 2 + ay ** 2) * (by - my) + (bx ** 2 + by ** 2) * (my - ay) + (mx ** 2 + my ** 2) * (ay - by)) / d
+        uy = ((ax ** 2 + ay ** 2) * (mx - bx) + (bx ** 2 + by ** 2) * (ax - mx) + (mx ** 2 + my ** 2) * (bx - ax)) / d
+        R = math.dist((ux, uy), a)
+        a0, a1, am = (math.atan2(p[1] - uy, p[0] - ux) for p in (a, b, m))
+        sweep = (a1 - a0) % (2 * math.pi)
+        if (am - a0) % (2 * math.pi) > sweep:       # the arc goes the other way round
+            sweep -= 2 * math.pi
+        n = max(8, int(abs(sweep) / (math.pi / 64)) + 1)
+        pts = [(ux + R * math.cos(a0 + sweep * i / n), uy + R * math.sin(a0 + sweep * i / n)) for i in range(n + 1)]
+        return LineString(pts), t['w'] / 2 + R * (1 - math.cos(abs(sweep) / n / 2))
 
     # -------------------------------------------------------------- lookups
     def pad(self, ref, num, i=0):
@@ -158,12 +197,13 @@ class Router:
         return self.pad(ref, num, i)['geom'].bounds
 
     # -------------------------------------------------------------- checks
-    def _hits(self, geom, net, layers, clearance=None):
-        """other-net obstacles on any of `layers` closer to geom than the clearance between the two nets' classes
-        (or the explicit clearance)"""
+    def _hits(self, core, r, net, layers, clearance=None):
+        """other-net obstacles on any of `layers` closer to the new copper (centre line / centre `core`, half width `r`)
+        than the clearance between the two nets' classes (or the explicit clearance). Exact for tracks and vias; a pad
+        polygon's approximation error only ever shrinks the gap measured (never looser than DRC)."""
         mine = self.netclr(net)
-        reach = clearance if clearance is not None else self.max_clr
-        x0, y0, x1, y1 = geom.bounds
+        reach = (clearance if clearance is not None else self.max_clr) + r + 0.01
+        x0, y0, x1, y1 = core.bounds
         x0, y0, x1, y1 = x0 - reach, y0 - reach, x1 + reach, y1 + reach
         out = []
         for it in self.items:
@@ -173,10 +213,18 @@ class Router:
             if b[0] > x1 or b[2] < x0 or b[1] > y1 or b[3] < y0:
                 continue
             need = clearance if clearance is not None else max(mine, self.netclr(it['net']))
-            d = geom.distance(it['geom'])
-            if d < need - 0.005:      # pad polygons carry up to 0.005 mm approximation error
-                out.append(dict(it, gap=d, need=need))
+            d = core.distance(it['core']) - r - it['r'] - it['err']
+            if d < need - 1e-6:       # 1 nm: float noise only (DRC works in nm)
+                out.append(dict(it, gap=max(d, 0.0), need=need))
         return out
+
+    def edge_problem(self, core, r):
+        """True if copper (centre `core`, half width r) is outside the board or closer than the edge clearance"""
+        if self.edge is None:
+            return False
+        if not self.edge.contains(core):
+            return True
+        return self.edge.boundary.distance(core) - r < self.edge_clearance - 1e-6
 
     @staticmethod
     def _pad_keys(in_pad):
@@ -213,7 +261,7 @@ class Router:
         """None if a via fits here, else the reason"""
         size, drill = size or self.via_size, drill or self.via_drill
         c = Point(pt)
-        if self.inside is not None and not self.inside.contains(c.buffer(size / 2, 16)):
+        if self.edge_problem(c, size / 2):
             return 'within %.2f mm of the board edge' % self.edge_clearance
         for x, y, d, what in self.holes:
             gap = math.dist((x, y), pt) - (d + drill) / 2
@@ -225,16 +273,16 @@ class Router:
         for at, s in self.old_vias + [(v['at'], v['size']) for v in self.vias]:
             if math.dist(at, pt) < (s + size) / 2 + self.via_gap:
                 return 'copper overlaps / within %.2f mm of the via at %s' % (self.via_gap, tuple(at))
-        hit = self._hits(c.buffer(size / 2, 16), net, set(self.layers), clearance)
+        hit = self._hits(c, size / 2, net, set(self.layers), clearance)
         if hit:
             return 'clearance %.3f mm to %s copper (min %.2f)' % (hit[0]['gap'], hit[0]['net'], hit[0]['need'])
         return None
 
     def seg_problem(self, a, b, net, w, layer, clearance=None):
-        g = LineString([a, b]).buffer(w / 2, 8) if a != b else Point(a).buffer(w / 2, 8)
-        if self.inside is not None and not self.inside.contains(g):
+        core = LineString([a, b]) if a != b else Point(a)
+        if self.edge_problem(core, w / 2):
             return 'within %.2f mm of the board edge' % self.edge_clearance
-        hit = self._hits(g, net, {layer}, clearance)
+        hit = self._hits(core, w / 2, net, {layer}, clearance)
         if hit:
             return 'clearance %.3f mm to %s copper on %s (min %.2f)' % (hit[0]['gap'], hit[0]['net'], layer, hit[0]['need'])
         return None
@@ -265,14 +313,14 @@ class Router:
                     self.log.append('VIOLATION track %s %s %s -> %s: %s' % (net, layer, a, b, why))
             t = dict(layer=layer, w=width, a=a, b=b, net=net)
             self.tracks.append(t)
-            self._add(net, [layer], LineString([a, b]).buffer(width / 2, 8))
+            self._add(net, [layer], LineString([a, b]).buffer(width / 2, 8), LineString([a, b]), width / 2)
         return res[-1]
 
     def _put_via(self, pt, net, size, drill):
         pt = (_r(pt[0]), _r(pt[1]))
         self.vias.append(dict(at=pt, net=net, size=size, drill=drill))
         self.holes.append((pt[0], pt[1], drill, 'new via %s' % net))
-        self._add(net, self.layers, Point(pt).buffer(size / 2, 16))
+        self._add(net, self.layers, Point(pt).buffer(size / 2, 16), Point(pt), size / 2)
         return pt
 
     def via(self, pt, net, size=None, drill=None, check=True, quiet=False, clearance=None, in_pad=None):
@@ -310,7 +358,7 @@ class Router:
                     q = self._put_via(q, net, size, drill)
                     if link:
                         self.tracks.append(dict(layer=lay, w=_r(lw), a=self.P(ref, num), b=q, net=net))
-                        self._add(net, [lay], LineString([self.P(ref, num), q]).buffer(lw / 2, 8))
+                        self._add(net, [lay], LineString([self.P(ref, num), q]).buffer(lw / 2, 8), LineString([self.P(ref, num), q]), lw / 2)
                     return q
             r += 0.1
         self.rejected += 1

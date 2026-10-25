@@ -75,7 +75,8 @@ def schematic_parts(path):
             ref = props.get('Reference', '')
             if not ref or ref.startswith('#'):
                 continue
-            e = out.setdefault(ref, dict(fields={}, in_bom=_yes(s, 'in_bom'), on_board=_yes(s, 'on_board'), dnp=_yes(s, 'dnp', False)))
+            e = out.setdefault(ref, dict(fields={}, in_bom=_yes(s, 'in_bom'), on_board=_yes(s, 'on_board'), dnp=_yes(s, 'dnp', False),
+                                            in_pos=_yes(s, 'in_pos_files')))
             for k, v in props.items():               # units of one part: the union of their fields
                 if not blank(v) or k not in e['fields']:
                     e['fields'][k] = v
@@ -99,7 +100,8 @@ def board_parts(path):
         attr = f.find('attr')
         flags = [str(x) for x in attr[1:]] if attr is not None else []
         props['Footprint'] = str(f[1])
-        out[ref] = dict(fields=props, dnp='dnp' in flags, exclude_from_bom='exclude_from_bom' in flags)
+        out[ref] = dict(fields=props, dnp='dnp' in flags, exclude_from_bom='exclude_from_bom' in flags,
+                        exclude_from_pos='exclude_from_pos_files' in flags)
     return out
 
 
@@ -140,6 +142,9 @@ def check(sch, pcb=None, require=('Datasheet', 'LCSC|MPN'), accept=None, online=
                 flag(ref, 'DNP', 'schematic %s, board %s' % (e['dnp'], B[ref]['dnp']))
             if e['in_bom'] == B[ref]['exclude_from_bom']:
                 flag(ref, 'in_bom', 'schematic in_bom %s, board exclude_from_bom %s' % (e['in_bom'], B[ref]['exclude_from_bom']))
+            if e['in_pos'] == B[ref]['exclude_from_pos']:
+                flag(ref, 'in_pos_files', 'schematic in_pos_files %s, board exclude_from_pos_files %s (the assembler\'s '
+                     'position file follows the board)' % (e['in_pos'], B[ref]['exclude_from_pos']))
             extra = sorted(k for k in bf if k not in e['fields'] and not blank(bf[k]))
             if extra:
                 info.append('%s: board-only fields %s' % (ref, ', '.join(extra)))

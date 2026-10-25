@@ -115,6 +115,30 @@ for n, nodes in nets.items():
         for (y, j) in io:
             if k != j: a3.append('%s joins %s.%s %s to %s.%s %s - data line index %d meets %d: check both datasheets' % (n, *x, *y, k, j))
 out += ['### Data direction (DI/DO, TX/RX, MOSI/MISO, numbered data lines)', ''] + (['- ' + x for x in a3] or ['- none flagged - still trace every serial/memory/UART line driver to receiver against both datasheets']) + ['']
+# control lines between two ICs with no pull to a rail: their level while either chip is in reset, unprogrammed or
+# unpowered is whatever the two chips' internal defaults do (a weak pull-down on one side against a weak pull-up on the
+# other is mid-rail). Each one needs a written decision per state from both datasheets, or a resistor to the safe level.
+CTRL = re.compile(r'(^|_)(N?EN|ENABLE|N?OE|N?CE|N?CS\d*|SS|N?RST|N?RESET|N?SHDN|N?PD|PWRDN|STBY|SLEEP|WAKE|N?WR|N?RD|'
+                  r'STROBE|STB|LE|LATCH|DIR|N?IRQ|N?INT|READY|RDY|BUSY|N?TXE|N?RXF|SIWU|PWREN|BOOT\w*|RUN|MODE)$', re.I)
+def is_ic(r): return re.match(r'^(U|IC)\d', r) is not None
+def pulled(n):
+    for r, p, _, _ in nets.get(n, []):
+        c = comps.get(r)
+        if c and r.startswith('R') and len(c['pins']) == 2:
+            other = [v[0] for k, v in c['pins'].items() if k != p]
+            if other and is_rail(other[0]): return '%s to %s' % (r, other[0])
+    return None
+a5 = []
+for n, nodes in sorted(nets.items(), key=lambda kv: natkey(kv[0])):
+    if is_rail(n) or n.startswith('unconnected-'): continue
+    ics = [(r, p, fn(pf, p)) for r, p, pf, pt in nodes if is_ic(r)]
+    if len({r for r, _, _ in ics}) < 2: continue
+    ctl = [x for x in ics if CTRL.search(x[2]) or CTRL.search(re.sub(r'^~\{|\}$', '', x[2]))]
+    if not ctl or pulled(n): continue
+    a5.append('%s joins %s: no pull resistor to a rail - write its level on each side at power-up, with either chip in reset, '
+              'unprogrammed and unpowered (both datasheets\' pin default states), or add a pull to the safe level' % (
+                  n, ', '.join('%s.%s %s' % x for x in ics)))
+out += ['### Control lines between ICs with no pull (reset-state decision needed)', ''] + (['- ' + x for x in a5] or ['- none flagged (names are a prompt: also check unnamed strobes and selects)']) + ['']
 # LED series resistor power at the rail voltage (rail voltage from the net name, or review_config.json "rail_voltages")
 cfg = json.load(open(R + 'review_config.json')) if os.path.exists(R + 'review_config.json') else {}
 RV = cfg.get('rail_voltages', {})

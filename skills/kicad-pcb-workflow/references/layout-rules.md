@@ -24,12 +24,24 @@ kicad-board-review skill's checklist has the full reasoning and how to measure e
   In ground planes, pitch them so copper webs remain (0.95 x 1.05 mm for 0.6/0.3 vias at 0.1 mm clearance).
 - Thin inner layers (often 0.5 oz) carry half what outer layers do; long rails on them need width.
 - Shunts: datasheet land pattern, Kelvin sense lines from the inner pad ends, on one layer if possible.
+- Paste over a pad with holes in it: paste windows that avoid every drill (or vias ordered filled and capped, by
+  decision), and the paste coverage of an exposed pad checked after the change (typically 40-60 %). Library footprints
+  with thermal vias can put paste over them; `board_lint.py` reports PASTE ON HOLE and the coverage.
 
 ## Regulators
 
 Follow the datasheet layout example item by item: input cap at the pins on the same layer, hot loop minimal, switch
 node small, feedback and enable lines short, away from the switch node, and not splitting the local ground pour into
-islands; AGND/PGND joined at the specified point.
+islands; AGND/PGND joined at the specified point. A block copied from a reference layout carries the copper around it
+and its land patterns (R27, `layout-stages.md`).
+
+## Decoupling
+
+Every IC power pin gets its capacitor at the pin. For a rail with no plane (tracks only, an internal regulator's
+output) the track from capacitor to pin is the loop: give each pin its own site at placement and keep the feed off
+noisy copper (not under an inductor or a switch node). Estimate a track's loop inductance with the microstrip
+per-length value over its plane (Z0 x sqrt(eps_eff) / c, about 0.2-0.4 nH/mm for outer-layer tracks over a close
+plane), not the free-wire ~1 nH/mm, and compute the before/after of a relocation before doing it (R29).
 
 ## Signals
 
@@ -39,11 +51,21 @@ islands; AGND/PGND joined at the specified point.
   series resistor between the TVS and the IC.
 - Lane order: a group of parallel tracks keeps its order through bends; plan the order at both ends before routing
   (swapping two lines at one end to "fix" the order makes one wrap around and cross the others).
+- Controlled impedance: the copper beside the line is part of its geometry. A pour at its default clearance next to a
+  pair makes it partly coplanar and lowers its impedance; keep the pour back along the run (a keepout or a clearance
+  rule, at least about max(2 x width, 3 x dielectric height)) or design it as coplanar on purpose. Get the numbers from
+  the fab's impedance calculator for the exact stackup (browser automation can drive it) and record them; the review
+  pack's `emc.md` gives the pair's estimate and the measured pour gap.
 
 ## Placement and mechanical
 
 - Respect the assembly plan (e.g. everything on top). Check tall parts in 3D (fuse holders, terminal blocks, inductors)
   and model offsets; keep parts out of mounting-hole keepouts; leave room for connectors' mating plugs.
+- Mounting hardware: no other-net copper within the screw head, washer or standoff radius of a mounting hole on
+  **either** outer layer (solder mask is not insulation under a metal part that is torqued down): a keepout on both
+  sides. `board_lint.py` checks it (UNDER HARDWARE; `--hardware-r` for the real hardware size).
+- Bring-up test points for every rail and ground (kicad-new-board requirements), labelled, each with a ground pad
+  within probe reach.
 - Courtyards on every footprint: imported ones often lack them, and DRC's overlap check cannot see a part without one
   (`board_lint.py` lists them; `add_courtyard.py` adds them to the library). Fixed pitches for rows of passives with
   real clearance (e.g. about 2.0 mm for 0805s; 1.75 mm is tight).

@@ -94,6 +94,46 @@ def test_board_carries_fields_and_parity_catches_drift():
     assert any('R1 LCSC' in x for x in res['problems']), res
 
 
+def test_board_carries_assembly_attributes():
+    """DNP, not-in-BOM and not-in-position-file reach the footprint (the symbol wins over the library's attributes), so
+    the BOM, the assembler's position file and schematic parity agree without a project fix-up script; KiCad re-saves
+    the attributes unchanged (same order)"""
+    cli = os.environ.get('KICAD_CLI') or shutil.which('kicad-cli') or '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli'
+    if not os.path.exists(cli):
+        print('  (skipped: no kicad-cli)'); return
+    d = tempfile.mkdtemp()
+    s = Sch('t', paper='A4')
+    s.lib('P', lib=lib())
+    s.add('P:BOOST1', 'U1', 'TPS61023', 50.8, 50.8)                                                    # assembled
+    s.add('P:R', 'R1', '10k', 30.48, 50.8, footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25744', dnp=True)   # not fitted
+    s.add('P:R', 'R2', '1k', 30.48, 60.96, footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25744', in_bom=False)  # hand-fit
+    s.add('P:R', 'R3', '1k', 30.48, 71.12, footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25744', in_pos_files=False)
+    s.write(os.path.join(d, 't.kicad_sch'))
+    lib().save(os.path.join(d, 'P.kicad_sym'))
+    open(os.path.join(d, 'sym-lib-table'), 'w').write('(sym_lib_table (version 7) (lib (name "P")(type "KiCad")(uri "${KIPRJMOD}/P.kicad_sym")(options "")(descr "")))\n')
+    subprocess.run([cli, 'sch', 'export', 'netlist', '--format', 'kicadxml', '-o', os.path.join(d, 'net.xml'), os.path.join(d, 't.kicad_sch')],
+                   check=True, capture_output=True)
+    r = subprocess.run([sys.executable, os.path.join(HERE, 'new_board.py'), os.path.join(d, 'net.xml'), os.path.join(d, 't.kicad_pcb')],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert '1 dnp, 1 exclude_from_bom, 2 exclude_from_pos_files' in r.stdout, r.stdout
+    pcb = os.path.join(d, 't.kicad_pcb')
+    b = partfields.board_parts(pcb)
+    assert b['R1']['dnp'] and not b['R1']['exclude_from_bom'] and not b['U1']['dnp'], b['R1']
+    assert b['R2']['exclude_from_bom'] and b['R2']['exclude_from_pos'] and b['R3']['exclude_from_pos'] and not b['R3']['exclude_from_bom']
+    res = partfields.check(os.path.join(d, 't.kicad_sch'), pcb)
+    assert not res['problems'], res
+    before = [l.strip() for l in open(pcb) if l.strip().startswith('(attr')]
+    subprocess.run([cli, 'pcb', 'drc', '--save-board', '-o', os.path.join(d, 'drc.json'), '--format', 'json', pcb], capture_output=True)
+    after = [l.strip() for l in open(pcb) if l.strip().startswith('(attr')]
+    assert before == after, (before, after)
+    # drift on the board is caught: the position-file attribute dropped
+    t = open(pcb).read().replace('(attr smd exclude_from_pos_files)', '(attr smd)', 1)
+    open(pcb, 'w').write(t)
+    res = partfields.check(os.path.join(d, 't.kicad_sch'), pcb)
+    assert any('R3 in_pos_files' in x for x in res['problems']), res
+
+
 if __name__ == '__main__':
     fails = 0
     for k, f in sorted(globals().items()):

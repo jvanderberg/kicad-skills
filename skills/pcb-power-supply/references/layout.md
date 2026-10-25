@@ -2,7 +2,9 @@
 
 The datasheet's layout example is the primary reference: follow it item by item, then check against this list. The
 EVM layout comes second and vendor-tool layouts (WEBENCH) third; collect all three in the layout reference pack
-(SKILL.md step 6) and re-read them when the block is placed and routed.
+(SKILL.md step 6) and re-read them when the block is placed and routed. Copying a reference layout copies its
+boundary conditions too: the other-net copper, keepouts and cut-outs around the block and its land patterns
+(kicad-pcb-workflow `layout-stages.md`, "Copying a reference layout").
 Sources: TI SNVA021 (AN-1149), SLYT614, SLVA773, SLVA535B; listed in `sources.md`.
 
 ## 1. Find the hot loop first
@@ -59,7 +61,10 @@ datasheet suggests one.
 
 - Exposed pad: soldered to a copper area with thermal vias (often a 3x3 to 5x5 grid of 0.3 mm vias at ~1.0-1.2 mm
   pitch) into the inner ground planes and a bottom-side pour. Follow the datasheet's pattern and its paste guidance;
-  use a windowed paste pattern (about 50 % coverage) so the part does not float.
+  use a windowed paste pattern (about 50 % coverage) so the part does not float, with every window clear of the via
+  drills (paste over an open hole is pulled down the barrel). Vias inside the pad are open holes unless they are
+  ordered filled and capped (or tented): either order them so, as a recorded decision, or put the vias beside the pad.
+  Judge the result by the review pack's solved temperature step from the pad to the plane, not by the count alone.
 - The datasheet's theta-JA is measured on a JEDEC test board and is not your board's number; heat leaves mostly through
   the board copper, so copper area and vias matter more than the package [TI SPRA953D].
 - Spread hot parts (inductor, IC, rectifier) apart; keep electrolytics and precision analog away from them.

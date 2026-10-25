@@ -71,13 +71,31 @@ convention (`projfiles.py`: the project folder and its parents up to the reposit
 `docs/`; every caller prints the file it used), pick the board by its `.kicad_pro` name rather than the first file
 listed, and check their dependencies before starting (`preflight.py`). A project that builds with kicad-skills pins
 the exact revision and KiCad version in `kicad-skills.lock` and checks it on every build (`skills_rev.py`,
-`assets/kskills.py`; `references/new-design.md` s0).
+`assets/kskills.py`; `references/new-design.md` s0). **Interpreters:** scripts that import `pcbnew` (`board_lint.py`,
+kicad-board-review's `boarddump.py`) run under KiCad's python (`$KICAD_PYTHON`); scripts that import shapely, numpy or
+scipy (`router.py`, the review pack's analysis scripts) under the analysis venv (`$PY`); everything else under any
+python 3. Each one started under the wrong interpreter re-runs itself under the right one (`interp.py`), and an ad hoc
+script that needs both runs with `interp.py run SCRIPT` (KiCad's python with the venv's packages, when their versions
+match); `interp.py which` shows what was found. Scripts clean up after themselves: every kicad-cli call removes the
+lock files it left (`kicad_locks.py`).
+
+**Every stage proves it ran (R28).** A build or verification pipeline stops at the first stage that failed and checks
+that each stage wrote its own, new output before the next one reads it: no `|| true` around a generator, a check for
+the stage's "wrote" line or its output file (deleted before the stage runs, so a stale one cannot pass), `set -euo
+pipefail` in shell. A router or checker that logs REJECTED or VIOLATION lines and exits 1 has failed, even though it
+wrote a board. Verification run on stale or partial output reports about a board that does not exist: DRC after a
+crashed routing stage reports the whole board unconnected, and a routing stage after a refused build routes the
+previous board. When a checker becomes stricter, re-run the whole plan and list every newly rejected item
+in one pass instead of discovering them one rebuild at a time. Pattern: `references/new-design.md` s6.
 
 ## 0. Before touching anything
 
 1. **Is KiCad open?** Run `${CLAUDE_SKILL_DIR}/scripts/kicad_open.sh <project_dir>`. KiCad keeps its own copy in memory;
    if it is open, the user's next save overwrites your edit, or yours overwrites their unsaved work. If it is open, ask
    the user to save and close it, wait for them to say so, then re-read the files: they may have changed things.
+   It answers OPEN only when a KiCad editor holds the folder; a lock file with no such process is STALE (kicad-cli
+   leaves them; `--clean` deletes them) and UNSURE means ask. **Never tell the user KiCad is open from a lock file
+   alone** - a state of the user's environment is reported from the thing itself, not from a proxy for it (R19).
    **Looking is not editing:** when the user only wants to see the board ("open it for me"), copy the project to a
    scratch folder and open the copy (`open -a KiCad <copy>/proj.kicad_pro` on macOS), or tell them plainly that the
    board will be regenerated and any edits they make will be lost - do not refuse to keep working because it is open.
@@ -151,6 +169,16 @@ the exact revision and KiCad version in `kicad-skills.lock` and checks it on eve
 
 ## 3. Verify (every iteration)
 
+**Check each edit where it acts, right after it (R30).** A fix is verified by a quick check aimed at what it changed,
+run before the next edit: a zone, pour or via-field edit gets kicad-board-review's `pour_check.py BOARD --window ...`
+(every pour piece keeps 2 vias to its plane; no track over a void, stubs and layer-change vias included); a placement
+change gets the courtyard and overlap check at once (`check.sh`, `board_lint.py`), before any routing builds on it; a
+generator change reads the generated file back and asserts the intended attribute arrived (the footprint, the field,
+the net) - an override applied in one helper and missed by the part created elsewhere is found by the read-back, not
+by the review; every label a script placed is looked at in a silk render. Batch the fixes from a review, check each
+one this way, then run the long verification (the full pack, the full DRC baseline diff) once for the before/after
+comparison: a minutes-long run restarted after every fix is abandoned, and nothing gets compared.
+
 1. `python3 ${CLAUDE_SKILL_DIR}/scripts/sexp.py check <files>` - balance, raw newlines in strings, duplicate uuids.
 2. `${CLAUDE_SKILL_DIR}/scripts/check.sh <scratch_proj> <scratch>/run1 --baseline <scratch>/base` - refills zones (run
    it twice after zone edits; the first refill can leave stale clearance errors), DRC with schematic parity, ERC,
@@ -158,8 +186,8 @@ the exact revision and KiCad version in `kicad-skills.lock` and checks it on eve
 3. Netlist assertions for what you added: `scripts/netspec.py check <spec> <sheet>` against the intended netlist (SPLIT,
    SHORT, MISSING, UNEXPECTED). ERC passing does not prove a symbol was not silently dropped or two nets were not
    joined. `check.sh` also runs `board_lint.py` (no courtyard, missing 3D models, silk on part bodies, vias on
-   same-net pads) and writes the unused/strapped-pin table (`nc_audit.py`); every pin in it needs a recorded decision
-   before layout.
+   same-net pads, paste over drilled holes, other-net copper under mounting hardware) and writes the unused/strapped-pin
+   table (`nc_audit.py`); every pin in it needs a recorded decision before layout.
 4. **Geometry checks DRC cannot do**: does a new track on a plane layer cut that plane (and what return paths cross the
    cut)? Did a via field leave isolated copper or slivers? Did a pour lose connection to a pad? Did a power path neck
    down? Use the board-review skill's scripts (`planes.py`, `power.py --net ...`, `view.py`) for these.
@@ -181,14 +209,17 @@ the exact revision and KiCad version in `kicad-skills.lock` and checks it on eve
   such as Value and LCSC, pad nets, DNP, models, settings), not only geometry. Everything outside what you meant to
   change is listed as UNEXPECTED; each one must be explained or reverted before copying back.
 - Check KiCad is still closed and the originals' shasums still match (the user may have edited meanwhile). Copy the
-  changed files back, re-run `check.sh` on the real project, delete any `~*.lck` files kicad-cli left behind.
+  changed files back, re-run `check.sh` on the real project; `kicad_open.sh <project> --clean` removes lock files
+  kicad-cli left behind (only when no KiCad process holds the folder).
 - Update the design docs the project keeps (as-built values, why decisions were made) in the same change.
 - If the project keeps a review list (e.g. `REVIEW.md`), queue findings there and apply them when the user says to work
   the list, not piecemeal as they are found.
 - Report: checks first (DRC/ERC/parity vs baseline, unconnected = 0, every accepted item with its reason), then what
   changed (schematic and board, with coordinates), deviations from what was asked and why, anything not verified (say
   so plainly), and what the user must do (reopen/revert in KiCad, refill zones before saving, regenerate fabrication
-  outputs). Give the absolute path of every file and render you mention. Ask before committing unless told to commit.
+  outputs). Give the absolute path of every file and render you mention. Every number in the report or a design doc
+  (a via count, a length, a drop) is measured from the files as they are now (R29, kicad-board-review `SKILL.md`).
+  Ask before committing unless told to commit.
   Design checks passing is not "ready to fabricate": say what has not been qualified.
 
 ## Mistakes that make the user correct you
@@ -210,3 +241,12 @@ the exact revision and KiCad version in `kicad-skills.lock` and checks it on eve
 - Dropping a feature at layout because it is hard to route. A decision frozen in the schematic goes back to the user.
 - Routing from memory of the datasheet. Re-open the block's brief and reference figure before routing it.
 - Hiding a category of warnings to get rid of one known item. Exempt the item, by name.
+- Telling the user KiCad is open because a lock file exists. Ask `kicad_open.sh`; it looks for the editor holding the
+  folder.
+- Running a check on the output of a stage that failed (R28). Stop at the failure; REJECTED / VIOLATION is a failure.
+- Copying a reference block's copper without the copper that surrounded it, or onto different land patterns (R27,
+  `references/layout-stages.md`).
+- Leaving a control line between two chips to their reset defaults. Decide its level in every power and reset state
+  (R12, `references/new-design.md` s4).
+- Writing a number into a doc or a report from memory. Measure it from the current files (R29).
+- A route-plan helper with a net name typed in. Nets come from the pads (R17, `references/routing.md`).

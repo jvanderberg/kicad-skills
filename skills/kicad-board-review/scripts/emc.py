@@ -13,12 +13,7 @@ from shapely.strtree import STRtree
 from common import *
 
 def z0_microstrip(w, h, er=ER):
-    u = w / h
-    if u < 1:
-        ee = (er + 1) / 2 + (er - 1) / 2 * ((1 + 12 / u) ** -0.5 + 0.04 * (1 - u) ** 2)
-        return 60 / math.sqrt(ee) * math.log(8 / u + u / 4)
-    ee = (er + 1) / 2 + (er - 1) / 2 * (1 + 12 / u) ** -0.5
-    return 120 * math.pi / (math.sqrt(ee) * (u + 1.393 + 0.667 * math.log(u + 1.444)))
+    return microstrip(w, h, er)[0]
 
 REF = {L: [o for o, _ in neighbours(L)] for L in LAYERS}
 H = {L: neighbours(L)[0][1] if neighbours(L) else 1.5 for L in LAYERS}
@@ -209,9 +204,59 @@ for n in sorted({t['net'] for t in sig_tracks if cls(t['net']) in FAST}, key=nat
                     per_layer={k: round(v, 1) for k, v in per.items()}, vias=sum(1 for v in B['vias'] if v['net'] == n),
                     z0_ohm={'%s@%.3g' % k: round(z0_microstrip(k[1], H[k[0]]), 1) for k in ws}))
 dp = []
-for a_, b_ in CFG.get('diff_pairs', []):
+DPC = CFG.get('diff_pair_checks') or {}
+def pair_geometry(a_, b_):
+    """per layer where both run: width, edge gap between the two, differential impedance (edge-coupled microstrip), and
+    the gap from the pair to the nearest other same-layer copper (pour fills and other nets' tracks), which turns the
+    pair coplanar when it is small: the pour clearance next to a controlled-impedance pair is part of its geometry"""
+    out = []
+    for L in LAYERS:
+        ta = [t for t in B['tracks'] if t['net'] == a_ and t['layer'] == L and t['a'] != t['b']]
+        tb = [t for t in B['tracks'] if t['net'] == b_ and t['layer'] == L and t['a'] != t['b']]
+        if not ta or not tb: continue
+        la = unary_union([LineString([t['a'], t['b']]) for t in ta]); lb = unary_union([LineString([t['a'], t['b']]) for t in tb])
+        w = float(np.median([t['w'] for t in ta + tb])); h = H[L]
+        other = unary_union([g for n, g in all_zone_fill(L).items() if n not in (a_, b_)] +
+                            [track_geom(t) for t in B['tracks'] if t['layer'] == L and t['net'] not in (a_, b_)])
+        sp, gp, samples = [], [], []
+        for line, mate in ((la, lb), (lb, la)):
+            for seg in (line.geoms if hasattr(line, 'geoms') else [line]):
+                n = max(int(seg.length / 0.1), 1)
+                for i in range(n + 1):
+                    q = seg.interpolate(i / n, normalized=True)
+                    c = q.distance(mate)
+                    if c > 4 * w + 0.6: continue                 # not running as a pair here (fan-out, pads)
+                    sp.append(c - w)
+                    if not other.is_empty: gp.append(q.distance(other) - w / 2); samples.append((q.x, q.y))
+        if not sp: continue
+        s = float(np.median(sp)); z0, ee = microstrip(w, h); zd = zdiff_edge(z0, s, h)
+        e = dict(layer=L, width_mm=round(w, 3), gap_mm=round(s, 3), h_mm=round(h, 3), z0_ohm=round(z0, 1), zdiff_ohm=round(zd, 1),
+                 coupled_mm=round(len(sp) * 0.1 / 2, 1))
+        if gp:
+            gmin = float(np.min(gp)); gmed = float(np.median(gp)); i = int(np.argmin(gp))
+            zc, _ = cpwg(w, max(gmin, 0.01), h)
+            near = float(DPC.get('coplanar_gap_mm') or max(2 * w, 3 * h))
+            e.update(pour_gap_min_mm=round(gmin, 3), pour_gap_median_mm=round(gmed, 3), pour_gap_at=[round(v, 2) for v in samples[i]],
+                     coplanar_below_mm=round(near, 3), z0_coplanar_ohm=round(float(zc), 1))
+            if gmin < near:
+                e['flag'] = ('same-layer copper %.2f mm from the pair at %s (median %.2f mm; it stops mattering beyond about %.2f mm = '
+                             'max(2 w, 3 h)): the line is partly coplanar and its impedance is LOWER than the edge-coupled %.0f ohm '
+                             '(grounded-coplanar estimate at that gap: Z0 %.0f ohm vs microstrip %.0f). Keep the pour back along the '
+                             'run (a keepout or a clearance rule) or design it as coplanar, and confirm with the fab\'s impedance '
+                             'calculator for this stackup' % (gmin, e['pour_gap_at'], gmed, near, zd, zc, z0))
+        out.append(e)
+    return out
+for pr in CFG.get('diff_pairs', []):
+    a_, b_ = (pr.get('nets') if isinstance(pr, dict) else pr)[:2]
+    target = pr.get('target_ohm') if isinstance(pr, dict) else None
     la = sum(seg_len(t) for t in B['tracks'] if t['net'] == a_); lb = sum(seg_len(t) for t in B['tracks'] if t['net'] == b_)
-    dp.append(dict(pair=[a_, b_], len_mm=[round(la, 2), round(lb, 2)], skew_mm=round(abs(la - lb), 2),
+    geo_ = pair_geometry(a_, b_)
+    for g_ in geo_:
+        if g_.get('flag'): WARN.append('diff pair %s/%s on %s: %s' % (a_, b_, g_['layer'], g_['flag']))
+        z_ = g_['zdiff_ohm']
+        if target and abs(z_ - target) > 0.1 * target:
+            WARN.append('diff pair %s/%s on %s: Zdiff about %.0f ohm vs target %g (estimate: verify with the fab\'s calculator)' % (a_, b_, g_['layer'], z_, target))
+    dp.append(dict(pair=[a_, b_], len_mm=[round(la, 2), round(lb, 2)], skew_mm=round(abs(la - lb), 2), target_ohm=target, geometry=geo_,
                    coupled=[r for r in xt if {r['net'], r['other']} == {a_, b_}][:2]))
 # Electrical cross-check of every checked hot loop: pad-to-pad geometry can look tight while the return runs through
 # one small via and an inner layer. A 1 A DC solve (fem.py) from the IC's pins to the nearest capacitor's pad, on the

@@ -522,3 +522,143 @@ Where this differs from the brief:
 - Move the 4 ground vias off C17/C18/C19/C31's ground pads (or keep a mask web), and order U1's exposed-pad via
   filled or tented.
 - skill-gaps.md: R24-R26 to add to its rules table.
+
+---
+
+# Round 5: a whole design session reviewed (schematic, layout, review, fixes)
+
+Source: a review of one long session that took a new 4-layer microcontroller board from schematic to a reviewed
+layout with these skills (`rp2350-logic-analyzer`: its `docs/board-review.md`, the "Skill gaps found (kicad-skills)"
+list in `docs/layout-plan.md`, and its `tools/*.py`, which show where the project had to work around a tool). The review
+grouped what happened as design defects the workflow let through until the late review, problems in the analysis pack
+and review tools, rework and process failures, and what worked. As in earlier rounds each item was named as a class
+and the class was fixed; the skill text carries no example from this session. All scripts were run on scratch copies
+of the project's `hardware/` and `docs/`; the project was not modified.
+
+## Classes, and where they differ from the review's reading
+
+| Class | Items | Rule |
+|---|---|---|
+| A reference copied as its parts and own-net copper, without the copper and constraints around it that gave it its property | copied block lost the fence that kept its ground separate; copied onto different land patterns | **R27 (new)** |
+| A rule about copper connectivity accepted from names or outlines instead of the filled copper | single-point ground "Met" while merged | R19, extended |
+| A pipeline stage that failed, followed by stages that read its stale or partial output; a checker's rejections treated as warnings | router crash then DRC; refused build then routing; stricter rule found one rebuild at a time | **R28 (new)** |
+| A number from the wrong model, or not measured from the current files; a fix applied before its effect was computed | free-wire inductance per mm over a plane; a relocation that barely helped; counts in docs corrected later; a via-count rule of thumb standing in for a temperature; impedance from the bare pair beside a pour | **R29 (new)** |
+| An edit verified only by the long end-of-job check, or not where it acts | stitching piece left with one via; strip ending at the vias; overlaps found after routing; an override missed in one place; silk labels from a script; three abandoned full-pack runs | **R30 (new)** |
+| A pre-check looser than the authority it stands in for; a proxy taken for the state it suggests | router tolerance applied track-to-track; lock file reported as "KiCad is open" | R7, extended (and R19) |
+| Pin defaults and assembly defaults left as nobody's decision | interface strobes floating in reset; hand-soldered parts in the position file; no test points; polarity of a part the assembler treats as non-polar | R12, extended |
+| A datasheet quantity read from one of the places it is stated | a supply current tabulated per domain, one table summed | R16, extended (a sum states what it summed) |
+| Configured patterns and named objects matching nothing, silently | a class pattern for a net that does not exist | R16 (applied; checks.md already required it, the pack did not do it) |
+| References not kept where later phases can open them | datasheets never saved into the project; the reviewer could not verify pinouts | R5, extended |
+| A design value or helper that names a net instead of taking it from the structure; an override put in one helper instead of the writer | cap helper with a fixed rail net; footprint override in one helper | R17 and R13, extended |
+| Bus order found unroutable at layout | two packages numbering pins the same way round | R10, extended (check at pin assignment) |
+| Data that exists upstream dropped by a stage | DNP and not-in-BOM / not-in-position-file not carried to the board | R22 (applied) |
+| Tools that assume an interpreter or leave state behind | shapely vs pcbnew scripts; kicad-cli lock files | R21 (applied) |
+
+Where this differs from the review:
+- **A1 and C10 are one class.** Both copied a reference without what surrounds the copied copper (the other-net copper
+  around the block, the land patterns under it). R27 owns both; the "prove isolation on the filled copper" half of
+  A1 is R19's (evidence names the specific item), extended to connectivity.
+- **A3, A7, B2(b) and C11 are one class (R29)**, not four: a number from the wrong model or not measured now. The
+  inductance per mm, the impedance beside a pour and the via-count rule of thumb are each a model that leaves out what
+  surrounds the item; a count typed into a doc is a number not measured now.
+- **B3, B4, C3, C5, C6 and C13 are one class (R30)**: each is an edit not checked where it acts until much later. C3
+  (the pack restarted three times) is the same rule seen from the other side: quick targeted checks per fix are what
+  make it possible to run the long check once.
+- **C1 and C8 are one class (R28)**: a failure treated as a warning. The router already logged REJECTED and exited 1;
+  the gap was that nothing said that is a failure and the pipelines did not stop.
+- **C2 is R19's and R7's**, not only a tool bug: a lock file is a proxy for the state "KiCad has this open", and a
+  proxy reported as the state is the class. The tool fix (look for the editor holding the folder) follows from that.
+- **A2 and A6 are R12's** (defaults are decisions): a pad's reset pull is a default nobody chose, and "every part
+  assembled" is a default too. A new rule would have duplicated R12.
+- **A5 and A8 are R7's** (blind spots): both pass DRC by construction; `board_lint.py` covers them.
+- **B6 is R5's** (gather references early): the datasheets were found but not kept.
+
+## Rules and where each one now lives
+
+| Rule | Canonical statement | Also applied in |
+|---|---|---|
+| R27 A copied reference carries its boundary conditions (other-net copper, keepouts and cut-outs around it, on every layer) and its land patterns; its isolation intent is written as a rule and proven on the new board | wf `references/layout-stages.md` "Copying a reference layout (R27)" | wf layout-rules.md (Regulators), SKILL.md mistakes; psu SKILL.md step 7, psu layout.md intro; rev checklist s3 (same-net isolation) |
+| R28 Every stage proves it ran: stop at the first failure, delete and re-check each stage's output, treat REJECTED / VIOLATION as failure, re-run the whole plan when a checker gets stricter | wf `SKILL.md` "Every stage proves it ran" | wf new-design.md s6 (build-script pattern), routing.md s3, checks.md router row, SKILL.md mistakes; `check.sh` (`need`: each kicad-cli stage's output deleted first and required), `make_pack.sh`, `pour_check.py` (stops when the refill fails) |
+| R29 Every number comes from a model of the real geometry and is measured from the current files; a fix is quantified before and after before it is applied; an outside authority (the fab's calculator) is run, not assumed | rev `SKILL.md` s3 "Numbers come from the model that fits" | wf SKILL.md s4 (report) and mistakes, layout-rules.md (Decoupling, Controlled impedance); rev checklist s4/s5/s9, interpreting-results.md (capacitor distance, impedance), reviewer-brief 12, analysis-limits.md; `common.nh_per_mm` / `microstrip` / `cpwg` / `via_nh`, `decoupling.py`, `emc.py` pair geometry, `thermal.py` solved step |
+| R30 Check each edit where it acts, right after it (zone edit: pieces and voids in a window; placement: courtyards; generator: read the output back; script-placed silk: render); batch review fixes and run the long verification once | wf `SKILL.md` s3 "Check each edit where it acts" | rev SKILL.md s5; wf routing.md "Reference strips and stitching", layout-stages.md stage 1; `pour_check.py` |
+| R5 (extended) Gather references early: every IC's datasheet saved into the project at selection | ps `SKILL.md` "Reading the datasheet" | `bom_check.py` (NO LOCAL DATASHEET), `datasheet.py fetch`; rev checklist s7, reviewer-brief 12 |
+| R7 (extended) A check that stands in for the authority is never looser than it | wf `references/checks.md` (intro) | `router.py` (exact distances), `boarddump.py` (pad outlines outside the true pad), routing.md s3; `board_lint.py` PASTE ON HOLE and UNDER HARDWARE (layout-rules.md, rev checklist s9/s11) |
+| R10 (extended) Bus and lane order checked at pin assignment from both packages' pin order | wf `references/new-design.md` s4 item 6 | layout-stages.md stage 1 |
+| R12 (extended) Pin reset states of every inter-chip control line, each part's assembly method, and bring-up test points are decisions | wf `references/new-design.md` s4 items 5 and 7 | `netdigest.py` audit "Control lines between ICs with no pull"; ps SKILL.md (pin default states); rev checklist s7 and s8; nb SKILL.md step 5, interview-guide (test points, assembly method), requirements template (test points table, assembly method row); `schgen` `in_pos_files` |
+| R13 / R17 (extended) Route-plan helpers take nets from the pads; an override keyed by reference lives where every instance is created | wf `references/routing.md` s2 | wf SKILL.md mistakes |
+| R16 (extended) A sum says what it summed: every table that states a quantity, per domain; every configured pattern and named object that matches nothing is a warning; connector nets that fall to "slow" are named | ps `SKILL.md` "Reading the datasheet" (supply current) and wf `references/checks.md` (configured items) | `common.py` (pattern, diff-pair and connector-net warnings), `islands.py` (NOT CHECKED with no declarations), `thermal.py` (hot part without psi_JB / theta_JC), `heat.starter` (psi_JB / theta_JC per IC and transistor), nb requirements template (power budget names its tables), rev checklist s7 |
+| R19 (extended) Connectivity rules proven on the filled copper; a state of the user's environment reported from the thing itself, not a proxy | wf `references/layout-stages.md` compliance section; wf `SKILL.md` s0 step 1 | `islands.py`; `kicad_locks.py` / `kicad_open.sh`; checks.md |
+| R21 / R22 (applied) | as round 2 | `interp.py` (re-exec, `run`), `kicad_locks.py` (locks a script caused are removed); `new_board.py` carries DNP / exclude_from_bom / exclude_from_pos_files, `partfields.py` compares position-file attributes |
+| R23 (applied) | as round 3 | new **Output:** items in rev checklist s3 (same-net isolation), s4 (decoupling), s5 (differential pairs), s8 (assembly method), s9 (hardware, thermal vias by solved step) |
+
+## Item -> rule -> change -> verification
+
+| Item | Rule | What changed (files) | How it was verified |
+|---|---|---|---|
+| A1 copied block lost its surrounding copper; isolation "Met" from names | R27, R19 | wf layout-stages.md (R27 section, compliance), layout-rules.md, psu SKILL/layout.md; rev `scripts/islands.py` (new), `make_pack.sh`, `report.py` (emc.md "Same-net isolation"), hot-loop text says it cannot see merges | `tests/test_pack_checks.py`: an island kept apart with its one allowed via is ok; the same island merged into the main pour is FAIL naming the other pad it now holds; no declaration is NOT CHECKED. On the project's pack: "same-net isolation NOT CHECKED: no islands" in the coverage (its config declares none) |
+| A2 interface strobes undefined in reset | R12 | wf new-design.md s4 item 5; rev `netdigest.py` audit; checklist s7; ps SKILL (pin default states) | `tests/test_netdigest.py`: a strobe between two ICs with no pull is listed, one with a pull-up and a data line are not. Project netlist (HEAD): one line listed, a chip select between two ICs with no pull resistor |
+| A3 decoupling far from pins on a track-fed rail; wrong inductance model | R11 (sites), R29 | wf layout-stages.md stage 0, layout-rules.md "Decoupling"; rev `scripts/decoupling.py` (new), `common.py` (`microstrip`, `nh_per_mm`, `via_nh`), report, checklist s4, interpreting-results, reviewer-brief 12 | `tests/test_pack_checks.py`: 2 mm and 22 mm track paths measured exactly, the 22 mm one flagged, its estimate between 0.15 and 0.5 nH/mm (0.3 mm over 0.2 mm prepreg). Project pack: 39 IC supply pins, 3 flagged - two core-rail pins at 9.8 and 12.8 mm of track (about 5 nH each) and a filtered PLL supply at 6.3 mm (the review accepted that one) |
+| A4 supply current from one of two tables | R16 | ps SKILL.md "Reading the datasheet"; nb requirements template (budget names its tables); rev checklist s7 | Text |
+| A5 paste windows over thermal-via holes | R7 | wf `board_lint.py` PASTE ON HOLE + exposed-pad coverage NOTE, `--vias-filled`; layout-rules.md, psu layout.md s6, rev checklist s11 | `tests/test_board_lint_vias.py`: KiCad's own thermal-via QFN footprint gives 4 PASTE ON HOLE (one per via drill) and 72 % coverage; `--vias-filled U1` clears them. Project board (after its fix): no paste on holes, exposed pad coverage 46 % |
+| A6 hand-soldered parts in the assembly files; no test points; polarity order note | R12, R22 | wf `new_board.py` (DNP, exclude_from_bom, exclude_from_pos_files from the netlist; symbol wins; exclude-from-board parts skipped), `partfields.py` (position-file parity), `schgen` (`in_pos_files`), new-design.md s4 item 7; nb SKILL step 5, interview-guide, requirements template; rev checklist s8 | `tests/test_fields_carried.py`: DNP, not-in-BOM and not-in-position-file reach the footprint, KiCad re-saves the attribute lines unchanged, a dropped attribute is reported. Project: its netlist now gives 1 dnp and 13 exclude_from_bom on the board without its fix-up script; the 13 hand-fit parts' symbols still say in_pos_files yes (the fix-up added the position-file exclusion), so `partfields.py` reports 13 position-file mismatches on its current board |
+| A7 pair impedance from the bare pair beside a pour | R29 | rev `emc.py` (pair geometry: width, gap, Zdiff estimate, gap to the nearest same-layer copper, coplanar flag, `target_ohm`, `diff_pair_checks.coplanar_gap_mm`), `common.zdiff_edge` / `cpwg`, report; wf layout-rules.md; checklist s5, interpreting-results, analysis-limits | `tests/test_pack_checks.py`: a pair 0.15 mm from a ground pour is flagged coplanar. Project pack: the USB pair flagged on both layers - nearest same-layer copper 0.15 mm (F.Cu median 0.44 mm over 10 mm coupled; B.Cu median 0.16 mm over 1.1 mm), against a 0.63 mm coplanar threshold (max(2 w, 3 h) for 0.2 mm tracks over 0.21 mm prepreg) |
+| A8 track under mounting hardware | R7 | wf `board_lint.py` UNDER HARDWARE (both outer layers, `--hardware-r`, `--hardware-net`; pours as notes); layout-rules.md; checklist s9 | `tests/test_board_lint_vias.py`: a B.Cu track inside a 3.7 mm radius flagged, cleared with a 2.5 mm radius. Project board: one signal track on B.Cu whose edge is 3.3 mm from a hole centre (default radius 3.7 mm for a 3.2 mm hole); the ground pours there are notes. `check.sh` on a routed scratch copy runs it (1 problem, 9 notes) |
+| B1 class pattern matched nothing; connector nets "slow" | R16 | rev `common.py` | `tests/test_pack_checks.py`; project pack: its two USB-C CC nets reported as connector nets that fell through to "slow" |
+| B2 thermal: loss over all pads; "vias in pad"; no theta prompts | R29, R23, R16 | rev `thermal.py` (loss on the thermal pad or tab, `thermal.parts.REF.pads` overrides, note in coverage; exposed pads judged on the solved step with vias beside within `thermal.via_beside_mm`; via-in-pad "filled and capped, or tented, by decision"; hot IC/transistor without psi_JB / theta_JC warned), `heat.starter` (psi_jb / theta_jc / Tj_max per IC and transistor); checklist s9, analysis-limits | `tests/test_thermal_synthetic.py` extended: the QFN's loss placed on its thermal pad (coverage note), its pad judged on a solved step >= 3 K with the beside-the-pad / by-decision text. `test_topology.py` (starter) still passes. Full pack on the project copy (24 min, `make_pack.sh` exit 0): the linear regulator's and the MCU's losses placed on their tab / exposed pad (coverage notes); the regulator tab judged on its solved 4.8 K step (no via within 1 mm), the MCU pad ok at 2.4 K with 9 vias; two hot ICs without psi_JB / theta_JC named |
+| B3/B4 weak pour pieces after an edit; strip ending at vias | R30 | rev `scripts/pour_check.py` (new; board or pack, `--window`); wf routing.md "Reference strips and stitching", SKILL.md s3 | `tests/test_pack_checks.py`: an unstitched strip is ISOLATED, two one-via pieces WEAK, the window limits the check. Project board: 12 pour pieces with one via (thin ground strips between connector lanes and one +3V3 piece), 0 tracks over a void once antipad entries are excluded; 36 s including the refill |
+| B5 interpreter split | R21 | `interp.py` (both skills; `need()` re-exec, `which`, `run`), hooked into `router.py`, `board_lint.py`, `boarddump.py`, review `common.py`; wf SKILL.md (which interpreter runs what), new-design.md table | `tests/test_interp.py`: `router.py --help` under plain python3 re-runs under the venv; a module missing after the re-run stops with a clear message; `interp.py run` imports pcbnew and shapely together (both python 3.9 here) |
+| B6 datasheets not in the project | R5 | ps SKILL.md; `bom_check.py` (NO LOCAL DATASHEET, `--no-local-datasheets`); reviewer-brief 12, checklist s7 | `tests/test_sourcing.py::test_bom_check_ics_need_a_local_datasheet`: both ICs reported without a docs/datasheets folder; found by MPN prefix and by full MPN in the file name once saved |
+| C1/C8 stages ran after failures; rejections found one rebuild at a time | R28 | wf SKILL.md, new-design.md s6 pattern, routing.md s3; `check.sh` (outputs deleted first, each kicad-cli stage required), `make_pack.sh` header | `check.sh` on a routed scratch copy of the project: every stage's output present, lock files in the copy removed at exit, exit 1 from the part-field parity (below); the project's own route script already had the "wrote" check - now the pattern is in the skill |
+| C2 lock files; "KiCad is open" from a lock | R19, R21 | `kicad_locks.py` (new, three copies), `kicad_open.sh` (wrapper: OPEN / BUSY / STALE / UNSURE / CLOSED, `--clean`); `render.py`, `netspec.py`, `bom_check.py`, `derived_check.py` remove locks their kicad-cli calls left; `check.sh` / `make_pack.sh` traps; wf SKILL.md s0 and s4 | `tests/test_kicad_locks.py`: a stale lock is STALE (exit 0) and `--clean` removes it; a process listed as the editor with its working directory in the folder is OPEN; with no process list a lock is UNSURE, never OPEN; only locks created inside the block are removed. Live: a running KiCad with a scratch project open was reported OPEN with its pid; the project's own build script refused a scratch copy holding only a stale lock ("KiCad has the project open"), where `kicad_locks.py` said STALE |
+| C4/C5 net literal in a helper; override in one helper | R17, R13, R30 | wf routing.md s2, SKILL.md s3 (read the output back) and mistakes | Text |
+| C6 courtyard overlaps found after routing | R30 | wf layout-stages.md stage 1, SKILL.md s3 | Text |
+| C7 router looser than DRC | R7 | wf `router.py` (exact centre-line / centre distances for tracks and vias, arcs densified with their sagitta added, edge distance exact, pad-outline error only shrinks the gap), `boarddump.py` (`ERROR_OUTSIDE`, `pad_poly` note), checks.md, routing.md | `tests/test_router_checks.py::test_track_clearance_never_looser_than_drc`: 45-degree tracks 0.003 and 0.0005 mm inside the clearance are VIOLATIONs, 0.0002 mm outside is not; a track 0.002 mm inside the clearance to a round pad is flagged for an outside-approximated outline and for an older inside-approximated one. The previous router reported 0 violations for the 0.003 mm case. The project's full route plan (1152 segments, 884 vias) through the new router and a fresh dump: 0 violations, 0 rejected, DRC 0 unconnected - no false positives |
+| C9 bus order at layout | R10 | wf new-design.md s4 item 6, layout-stages.md stage 1 | Text |
+| C11 numbers not measured | R29 | wf SKILL.md s4, rev SKILL.md | Text |
+| C12 datasheet viewer pages and 403s | R4, R21 | ps `datasheet.py fetch` (viewer page followed to its PDF, links ranked: embedded viewers, links naming the part, certificates last; exit 2 for HTTP 401/403/429/503 or a bot-protection page with the next step; poppler no longer needed for fetch) | `tests/test_datasheet.py` (local HTTP server): viewer followed to its PDF, certificate not fetched; a 403 bot page exits 2; a page with no PDF exits 1. Live: an LCSC `/datasheet/C<n>.pdf` viewer page followed to the 805 kB PDF |
+| C13 script-placed silk not looked at | R30 | wf SKILL.md s3; checks.md board_lint row (silk-to-silk inside a footprint is a render check) | Text |
+| D keep: browser-driven fab calculator, reviewer claims verified | R29 | rev SKILL.md s3, checklist s5, interpreting-results, layout-rules.md | Text |
+| layout-plan gaps (DNP, router tolerance, kicad-cli locks) | R22, R7, R21 | covered by A6, C7, C2 | as above |
+
+### The project, found by the new checks (not changed here)
+
+- `partfields.py` on its current schematic and board: 13 position-file mismatches - the hand-fit parts' symbols say
+  "in position files"; the board's exclusion came from its fix-up script. Set `in_pos_files no` on those symbols (or
+  regenerate with `schgen` `in_bom=False`, which now implies it) and drop the fix-up's attribute code.
+- `decoupling.py`: two core-rail pins at 9.8 and 12.8 mm of track from their nearest capacitor (about 5 nH each).
+- `board_lint.py`: one B.Cu signal track 3.3 mm from a mounting hole's centre (inside a 3.7 mm hardware radius).
+- `pour_check.py`: 12 pour pieces with one via to their plane.
+- `netdigest.py`: one inter-IC chip select with no pull resistor.
+- `thermal.py`: the linear regulator's tab has no via within 1 mm (solved 4.8 K step to In1.Cu at the worst corner);
+  psi_JB / theta_JC missing for the two ICs above the hot threshold.
+- The review config declares no islands, so the single-point ground the review found merged is not re-checked by the
+  pack: declare it.
+
+### Test runs
+
+- wf `python3 -m pytest -q kicad_sexpr/tests tests`: 64 passed, 2 skipped (was 55 / 2; new: router clearance,
+  assembly attributes, paste/hardware lint, kicad_locks x3, interp x3, shared copies).
+- rev `python3 -m pytest -q tests`: 16 passed, 2 skipped (was 11 / 2; new: `test_pack_checks.py` x4, `test_netdigest.py`, the
+  thermal pad assertions).
+- ps `python3 -m pytest -q tests`: 12 passed, 1 skipped (was 8 / 1; new: `test_datasheet.py` x3, local datasheets).
+- psu: 4 passed (unchanged).
+
+## Left open, and why
+
+- **Reference extraction itself** (R27) is a rule and a review row, not a tool: what counts as the boundary of a block
+  and which surrounding copper matters is a judgement per block; `islands.py` proves the result.
+- **Reset-state audit** finds candidates by pin-function names and pin types; it cannot read the datasheets' default
+  states, so it is a prompt list (said in its heading), and an unnamed strobe can escape it.
+- **Assembler polarity classes**: no tool knows which parts an assembler treats as non-polar; the order note is a
+  checklist item.
+- **Decoupling inductance** leaves out plane spreading and the capacitor's own mounting; the plane path is a straight
+  line across the piece. Good for ranking and for before/after, not for an absolute PDN impedance.
+- **Coplanar impedance** is flagged by a gap rule with a grounded-coplanar single-ended estimate beside it; the
+  closed-form models disagree with each other by several ohms, so the fab's calculator stays the authority (and is a
+  browser task, not a script here).
+- **Stitcher** (B3): the review asked for vias placed between lanes for pieces a grid stitcher leaves weak. `router.py`'s
+  `via_field` is a grid; `pour_check.py` finds the weak pieces, and placing their vias stays a routing decision.
+- **Supply-current tables** (A4): rule and template only; no tool reads datasheet tables.
+- **Bus order** (C9): rule only; a checker would need the pin-to-side geometry of both packages at schematic time.
+- **Windows**: `kicad_locks.py` uses `ps` and `lsof` (or `/proc`); where neither exists it reports UNSURE rather than
+  guessing.

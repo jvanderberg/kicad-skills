@@ -2,7 +2,7 @@
 itself under the analysis venv):   python3 tests/test_router_checks.py
 Same-net copper is exempt from the clearance check only: a via on a neighbouring pad of its own net (FET source pins
 side by side) passed every check and wicked solder out of that joint on a real board."""
-import os, subprocess, sys
+import math, os, subprocess, sys
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 PY = os.environ.get('PY') or os.path.expanduser('~/.cache/kicad-skills/venv/bin/python')
@@ -64,6 +64,37 @@ def test_thermal_vias_need_in_pad():
     assert r.via_field('GND', 29, 9, 31, 11, pitch=1.0, size=0.45, drill=0.2) == 0     # all on U5.21: skipped
     n = r.via_field('GND', 29, 9, 31, 11, pitch=1.0, size=0.45, drill=0.2, in_pad=('U5', '21'))
     assert n == 9, r.log
+
+
+def test_track_clearance_never_looser_than_drc():
+    """two 45-degree tracks of different nets: 0.003 mm inside the clearance is a VIOLATION (a polygon tolerance once
+    let it through and DRC caught it); exactly at the clearance is fine; the same holds against a round pad whose
+    polygon was approximated inside the true pad (an old dump)"""
+    clr, w = 0.15, 0.15
+    s = math.sqrt(0.5)
+    for gap, bad in ((clr - 0.003, True), (clr - 0.0005, True), (clr + 0.0002, False), (clr + 0.001, False)):
+        r = router.Router(board(), clearance=clr)
+        off = (w + gap)                                 # centre spacing perpendicular to the 45-degree run
+        r.track('F.Cu', w, (2, 2), (8, 8), net='A')
+        r.track('F.Cu', w, (2 + off * s, 2 - off * s), (8 + off * s, 8 - off * s), net='B')
+        assert (r.violations == 1) == bad, (gap, r.log)
+    # a round pad: boarddump writes the polygon outside the true circle (exact enough); an older dump inside it
+    def ring(cx, cy, rad, n, outside):
+        k = 1 / math.cos(math.pi / n) if outside else 1.0
+        return [[cx + rad * k * math.cos(2 * math.pi * (i + 0.5) / n), cy + rad * k * math.sin(2 * math.pi * (i + 0.5) / n)]
+                for i in range(n)]                      # a flat edge, not a vertex, faces the track
+    for outside in (True, False):
+        b = board()
+        b['footprints'].append(dict(ref='TP1', pads=[dict(num='1', net='T', x=20, y=20, layers=['F.Cu'], th=False, drill=0,
+                                                          poly=[[ring(20, 20, 0.5, 32, outside), []]])]))
+        if outside:
+            b['pad_poly'] = dict(error_mm=0.005, error_side='outside')
+        # a vertical track whose edge is 0.002 mm inside the clearance from the true circle, passing between two
+        # polygon vertices (where an inside polygon overstates the gap by the most)
+        x = 20 + 0.5 + clr - 0.002 + w / 2
+        r = router.Router(b, clearance=clr)
+        r.track('F.Cu', w, (x, 18), (x, 22), net='A')
+        assert r.violations == 1, (outside, r.log)
 
 
 if router is None:

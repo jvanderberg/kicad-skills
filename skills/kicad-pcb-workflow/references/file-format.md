@@ -108,5 +108,6 @@ raw newlines in strings, duplicate uuids).
 ## Lock files
 
 KiCad writes `~name.kicad_pcb.lck` (and `.kicad_sch.lck`, `.kicad_pro.lck`) while a file is open. kicad-cli can leave
-stale ones behind after DRC or render runs; delete them when no editor is running (in zsh quote the name:
-`rm ./'~name.kicad_pcb.lck'`, or `~name` is read as a user's home directory).
+stale ones behind after DRC or render runs. A lock file says nothing on its own about whether KiCad is open:
+`scripts/kicad_open.sh DIR` looks for an editor holding the folder and `--clean` deletes stale locks only when none does
+(by hand, in zsh, quote the name: `rm ./'~name.kicad_pcb.lck'`, or `~name` is read as a user's home directory).

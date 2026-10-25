@@ -85,10 +85,16 @@ So:
 
 ## Reading the datasheet (download it; do not work from memory)
 
-- Download the PDF with `scripts/datasheet.py fetch <url> ds.pdf`: it keeps the file only if it really is a PDF.
-  Manufacturer "symlink" URLs and distributor links can return an HTML page (LCSC's `/datasheet/Cxxx.pdf` returns a
-  page that links the real PDF; TI's `https://www.ti.com/lit/ds/symlink/<part>.pdf` returned a 404 HTML page for a
-  discontinued part, October 2026). Find sections and figures with `datasheet.py find ds.pdf "Layout Example"
+- **Save every IC's datasheet into the project at selection time** (`docs/datasheets/`, the MPN in the file name)
+  with `scripts/datasheet.py fetch <url> docs/datasheets/<mpn>.pdf` (R5: gather the references early). Later phases -
+  the adversarial review above all - can only check a pin, a limit or a layout rule against a datasheet they can
+  open; a link in a field is not the document. `bom_check.py` reports every BOM IC with no local file.
+  `fetch` keeps the file only if it really is a PDF. Manufacturer "symlink" URLs and distributor links can return an
+  HTML page: a distributor viewer page is followed to the PDF it embeds (LCSC's `/datasheet/Cxxx.pdf` was such a
+  page, October 2026); a refusal (HTTP 403, bot protection) exits 2 with the next step - open the URL in a browser
+  (the user's, or browser automation) and save the PDF, or take it from the manufacturer's product page; a 404 page
+  for a discontinued part is itself a lifecycle warning (TI's `https://www.ti.com/lit/ds/symlink/<part>.pdf` returned
+  one, October 2026). Find sections and figures with `datasheet.py find ds.pdf "Layout Example"
   "Figure 12"` (names the page, no per-page grepping) and render them with `datasheet.py page ds.pdf N out.png`; look
   at them. When you save figure pages into the project, name which page holds which figure.
 - **Record the lifecycle status** from the manufacturer's product page next to the datasheet (`part_gate.py` reads TI's).
@@ -97,7 +103,15 @@ So:
   - required external parts and their values (series resistors, pull-ups, bootstrap caps, compensation);
   - the exact variant: suffixes change voltage (3.3 V and 1.8 V versions of the same memory or regulator), mode
     (forced PWM vs auto light-load), grade and package;
-  - power-up behaviour (some converters need I2C before their output turns on - unacceptable for the MCU's own rail);
+  - power-up behaviour (some converters need I2C before their output turns on - unacceptable for the MCU's own rail),
+    and **every pin's default state** (pull-up, pull-down, high impedance, driven) at power-up, in reset and before
+    configuration: an interface line between two chips needs a defined level in each state (kicad-pcb-workflow
+    `references/new-design.md` s4, R12);
+  - **supply current from every table that states it** (R16: a sum says what it summed): search the datasheet for
+    "supply current", "Icc", "Idd", "operating current", "except" and per supply-pin group. A device with several
+    domains (core, I/O, PHY, analog, an internal regulator) often tabulates each separately, and a table "excluding"
+    one domain leaves it to another table. Sum every domain at each operating corner and record the table and page of
+    each term in the power budget, with the tables that exclude something named;
   - addresses, strap tables and register semantics (signed vs unsigned, LSB);
   - the layout example and land pattern.
 - Derate: capacitor voltage with margin over the maximum (1.5-2x is common practice) and capacitance read from the DC-bias curve - a higher voltage rating in the same case can lose more; resistor power at 50 % or less; PTC
@@ -190,8 +204,8 @@ preferences folder, written by the plugin's region menu; v1.6.7): the skills' sc
 It reads the sourcing context (`sourcing.json`; its first output line names assembler, region, quantity and date),
 exports the BOM from the schematic and flags parts with no LCSC number, numbers not listed in the region, stock below
 boards x count x (1 + attrition) or below the project's stock policy (unless a named exception covers the part),
-packages below 0402, Extended parts, missing datasheet links and stale derived values (`design-values.json`). Re-run it
-right before ordering - stock moves daily.
+packages below 0402, Extended parts, missing datasheet links, ICs with no datasheet saved in the project and stale
+derived values (`design-values.json`). Re-run it right before ordering - stock moves daily.
 Then check by hand that each LCSC number really is the part
 the symbol means (value, voltage, package, pinout): a valid number can still be the wrong part. Parts with no
 substitute (polarity-marked inductors, specific crystals, modules) need a plan before the order: a second source,

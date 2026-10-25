@@ -35,6 +35,23 @@ via's current, the barrel resistance (about 1.3 mOhm for 0.3 mm / 20 um / 1.6 mm
 rest of the path, and the heat per via (I^2 R, milliwatts). The usual answer: the vias are not the limit; the pour is.
 Uneven sharing (front row takes most) is normal.
 
+## "Is this capacitor close enough?" / "How much inductance is that?"
+
+Answer from `emc.md` "Decoupling": the path from the pin to its nearest capacitor along the copper (track, plane, vias)
+and its inductance estimate. A track over a close plane is a microstrip: its loop inductance per mm is Z0 x sqrt(eps_eff)
+/ c, about 0.2-0.4 nH/mm on an outer layer over a 0.1-0.2 mm prepreg - not the ~1 nH/mm of a wire in free space, which
+overstates it several times and makes every move look worth doing. At the frequency that matters (the IC's edge rate or
+switching harmonics), compare that inductance's impedance with the capacitor's own ESL (0.3-1 nH for 0402-0805) and say
+which dominates. Before recommending a move, compute the new path the same way: if the number barely changes, the move
+is not the fix.
+
+## "Is the impedance right?"
+
+The pack's Zdiff is a closed-form estimate from the measured width and gap; the gap to the nearest pour says whether
+it is too high (a pour at its default clearance makes the pair partly coplanar). The authority is the fab's own
+calculator for its stackup: run it with the as-built width, gap and pour gap (browser automation can drive it), and
+quote its numbers.
+
 ## "Will it get hot?" / "Does the board need more stitching vias for heat?"
 
 Answer from `thermal.md`, in this order. (1) The loss, per corner, and where it is: a battery path's FETs, fuse and

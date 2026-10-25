@@ -96,7 +96,9 @@ Work through these levels in order. `references/interview-guide.md` has the deta
    limits (enclosure lid, tallest part), and assembly side. **Budget the area that is not components** before
    promising a size: edge connectors and solder pads (pitch x count per edge), mounting-hole keepouts, connector
    overhang and mating clearance. Call the size provisional until a placement pass confirms it. Default to all parts on the top side: JLC economic assembly
-   places one side only, and it keeps the order cheap.
+   places one side only, and it keeps the order cheap. Plan the **bring-up test points** here (every rail and ground,
+   with a ground pad nearby) and the **assembly method of each part** (assembled, hand-soldered, not fitted): both are
+   decisions the schematic carries, not afterthoughts at order time (R12).
 6. **Manufacturing.** JLCPCB fab and assembly unless the user says otherwise: economic vs standard assembly, Basic vs
    Extended parts and the per-part loading fee, 0402 as the smallest practical passive, the quantity, and the fact that
    every part must be in stock **in the warehouse region the assembler buys from** (international JLCPCB: LCSC

@@ -23,6 +23,8 @@ ERC with one unrelated warning; this check found it at once. Pair it with schgen
 """
 import argparse, json, os, re, runpy, shutil, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from kicad_locks import cli_run  # noqa: E402
 
 
 def kicad_cli():
@@ -35,8 +37,8 @@ def kicad_cli():
 def netlist_xml(path):
     if path.endswith('.kicad_sch'):
         out = os.path.join(tempfile.mkdtemp(), 'net.xml')
-        subprocess.run([kicad_cli(), 'sch', 'export', 'netlist', '--format', 'kicadxml', '-o', out, path], check=True,
-                       capture_output=True)
+        cli_run([kicad_cli(), 'sch', 'export', 'netlist', '--format', 'kicadxml', '-o', out, path], path, check=True,
+                capture_output=True)
         path = out
     return ET.parse(path).getroot()
 

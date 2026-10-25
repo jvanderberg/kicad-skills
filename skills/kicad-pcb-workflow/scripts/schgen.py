@@ -86,11 +86,12 @@ def body_rect(sym):
 # ---------------------------------------------------------------- schematic
 
 class Part:
-    def __init__(self, sch, lib_id, ref, value, x, y, rot, pins, fields, footprint, in_bom, on_board, dnp, mirror=None):
+    def __init__(self, sch, lib_id, ref, value, x, y, rot, pins, fields, footprint, in_bom, on_board, dnp, mirror=None,
+                 in_pos_files=True):
         self.sch, self.lib_id, self.ref, self.value = sch, lib_id, ref, value
         self.x, self.y, self.rot, self.mirror = snap(x), snap(y), rot, mirror
         self.pins, self.fields, self.footprint = pins, fields, footprint
-        self.in_bom, self.on_board, self.dnp = in_bom, on_board, dnp
+        self.in_bom, self.on_board, self.dnp, self.in_pos_files = in_bom, on_board, dnp, in_pos_files
         self.uuid = None                  # the symbol's uuid, set by Sch.write()
 
     def xf(self, sx, sy):
@@ -155,15 +156,18 @@ class Sch:
     symtext = libsym                      # older name
 
     def add(self, lib_id, ref, value, x, y, rot=0, footprint='', lcsc='', fields=None, in_bom=True, on_board=True,
-            dnp=False, mirror=None):
+            dnp=False, mirror=None, in_pos_files=None):
         """fields: extra properties (hidden). Keys starting with '_' are layout hints: _ref_at, _val_at (x, y),
-        _just, _hide_value, _visible (list of field names shown under the value)."""
+        _just, _hide_value, _visible (list of field names shown under the value).
+        Assembly method per part, decided here and carried to the board by new_board.py: assembled (defaults),
+        hand-soldered (in_bom=False: in_pos_files follows it unless given), not fitted (dnp=True)."""
         t = self.used.get(lib_id) or self.libsym(lib_id)
         self.used[lib_id] = t
         f = dict(fields or {})
         if lcsc:
             f['LCSC'] = lcsc
-        p = Part(self, lib_id, ref, value, x, y, rot, pin_list(t), f, footprint, in_bom, on_board, dnp, mirror)
+        p = Part(self, lib_id, ref, value, x, y, rot, pin_list(t), f, footprint, in_bom, on_board, dnp, mirror,
+                 (in_bom or ref.startswith('#')) if in_pos_files is None else in_pos_files)
         self.parts.append(p)
         return p
 
@@ -312,7 +316,7 @@ class Sch:
         fields = {k: allf[k] for k in extra + list(visible)}
         s = sch.add_symbol(p.lib_id, p.ref, p.value, (p.x, p.y), p.rot, p.mirror, footprint=footprint,
                            datasheet=allf.get('Datasheet', ''), description=desc, fields=fields, in_bom=p.in_bom,
-                           on_board=p.on_board, dnp=p.dnp, lib_fields=('Reference', 'Value', 'Footprint', 'Datasheet', 'Description'))
+                           on_board=p.on_board, dnp=p.dnp, in_pos_files=p.in_pos_files, lib_fields=('Reference', 'Value', 'Footprint', 'Datasheet', 'Description'))
         p.uuid = s.uuid
         rx, ry, vx, vy, ang, just = self._field_spots(p)
         rx, ry = p.fields.get('_ref_at', (rx, ry))

@@ -271,4 +271,9 @@ def starter(cand):
                          'air around the board (inside the enclosure) and define the corners (worst discharge, typical, charging while '
                          'running, ...). See kicad-board-review/scripts/heat.py.',
                 ambient_C=None, h_W_m2K=dict(DEFAULTS['h_W_m2K']), corners={},
-                sources=[dict(ref=r, kind='unknown', why=w) for r, w in sorted(cand.items())], parts={}, pads={})
+                sources=[dict(ref=r, kind='unknown', why=w) for r, w in sorted(cand.items())],
+                # junction estimates need the datasheet's thermal table: one entry per IC / transistor, to fill in (or
+                # delete for a part whose loss turns out negligible)
+                parts={r: dict(psi_jb=None, theta_jc=None, Tj_max_C=None, basis='TODO: datasheet thermal information table (psi_JB or theta_JC, Tj max)')
+                       for r in sorted(cand) if prefix(r) in ('U', 'IC', 'Q')},
+                pads={})

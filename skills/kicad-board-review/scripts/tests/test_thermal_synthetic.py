@@ -119,6 +119,10 @@ def test_synthetic_thermal():
     assert 'no copper on any other layer' in ep[('U1', '4')]['flag'], ep[('U1', '4')]
     u2 = ep[('U2', '9')]
     assert u2['vias_in_pad'] == 4 and u2['recommended'] == 9 and '4 via(s)' in u2['flag'], u2
+    # judged on the solved step (vias beside the pad count; via-in-pad is a decision), not on the rule-of-thumb count
+    assert u2['step_K'] >= 3 and 'solved' in u2['flag'] and 'beside the pad' in u2['flag'] and 'by decision' in u2['flag'], u2
+    # a part with a thermal pad takes its loss there, not spread over every pin
+    assert any(w.startswith('U2: heat placed on its thermal pad 9') for w in T['coverage']['warnings']), T['coverage']['warnings']
     # the pour under U1 reaches B.Cu only through FR4
     pu = [p for p in T['pours'] if p['ref'] == 'U1' and p['net'] == '+5V'][0]
     assert pu['vias'] == 0 and 'FR4' in pu['flag'] and pu['dT_K'] > 10, pu

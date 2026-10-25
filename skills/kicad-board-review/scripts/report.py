@@ -6,7 +6,7 @@ from common import *
 def j(name):
     p = PACK + name
     return json.load(open(p)) if os.path.exists(p) else None
-P, E = j('planes.json'), j('emc.json')
+P, E, I, D = j('planes.json'), j('emc.json'), j('islands.json'), j('decoupling.json')
 runs, not_run = {}, {}
 for f in sorted(glob.glob(PACK + 'power_runs*.json')):
     tag = os.path.basename(f)[len('power_runs'):-5].lstrip('_') or 'default'
@@ -111,7 +111,7 @@ open(PACK + 'power.md', 'w').write('\n'.join(p) + '\n')
 if E:
     C = E.get('coverage', {})
     e = ['# EMC and signal integrity (geometry heuristics)', '', 'Notes: ' + '; '.join(E['notes'].values()), '']
-    e += coverage_lines(C)
+    e += coverage_lines(C, I and I.get('coverage'), D and D.get('coverage'))
     if C:
         cl = C.get('classes', {})
         e += ['## What was classified', '', '- Routed nets per class: ' + ', '.join('%s %d%s' % (c, v['count'], ' (fast)' if c in FAST else '') for c, v in sorted(cl.items())),
@@ -153,7 +153,8 @@ if E:
           'The nearest capacitor is not necessarily the one the datasheet asks for at that pin: compare the value with its typical application.', '',
           'Electrical columns: a 1 A DC solve from the IC pins to the nearest capacitor (ground return / supply side): path resistance, '
           'share of the current that leaves the component layer through vias, share in the busiest via. A short loop whose return '
-          'dives through one via is not a short loop.', '',
+          'dives through one via is not a short loop. Neither column can see a same-net merge (a single-point or quiet ground '
+          'joined to the main pour is legal copper): that is the "Same-net isolation" table below.', '',
           '| IC | Loop | Source | Status | Nearest cap (value, pin-cap mm, area mm^2) | Smallest cap (value, mm) | Gnd return (mOhm, via %, top via %) | Supply side (mOhm, via %, top via %) | Flags |',
           '|---|---|---|---|---|---|---|---|---|']
     def el(d):
@@ -166,9 +167,42 @@ if E:
           el(h.get('gnd_return')), el(h.get('supply_side')), '; '.join(h.get('electrical_flags', [])) or '-') for h in hs] or ['| - | none configured or derived | | | | | | | |']
     e += ['', '### Every capacitor in each loop (IC pin -> cap -> IC ground)', '', '| IC | Loop | Cap | Value | Pin-cap mm | Gnd-cap mm | Loop area mm^2 |', '|---|---|---|---|---|---|---|']
     e += ['| %s | %s | %s | %s | %.2f | %.2f | %.1f |' % (l['ic'], l['loop'], l['cap'], l['cap_value'], l['pin_to_cap_mm'], l['gnd_pin_to_cap_mm'], l['plan_loop_area_mm2']) for l in E['hot_loops']]
+    e += ['', '## Same-net isolation: declared islands (filled copper)', '',
+          'Each island declared in review_config.json "islands" (a single-point or quiet ground, a local pour) on the filled '
+          'copper: one piece, no other pad of its net in it, and no more joins to other layers than allowed. DRC and the '
+          'hot-loop table cannot see a same-net merge; without declarations this check did not run.', '']
+    if I and I['islands']:
+        e += ['| Island | Net | Layer | Status | Area mm^2 | Joins (vias) | Other pads in the piece |', '|---|---|---|---|---|---|---|']
+        e += ['| %s | %s | %s | %s | %s | %s | %s |' % (r['name'], r['net'], r['layer'], r.get('status', ''), r.get('area_mm2', '-'),
+              len(r.get('joins', [])), ', '.join(r.get('other_pads', [])[:8]) or '-') for r in I['islands']]
+    else:
+        e += ['- **NOT CHECKED**: no islands declared (see coverage)']
+    if D:
+        dc = D['coverage']
+        e += ['', '## Decoupling: nearest capacitor per IC supply pin, by copper path', '',
+              'Path along the net\'s own copper from the pin to the nearest capacitor between that net and ground: track length, '
+              'length across a filled plane or pour, via hops, and an inductance estimate (%s). Flag: more than %.1f mm of track, '
+              'or the capacitor\'s ground pad far from a ground via. Pins with no capacitor on their net: %s.' % (
+                  dc['method'], dc['max_mm'], '; '.join(dc['skipped'][:10]) or 'none'), '',
+              '| IC | Pin | Net | Plane? | Nearest cap | Path mm (track / plane / vias) | Est. nH | Caps within limit | Cap gnd via mm | Status |',
+              '|---|---|---|---|---|---|---|---|---|---|']
+        rows = sorted(D['pins'], key=lambda r: (r['status'].startswith('ok'), -(r.get('track_mm') or 0)))
+        e += ['| %s | %s %s | %s | %s | %s %s | %s | %s | %s | %s | %s |' % (r['ic'], r['pin'], r.get('fn', ''), r['net'], 'yes' if r.get('plane') else 'no',
+              r.get('cap', '-'), r.get('cap_value', ''), '%.1f (%.1f / %.1f / %d)' % (r['path_mm'], r['track_mm'], r['plane_mm'], r['via_hops']) if 'path_mm' in r else '-',
+              '%.2f' % r['est_nH'] if 'est_nH' in r else '-', '%s of %s' % (r.get('caps_within', '-'), r.get('caps_on_net', '-')),
+              r.get('cap_gnd_via_mm') if r.get('cap_gnd_via_mm') is not None else '-', r['status']) for r in rows] or ['| - | no IC supply pins | | | | | | | | |']
     e += ['', '## Fast-net inventory', '', '| Net | Class | Pins | Length mm | Per layer | Vias | Z0 (layer@width: ohm) |', '|---|---|---|---|---|---|---|']
     e += ['| %s | %s | %s | %.1f | %s | %d | %s |' % (r['net'], r['cls'], ' '.join(r['pins'][:6]), r['length_mm'], r['per_layer'], r['vias'], r['z0_ohm']) for r in E['fast_nets']]
     if E['diff_pairs']:
-        e += ['', '## Differential pairs', ''] + ['- %s: lengths %s mm, skew %.2f mm' % (' / '.join(d['pair']), d['len_mm'], d['skew_mm']) for d in E['diff_pairs']]
+        e += ['', '## Differential pairs', '', 'Zdiff: edge-coupled microstrip estimate from the measured width and gap (an estimate: confirm '
+              'with the fab\'s impedance calculator for the exact stackup). Pour gap: from the pair\'s edge to the nearest other '
+              'same-layer copper; below about max(2 w, 3 h) the line is partly coplanar and its impedance is lower.', '']
+        for d_ in E['diff_pairs']:
+            e.append('- %s: lengths %s mm, skew %.2f mm%s' % (' / '.join(d_['pair']), d_['len_mm'], d_['skew_mm'],
+                     ', target %g ohm' % d_['target_ohm'] if d_.get('target_ohm') else ''))
+            for g_ in d_.get('geometry', []):
+                e.append('  - %s: w %.3f, gap %.3f, h %.3f mm, coupled %.1f mm: Z0 %.0f, Zdiff %.0f ohm; pour gap min %s / median %s mm%s' % (
+                    g_['layer'], g_['width_mm'], g_['gap_mm'], g_['h_mm'], g_['coupled_mm'], g_['z0_ohm'], g_['zdiff_ohm'],
+                    g_.get('pour_gap_min_mm', '-'), g_.get('pour_gap_median_mm', '-'), ' - **%s**' % g_['flag'] if g_.get('flag') else ''))
     open(PACK + 'emc.md', 'w').write('\n'.join(e) + '\n')
 print('report ok ->', ', '.join(n for n in ('board_overview.md', 'power.md', 'emc.md') if os.path.exists(PACK + n)))

@@ -2,6 +2,8 @@
 # Every script takes the pack directory as its first argument; it must hold board.json (boarddump.py), netlist.json
 # (netdigest.py) and review_config.json (written by hand per board, see assets/review_config.example.json).
 import json, math, re, os, sys, collections
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from interp import need; need('numpy', 'scipy', 'shapely')   # started with plain python3: re-run under the venv
 import numpy as np
 import shapely
 from shapely.geometry import Polygon, LineString, Point, MultiPolygon, box
@@ -138,6 +140,29 @@ if TOPO:
         if c != 'switch': WARN.append('%s is a switch node (%s) but %s classes it "%s": its copper, crosstalk and reference checks use that class' % (n, e['why'], how, c))
     if TOPO.switch_nodes and 'switch' not in FAST: WARN.append('"switch" is not in fast_classes: switch nodes get no crosstalk/reference checks')
 
+# every configured pattern and named object must match something on this board: a pattern for a net name that does
+# not exist leaves the nets it was meant for unclassified, silently (R16)
+_ALL_NETS = set(NETS) | {t['net'] for t in B['tracks']} | {p['net'] for f in B['footprints'] for p in f['pads']}
+for i, r in enumerate(CFG.get('net_classes', [])):
+    rx = _rules[i][0]
+    if not any(rx.search(n) for n in _ALL_NETS if n):
+        WARN.append('net_classes rule %d "%s" (class %s) matched 0 nets: the nets it was written for are unclassified '
+                    '(renamed? typo? sheet prefix "/"?)' % (i + 1, r['match'], r['class']))
+for pr in CFG.get('diff_pairs', []):
+    pr = pr.get('nets', []) if isinstance(pr, dict) else pr
+    gone = [n for n in pr if n not in _ALL_NETS]
+    if gone: WARN.append('diff_pairs %s: %s not on this board - the pair is not checked' % (' / '.join(pr), ', '.join(gone)))
+if TOPO:
+    _cx = collections.defaultdict(set)
+    for n, nodes in NETS.items():
+        for r, *_ in nodes:
+            if TOPO.kind.get(r) == 'connector': _cx[n].add(r)
+    _slow_cx = sorted((n for n in _cx if n and not n.startswith('unconnected-') and cls_how(n)[1] == 'fell through'), key=natkey)
+    if _slow_cx:
+        WARN.append('%d net(s) that reach a connector fell through to "slow" (no reference, crosstalk or edge checks; a cable '
+                    'makes them antennas and ESD entry points): %s - classify each one (its interface speed from the '
+                    'chip\'s datasheet, or "slow_ext" on purpose)' % (len(_slow_cx), ', '.join('%s (%s)' % (n, ','.join(sorted(_cx[n]))) for n in _slow_cx[:20])))
+
 def classification_coverage():
     """per class: the routed nets in it and how they got there; the 'slow' ones are what the SI checks skip"""
     rows = collections.defaultdict(list)
@@ -146,6 +171,40 @@ def classification_coverage():
     for n in sorted({t['net'] for t in B['tracks']}, key=natkey):
         c, how = cls_how(n); rows[c].append(dict(net=n, how=how, track_mm=round(tl[n], 1)))
     return {c: sorted(v, key=lambda r: -r['track_mm']) for c, v in rows.items()}
+
+# ---- transmission-line estimates (closed form; zero-thickness copper over the nearest plane)
+C_MM_NS = 299.792458
+def microstrip(w, h, er=None):
+    """(Z0 ohm, effective permittivity) of a microstrip, Hammerstad"""
+    er = ER if er is None else er
+    u = w / h
+    if u < 1:
+        ee = (er + 1) / 2 + (er - 1) / 2 * ((1 + 12 / u) ** -0.5 + 0.04 * (1 - u) ** 2)
+        return 60 / math.sqrt(ee) * math.log(8 / u + u / 4), ee
+    ee = (er + 1) / 2 + (er - 1) / 2 * (1 + 12 / u) ** -0.5
+    return 120 * math.pi / (math.sqrt(ee) * (u + 1.393 + 0.667 * math.log(u + 1.444))), ee
+def nh_per_mm(w, h, er=None):
+    """loop inductance per mm of a track over its plane: Z0 x sqrt(eps_eff) / c (about 0.2-0.4 nH/mm for outer-layer
+    tracks over a close plane; the free-wire ~1 nH/mm figure overstates it 3-4x)"""
+    z0, ee = microstrip(w, h, er)
+    return z0 * math.sqrt(ee) / C_MM_NS
+def via_nh(span_mm, drill_mm):
+    """partial inductance of a via barrel over span_mm (0.2 h (ln(4h/d) + 1) nH, h and d in mm)"""
+    if span_mm <= 0: return 0.0
+    return 0.2 * span_mm * (math.log(4 * span_mm / drill_mm) + 1)
+def zdiff_edge(z0, s, h):
+    """edge-coupled microstrip differential impedance from the single-ended Z0 (IPC-2141 form)"""
+    return 2 * z0 * (1 - 0.48 * math.exp(-0.96 * s / h))
+def cpwg(w, g, h, er=None):
+    """(Z0, eps_eff) of a grounded coplanar line: width w, gap g to same-layer ground each side, plane h below"""
+    from scipy.special import ellipk
+    er = ER if er is None else er
+    K = lambda k: ellipk(k * k)
+    k1 = w / (w + 2 * g); k1p = math.sqrt(1 - k1 * k1)
+    k3 = math.tanh(math.pi * w / (4 * h)) / math.tanh(math.pi * (w + 2 * g) / (4 * h)); k3p = math.sqrt(1 - k3 * k3)
+    q = K(k3) / K(k3p) * K(k1p) / K(k1)
+    ee = (1 + er * q) / (1 + q)
+    return 60 * math.pi / math.sqrt(ee) / (K(k1) / K(k1p) + K(k3) / K(k3p)), ee
 
 _UNIT = {'p': 1e-12, 'n': 1e-9, 'u': 1e-6, '\u00b5': 1e-6, 'm': 1e-3, '': 1.0, 'k': 1e3, 'M': 1e6}
 def parse_value(s):

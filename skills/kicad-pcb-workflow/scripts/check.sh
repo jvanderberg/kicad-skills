@@ -10,10 +10,11 @@
 # `git archive HEAD | tar -x -C base/`). Then every run lists exactly what the change added.
 # --accept: specific known DRC items exempted by name with a reason (drc_summary.py); they are listed as Accepted.
 # Never filter a whole violation type: that is how real problems of the same type get hidden.
-# Also runs board_lint.py (no courtyard, missing 3D models, silk on part bodies, vias on same-net pads: things DRC does
-# not check), nc_audit.py (unused and strapped pins, written to OUT_DIR/nc.md for the record) and partfields.py (every BOM part
+# Also runs board_lint.py (no courtyard, missing 3D models, silk on part bodies, vias on same-net pads, paste over
+# drilled holes, other-net copper under mounting hardware: things DRC does not check), nc_audit.py (unused and strapped pins, written to OUT_DIR/nc.md for the record) and partfields.py (every BOM part
 # has a datasheet link and a sourcing field, and every schematic field matches the board; exit 1 if not).
 # --save-fill copies the refilled board back over the project's board. Only do that when KiCad is closed, and say so.
+# Every stage's output is deleted before it runs and required after it (R28): a missing one stops the script (exit 3).
 set -euo pipefail
 # the project's board: the one named after its .kicad_pro, else the only .kicad_pcb; never "the first one ls prints"
 pick_board() {
@@ -37,12 +38,21 @@ KICAD_ENV_NO_PY=1 source "$HERE/kicad_env.sh"
 PCB=$(pick_board "$PROJ"); NAME=$(basename "${PCB%.kicad_pcb}")
 python3 "$HERE/sexp.py" check "$PROJ"/*.kicad_sch "$PCB" || echo "!! s-expression problems above: fix these first"
 rsync -a --delete --exclude .git --exclude 'production*' --exclude '*-backups' --exclude '*.lck' "$PROJ/" "$OUT/proj/"
+# kicad-cli can leave lock files in the copy: remove them however this script ends (they are ours, not KiCad's)
+trap 'rm -f "$OUT/proj"/~*.lck' EXIT
+# every stage must produce its own output: delete the previous run's first, and stop at the first stage that did not
+# write one (a report built from a stale or missing file looks like a pass)
+rm -f "$OUT/drc.json" "$OUT/erc.json" "$OUT/net.xml"
+need() { [ -s "$1" ] || { echo "!! $2 failed: no $(basename "$1") (log: ${3:-none}) - stopping, nothing below would be about this board"; exit 3; }; }
 # refill twice: after zone edits the first refill can leave clearance errors that the second clears
 for pass in 1 2; do
   "$KICAD_CLI" pcb drc --refill-zones --save-board --schematic-parity --severity-all --format json -o "$OUT/drc.json" "$OUT/proj/$NAME.kicad_pcb" > "$OUT/drc.log" 2>&1 || true
 done
+need "$OUT/drc.json" "kicad-cli pcb drc" "$OUT/drc.log"
 "$KICAD_CLI" sch erc --severity-all --format json -o "$OUT/erc.json" "$OUT/proj/$NAME.kicad_sch" > "$OUT/erc.log" 2>&1 || true
+need "$OUT/erc.json" "kicad-cli sch erc" "$OUT/erc.log"
 "$KICAD_CLI" sch export netlist --format kicadxml -o "$OUT/net.xml" "$OUT/proj/$NAME.kicad_sch" >/dev/null 2>&1 || true
+need "$OUT/net.xml" "kicad-cli sch export netlist"
 for k in drc erc; do
   args=()
   [ -n "$BASE" ] && [ -f "$BASE/$k.json" ] && args+=(--baseline "$BASE/$k.json")

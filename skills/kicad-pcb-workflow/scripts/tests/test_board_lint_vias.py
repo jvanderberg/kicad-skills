@@ -32,7 +32,7 @@ def test_via_in_same_net_pad():
     b.via((x2 + 1.2, y2), 0.6, 0.3, 'GND')           # clear of every pad: fine
     b.via((110, 100), 0.45, 0.2, 'GND')              # in U1's exposed pad: NOTE
     pcb = os.path.join(d, 'v.kicad_pcb'); b.save(pcb)
-    r = subprocess.run([KICAD_PYTHON, os.path.join(HERE, 'board_lint.py'), pcb, '--no-models', '--no-courtyard', '--no-silk'],
+    r = subprocess.run([KICAD_PYTHON, os.path.join(HERE, 'board_lint.py'), pcb, '--no-models', '--no-courtyard', '--no-silk', '--no-paste'],
                        capture_output=True, text=True)
     lines = r.stdout.splitlines()
     vip = [l for l in lines if l.startswith('VIA IN PAD')]
@@ -40,8 +40,41 @@ def test_via_in_same_net_pad():
     assert any(l.startswith('NOTE') and 'U1.17' in l for l in lines), r.stdout
     assert r.returncode == 1 and '1 problem(s), 1 note(s)' in r.stdout, r.stdout
     r = subprocess.run([KICAD_PYTHON, os.path.join(HERE, 'board_lint.py'), pcb, '--no-models', '--no-courtyard', '--no-silk',
-                        '--no-via-in-pad'], capture_output=True, text=True)
+                        '--no-via-in-pad', '--no-paste'], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout
+
+
+def test_paste_on_holes_and_hardware():
+    """KiCad's own thermal-via QFN puts a paste window over each via drill: PASTE ON HOLE (until the vias are declared
+    filled and capped); a track inside a mounting hole's hardware radius on the back is UNDER HARDWARE, one outside it
+    is not, and a pour of the declared hardware net is not mentioned"""
+    if not (FPLIB and KICAD_PYTHON):
+        print('  (skipped: no KiCad python / footprint library)'); return
+    d = tempfile.mkdtemp()
+    b = Board.new(copper_layers=2)
+    u = b.add_footprint(os.path.join(FPLIB, 'Package_DFN_QFN.pretty', 'QFN-16-1EP_3x3mm_P0.5mm_EP1.45x1.45mm_ThermalVias.kicad_mod'),
+                        'Package_DFN_QFN:QFN-16-1EP_3x3mm_P0.5mm_EP1.45x1.45mm_ThermalVias', 'U1', 'X', (110, 100))
+    for n in [str(i) for i in range(1, 17)]:
+        u.set_pad_net(n, 'SIG%s' % n)
+    u.set_pad_net('17', 'GND')
+    b.add_footprint(os.path.join(FPLIB, 'MountingHole.pretty', 'MountingHole_3.2mm_M3.kicad_mod'), 'MountingHole:MountingHole_3.2mm_M3',
+                    'H1', 'M3', (130, 100))
+    b.segment((127, 97.5), (127, 102.5), 0.2, 'B.Cu', 'SIG1')        # edge 2.9 mm from the hole centre: under a 3.7 mm radius
+    b.segment((135, 95), (135, 105), 0.2, 'F.Cu', 'SIG2')            # 5 mm away: clear
+    pcb = os.path.join(d, 'p.kicad_pcb'); b.save(pcb)
+    base = [KICAD_PYTHON, os.path.join(HERE, 'board_lint.py'), pcb, '--no-models', '--no-courtyard', '--no-silk', '--no-via-in-pad']
+    r = subprocess.run(base, capture_output=True, text=True)
+    lines = r.stdout.splitlines()
+    poh = [l for l in lines if l.startswith('PASTE ON HOLE')]
+    assert len(poh) == 4 and all('U1' in l and 'drill of pad U1.17' in l for l in poh), r.stdout + r.stderr
+    hw = [l for l in lines if l.startswith('UNDER HARDWARE')]
+    assert len(hw) == 1 and 'SIG1' in hw[0] and 'B.Cu' in hw[0] and 'H1' in hw[0], r.stdout
+    assert any(l.startswith('NOTE') and 'paste coverage' in l and 'U1.17' in l for l in lines), r.stdout
+    assert r.returncode == 1, r.stdout
+    r = subprocess.run(base + ['--hardware-r', '2.5'], capture_output=True, text=True)
+    assert not any(l.startswith('UNDER HARDWARE') for l in r.stdout.splitlines()), r.stdout
+    r = subprocess.run(base + ['--vias-filled', 'U1', '--no-hardware'], capture_output=True, text=True)
+    assert 'PASTE ON HOLE' not in r.stdout and r.returncode == 0, r.stdout       # filled and capped by decision
 
 
 if __name__ == '__main__':

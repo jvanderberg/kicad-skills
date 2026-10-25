@@ -45,7 +45,18 @@ what cuts them; tracks on inner layers), `emc.md` (fast nets off their reference
 return vias, edge proximity, switching nodes, hot loops, microstrip Z0, diff pair skew), `thermal.md` (heat-source table
 per corner, board and part temperatures at a low / nominal / high film coefficient next to the board-average check,
 junction estimates, thermal vias per exposed pad, the pour under each hot part, ground stitching and a stitching
-what-if), `drc.md`, plus JSON for all of it.
+what-if), `drc.md`, plus JSON for all of it. `emc.md` also holds the same-net isolation of every declared island
+(`islands.py`), the nearest decoupling capacitor of every IC supply pin by copper path with an inductance estimate
+(`decoupling.py`), and each declared differential pair's impedance estimate with the measured gap to the nearest
+same-layer copper. `netlist.md` ends with pin audits, among them the control lines between ICs that have no pull
+resistor (a reset-state decision per line).
+
+Declare in the config what only the design intent knows: `"islands"` (each single-point or quiet ground and each
+pour that must meet its net only at named points: net, layer, its pads, allowed joins - format in `islands.py`; with
+none, same-net isolation is NOT CHECKED), `"diff_pairs"` with `target_ohm`, `"decoupling"` limits. Every pattern and
+named object in the config must match something: one that matches nothing is a warning in the coverage, and a net that
+reaches a connector and falls through to "slow" is listed by name. The scripts run under the analysis venv and
+`boarddump.py` under KiCad's python; each re-runs itself under the right one (`interp.py`).
 
 Give the config a `"thermal"` section (format in `scripts/heat.py`; example in `assets/review_config.example.json`): the
 ambient around the board, the corners that bound the heat (worst discharge at the lowest source voltage, typical,
@@ -91,6 +102,16 @@ Rank: **Blocker** (board will not work or cannot be built/ordered), **Major** (w
 in production, in compliance testing, or at rated load), **Minor** (margin, cleanliness, cost). Do not inflate; do not
 soften. Mark anything unverified as unverified.
 
+**Numbers come from the model that fits the real geometry, measured now (R29).** Every number in a finding, a fix or a
+design doc is measured from the files as they are at the time of writing, with a model that includes what surrounds
+the item: a track's loop inductance from its microstrip per-length value over its own plane (about 0.2-0.4 nH/mm on an
+outer layer over a close plane; the free-wire ~1 nH/mm overstates it several times), a pair's impedance with the pour
+beside it, a temperature from the solve rather than a via-count rule of thumb. A limit is read from the datasheet of
+the part, not from a general rule. A fix is quantified before and after before it is applied (a relocation that moves
+the number little is not worth its rework). Where a calculator owned by someone else is the authority (the fab's
+impedance calculator for its stackup), run it - browser automation can - and record its numbers. This applies to the
+adversarial reviewer's numbers as much as to yours: check each against the model before acting on it.
+
 **Findings are ranked, and reported as the shape found (R18).** A list where every item looks alike hides the one that
 matters: the pack sorts reference spans into high (over nothing), medium (over another net's plane, with the nearest
 decoupling capacitor) and low (ground pour on both sides, ground edge), and you report in that order. Report the
@@ -107,8 +128,10 @@ reviewers also make mistakes (a short crossing reported as a high crosstalk figu
 
 ## 5. Fix, then prove the fix
 
-Fixes go through the **kicad-pcb-workflow** skill. Afterwards, rebuild the pack on the new board and compare against
-the pack from before the fix: the targeted numbers must improve and nothing else may get worse (drops, copper loss,
+Fixes go through the **kicad-pcb-workflow** skill. Batch the fixes from the review, verify each with a quick check
+aimed at what it changed (DRC, `pour_check.py` for a zone edit, `islands.py` or `decoupling.py` on a rebuilt pack, a
+render; kicad-pcb-workflow R30), then rebuild the full pack once on the new board and compare against the pack from
+before the fix: the targeted numbers must improve and nothing else may get worse (drops, copper loss,
 hotspots, plane slots, inner-layer tracks, reference spans, crosstalk). Report the before/after table. Fixes that were
 not done get an explicit reason (no room, part unavailable, user decision) and a mitigation (firmware limit, docs).
 

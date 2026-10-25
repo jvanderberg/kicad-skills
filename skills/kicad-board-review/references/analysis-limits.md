@@ -36,8 +36,20 @@
   air is roughly 5-10 W/m^2K effective inside a closed box and 10-15 in open air, which is why every temperature is shown
   at a low, nominal and high h. The board average P / (A (h_top + h_bottom)) is exact for any layout; layout only
   changes how far the peak sits above it. Junction temperatures use the datasheet's psi_JB or theta_JC where given;
-  psi_JB was measured on a JEDEC board, so treat Tj as an estimate within several kelvin. Thermal-via counts use a rule
-  of thumb (0.3 mm vias at 1.0 mm pitch) unless `thermal.pads` gives the datasheet's pattern.
+  psi_JB was measured on a JEDEC board, so treat Tj as an estimate within several kelvin. A part's heat enters at its
+  thermal pad or tab when it has one, else at all its pads. Exposed pads are judged on the solved step from the pad to
+  the next layer; the via count against a rule of thumb (0.3 mm vias at 1.0 mm pitch) or `thermal.pads` is a reference.
+- **Same-net isolation** (`islands.py`) is checked only for the islands the config declares, on KiCad's saved fills
+  of the copy; an island's pad list must name every pad that belongs to it (any other pad of the net in the piece is a
+  merge).
+- **Decoupling paths** (`decoupling.py`) follow the net's own copper: tracks with T-joins, vias as their barrel span,
+  and straight lines across a filled piece (a plane path around a slot is longer than that). Inductance: microstrip
+  per-length value per track (closed form over the nearest copper layer) plus via barrels; plane spreading inductance
+  and the capacitor's own mounting are not included. Supply pins are found by pin type, supply-pin name or a power
+  class; an imported symbol with every pin "passive" and odd names can hide one.
+- **Differential pairs**: Zdiff is the closed-form edge-coupled microstrip estimate from the measured median width and
+  gap; the grounded-coplanar figure is a single-ended estimate at the nearest pour gap. Neither replaces a field
+  solver or the fab's calculator; the pour-gap flag says where the edge-coupled number is too high.
 - **Design intent is not in the pack.** The scripts and DRC measure copper and rules, not whether a block follows its
   datasheet layout (single-point grounds, hot-loop parts at the pins) or the intended netlist. Check those against the
   references themselves (datasheet figure, netspec file); kicad-pcb-workflow `checks.md` lists what each check misses.

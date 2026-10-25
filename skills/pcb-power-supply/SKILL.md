@@ -186,8 +186,11 @@ check against `references/layout.md`. In order: input capacitor at the
 pins (the hot loop), then the IC, inductor and output capacitors, then the small-signal parts (feedback, enable,
 soft start) on the quiet side; switch node copper as small as the current allows; feedback taken from the output
 capacitor and routed away from the inductor and switch node; ground pour unbroken under the power stage with vias to
-the plane at the IC's ground and the capacitors' grounds; AGND/PGND joined where the datasheet says; thermal vias in the
-exposed pad.
+the plane at the IC's ground and the capacitors' grounds; AGND/PGND joined where the datasheet says; thermal vias for the
+exposed pad beside it, or in it only as filled-and-capped (or tented) vias by decision, with paste windows that avoid
+every hole. A layout copied from the EVM or a vendor board keeps the copper around the block and its land patterns
+(kicad-pcb-workflow `layout-stages.md`, R27), and each isolation rule (single-point ground, quiet ground) is declared
+to the review pack and proven on the filled copper.
 
 ## 8. Verify
 
