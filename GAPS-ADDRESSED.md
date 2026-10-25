@@ -266,3 +266,141 @@ detected beyond the existing absurd-drop warning.
   single via, and U4's C12 (VCC) at 63 %; not in the review. `docs/layout-refs/*/` has no INDEX.md (`datasheet.py index`).
 - power-design.md s8 and requirements s4: the 5.6 A figure, re-derived with `path_budget.py` and the board's actual
   cell and wiring resistance.
+
+---
+
+# Round 3: heat (a review area with no required output)
+
+Source: the owner looked at minipc-power (commit 947e64b: 52 x 36 mm, 4 layers, closed plastic box, 50 C design
+ambient) after its kicad-board-review, saw almost no stitching vias and asked whether heat had been analysed. It had
+not. Branch `thermal` from origin/main 8dcd3da. As in rounds 1 and 2 the class was fixed, not the instance; minipc-power
+appears only as labelled examples and as the before-case test, run on scratch copies of its git objects (the
+minipc-power repository was not touched).
+
+## What was missed, and the class behind it
+
+- The review never built a heat-source table. The checklist's s2 "Heat sources" was one prose line with no output;
+  `analysis-limits.md` said "No thermal model ... temperature rise needs judgment"; no script produced a number, so the
+  area was passed over without anyone deciding to skip it.
+- The design notes added up converter losses only (about 1.1 W at the 15 W budget). At 15 W from an empty 3.0 V cell
+  the solved battery current is 6.6 A, and the series path - three CSD13202Q2 FETs (10.4 mOhm max at Vgs 3 V, x1.4 hot),
+  the BQ25606 BATFET (19.5 mOhm), the fuse and the copper - dissipates about 3.3 W on the board, three times the
+  converters. The loss was where no tool was looking.
+- The pack had measured poor ground stitching (6 vias within 3 mm of a 174 mm perimeter, edge gaps of 57/42/41/19 mm,
+  two F.Cu ground islands with one via each) and nothing reported it, for EMC or for heat.
+
+| Class | Rule |
+|---|---|
+| A checklist area with no required output and no tool is skipped silently; judgment stands in for a number | **R23 (new)** Every checklist area produces a recorded output; an area without one is reported NOT CHECKED, never as fine |
+| Losses summed where a tool already existed (converters) and not along the series path the operating point flows through | R20, extended from the operating point to its heat |
+| An unknown loss left out of a total instead of shown as unknown | R16 |
+| A measurement filed under one concern only (stitching as EMC, never as a heat path) | R23 (the heat area's output includes the pours and stitching under hot parts) |
+
+## Rules and where each one now lives
+
+| Rule | Canonical statement | Also applied in |
+|---|---|---|
+| R23 Every checklist area produces a recorded output | rev `SKILL.md` s3 ("Every area produces a recorded output") | rev checklist intro and the **Output:** items in s2, s3, s9; `thermal.py` reports "heat NOT CHECKED" as a high finding when no losses are configured; rev SKILL.md s6 (each area's output in the report, NOT CHECKED areas listed); reviewer-brief 4b |
+| R16 (applied) | as round 2 | `heat.py`: every candidate heat source (by structure) is listed, UNKNOWN when it has no entry or no input at a corner; `thermal.md` coverage first |
+| R20 (extended) | psu `SKILL.md` "Operating points are solved" + step 8 "Losses and temperature" | `path_budget.py` prints the path's own loss next to the converters' and writes `--json` for the heat table; rev checklist s2; bat protection-and-safety.md "The battery path is a heat source", verification.md |
+| R2 / R18 (applied) | as before | h, ambient, the board limit and every assumed input are named in the coverage; `thermal.md` "Findings, ranked" (high / medium / info) |
+
+## Gap -> change -> verification
+
+| Part | What changed (files) | How it was verified |
+|---|---|---|
+| Heat-source table | rev `scripts/heat.py` (new): kinds i2r (R x hot factor, current given / from a power run / from `path_budget.py --json`), converter (P_out x (1/eff - 1), inductor share subtracted), linear, fixed, copper (a power run's loss scaled by (I/I_run)^2), path (one row per solved path element with a `ref`), negligible (needs a reason), unknown; per-corner values; candidates by structure (ICs, FETs, inductors, fuses, diodes, beads, resistors <= 1 ohm, power-run ends); groups and conduction vs conversion. Config in `review_config.json` "thermal" (no new file: found by the same projfiles convention; make_pack records where it came from in `.config_source` so relative `path_budget` files resolve). psu `path_budget.py`: `ref`, `off_board`, path loss (on board) vs converter loss per corner, `--json`. topology.py starter config gets a thermal section with every candidate UNKNOWN | Synthetic (below): every loss equals its hand value. psu `test_path_budget.py` new test: path loss = I^2 x R (board share without off-board elements), converter loss, refs in the JSON |
+| Thermal model | rev `scripts/thermal_model.py` (new, pure numpy/scipy): one node per cell per copper layer, copper k t joined only within one net (a clearance gap does not conduct), half the adjacent FR4 in-plane, FR4 through-plane per cell, via barrels between the layers where each lands on its own net, h on both faces, optional part-body nodes. rev `scripts/thermal.py` (new): rasterises the board's copper per net (0.3 mm cells, 3x3 supersampled), places each part's heat on a body node joined to its pads (the board decides which pad takes it), copper loss along each run's own loss map (`fem.py` now returns where the loss sits; `power.py` saves `maps/<run>_loss.npz`), solves every corner at low / nominal / high h, reports the board average P / (A (h_top + h_bottom)) beside the solver's mean, the peak, each part's board temperature and Tj (psi_JB or theta_JC), limits, the bare board's time constant, maps. `make_pack.sh` runs it every time | `tests/test_thermal_model.py` (analytic): uniform plate q/2h exact (rtol 1e-7); point source on a 300 mm copper plate vs Q/(2 pi k t) K0(r/lambda): 0.5 % at r = 3 mm, 0.02-0.3 % at 5-80 mm; FR4 slab drop q d / k exact; one 0.3 mm via over 1.6 mm = 220 K/W, solver within 1 %; energy balance; a body node's heat leaves through the cooled pad only. On minipc and the synthetic board the solver's mean face rise equals P / 2Ah within 0.3 % at every corner and h |
+| Thermal vias and stitching for heat | `thermal.py`: every pad >= 1 mm^2 and >= 2x its footprint's median (exposed pads, drain tabs): vias in and beside it, barrel resistance to the nearest landed plane, the drop at the part's worst loss, the datasheet pattern from `thermal.pads` or a rule of thumb, and "this net has no copper on any other layer" where vias could land on nothing; per hot part, each pour it sits on with its vias, its FR4 and the solved step to the layer below (flagged only where the step is >= 3 K); weakly stitched ground pieces with the parts on them, a heat finding when one carries a hot part; edge stitching as planes.py measured it; a what-if solve with ground vias on a grid wherever the outer ground pour leaves room. `boarddump.py` writes via type names (the enum's numbers differ: THROUGH is 4 in KiCad 10). `rect_dims` moved to `common.py` | Synthetic: a regulator tab on a +5V pour that exists on no other layer (flagged, FR4-only, 76 K step), a QFN pad with 4 vias against 9 (flagged), a FET on a ground island with one via (heat finding), the what-if adds vias. minipc below |
+| Pack, checklist and SKILL text | rev checklist s2 (heat-source table and temperatures as **Output:** items, series path explicitly), s3 (stitching output; stitching for heat), s9 (thermal vias output); analysis-limits.md (the model's limits instead of "no thermal model"); interpreting-results.md ("Will it get hot? / more stitching?"); reviewer-brief 4b; rev SKILL.md s2/s3/s6; example config "thermal"; psu SKILL.md (path loss checkbox; step 8 heat table, battery path called out), psu layout.md s6 (vias move heat only to their own net; the board-average check before layout); bat protection-and-safety.md, verification.md; README tools | Text; every number in an example traced to the minipc run or to arithmetic |
+
+### minipc-power (947e64b), before and after
+
+Pack built with this branch's `make_pack.sh` from a scratch copy of 947e64b (inner copper as the file says, 15.2 um;
+power runs at 17.5 and 35 um, the worse of each used).
+
+**Before** (the review's own `review_config.json`: power runs, no "thermal"): `thermal.md` now says
+`high: heat NOT CHECKED: no losses are configured (20 candidate heat sources UNKNOWN)`, lists D1, F1, J1, L1-L4, LED1,
+Q1-Q6, U1-U6 as UNKNOWN, and reports the stitching the pack had measured and nobody used: 48 ground vias (2.6 per
+cm^2), 6 within 3 mm of the edge on a 174 mm perimeter, gaps 57 / 42 / 41 / 19 mm, two F.Cu ground islands (7.9 and
+3.1 mm^2) with one via each, carrying only capacitors (C18, C1).
+
+**With the thermal inputs the review should have had** (`tests/data/minipc_thermal.json`: datasheet values, the
+WEBENCH efficiencies, the path current solved by `path_budget.py`; assumed values marked):
+
+| Corner | Total | Battery path | Converters (+ inductors) | Charger | Board average rise at h 5 / 7 / 10 | Peak rise (where) at h 7 |
+|---|---|---|---|---|---|---|
+| 15 W from an empty 3.0 V cell (6.6 A solved) | 4.38 W | 3.27 W (Q1-Q3 0.63 W each, BATFET 0.85, F1 0.22 assumed R, copper 0.30) | 0.76 W (+0.23) | - | 234 / 167 / 117 K | 240 K at Q2 |
+| typical 6.5 W, 3.6 V cell (2.05 A) | 0.81 W | 0.32 W | 0.45 W | - | 44 / 31 / 22 K | 39 K at U4 |
+| 9 V in, charging 1.44 A while running | 2.05 W | 0.16 W | 0.45 W | 1.21 W (U2 buck) + 0.16 (L1) | 110 / 78 / 55 K | 106 K at U2 |
+
+- At 50 C ambient: the 15 W empty-cell corner is far past every limit (board average 218 C at h 7; Q1-Q3 Tj about
+  290 C) - the total loss is too much for 19 cm^2 of board in still air, whatever the copper; the bare board's time
+  constant is about 4 min, so a 15 W burst shorter than a minute or two does not reach it. Typical use is fine (board
+  about 80-90 C, every Tj under its limit). Charging while running puts U2 at about 155 C board / 166 C Tj at h 7, past
+  its 110 C thermal regulation: the charge current will fold back in the box. U4, U5, U6 exceed their 125 C recommended
+  Tj in that corner too.
+- Locally, Q1-Q3 sit 61-72 K above the board average at the 15 W corner: their pours (Net-(U3-VSS) 13.2 mm^2,
+  Net-(Q2-D-Pad1) 10.2 mm^2) exist on no other layer, so no via can reach a plane of their net; heat crosses 0.21 mm of
+  prepreg with a solved 15-19 K step. Net-(J3-Pad1) has one via (10 K step).
+- Ground stitching: 64 virtual ground vias at 3 mm pitch change no hot part by more than 0.5 K. On this board the In1
+  ground plane is 0.21 mm under the F.Cu ground pour everywhere, so stitching is not what limits the temperature;
+  the loss, the area and the enclosure are. The edge gaps remain an EMC finding (checklist s3), now reported.
+- Thermal vias: U2 (BQ25606) 9 in the exposed pad, rule 9, ok; U5 (TPS61088-Q1) 8, the datasheet's RHL0020A land
+  pattern (p33) shows 8 x 0.2 mm, ok (the rule of thumb alone would have asked for 10); Q4/Q5 source pads on nets with
+  no copper on other layers (flagged, low: 0.03 W).
+
+The two minipc checks are `tests/test_thermal_minipc.py` (run with `MINIPC_PACK=<pack>`; skipped otherwise, since
+the board lives in another repository).
+
+### Synthetic board (unlike minipc-power)
+
+`tests/test_thermal_synthetic.py`: 80 x 50 mm, 2 layers, 12 V: an LDO (12 -> 5 V at 0.3 A = 2.1 W, linear kind) whose
+tab pour is a net on no other layer, a QFN buck (converter kind, L1's loss subtracted) with 4 of 9 pad vias, a 50 mOhm
+shunt (i2r from a corner current), L1 from `path_budget.py --json` (an off-board cable element ignored), a FET on a
+one-via ground island, an unconfigured diode and a copper run the pack does not have. Every loss matches its hand
+value; D1 and the missing run are UNKNOWN in the table and the coverage; mean face rise = P / 2Ah (0.5 %); low h is
+hotter than nominal, nominal than high; the regulator's Tj is over its limit; the tab, the via shortfall, the
+FR4-only pour and the hot part on the weak island are reported; with no "thermal" section every candidate is UNKNOWN and
+the vias are still measured.
+
+### Test runs
+
+- rev `scripts/tests` (`python3 -m pytest -q tests`): 10 passed, 2 skipped (the minipc tests, without `MINIPC_PACK`);
+  with `MINIPC_PACK` set to the full pack, 12 passed. The analytic model tests run under the analysis venv (plain
+  python3 has no scipy: pytest re-runs the file under it); run directly they report 6/6.
+- psu `scripts/tests`: 4 passed. wf `python3 -m pytest -q kicad_sexpr/tests tests`: 53 passed, 2 skipped (unchanged).
+- End to end: `make_pack.sh` on the scratch project with the thermal section in its `docs/review_config.json` and the
+  path results beside it: 2 min 19 s in all, `thermal.py` about 18 s; via types read by name (no false blind-via
+  warning), path files resolved next to the config, numbers identical to the step-by-step run.
+
+## Left open, and why
+
+- **No enclosure model.** Ambient is the air around the board; the box's own rise and the walls are folded into h. A
+  box model (air node, wall conductance, outside ambient) is the next step if the owner wants absolute numbers.
+- **Heat through wires, cells and screws** is not modelled; on a small board with 18 AWG battery wires it is a real path,
+  so the board numbers are pessimistic. Steady state only (the time constant is reported instead).
+- **Converter input currents per corner** (the inductors' I^2 R) are given by hand in the minipc fixture; the heat
+  table does not derive them from the path's node voltage.
+- **Junction estimates** use psi_JB / theta_JC from the datasheet on the model's pad temperature; parts without either
+  get the board temperature only (said so in the table).
+- **Diagonal tracks** across cells conduct less than they should (4-neighbour grid); pours and planes are unaffected.
+- **Fuse cold resistance** in the minipc fixture is assumed (5 mOhm), marked ASSUMED in the table and the coverage.
+
+## Disagreements with the brief
+
+- **h defaults** are 5 / 7 / 10 W/m^2K (low / nominal / high), inside the brief's 5-10, with open air (10-15) noted.
+- **Edge stitching is not a heat path**: it is reported in `thermal.md` as the pack measured it, labelled as an EMC
+  finding; the heat question about stitching is answered by the pours table and the what-if (on minipc: no effect).
+- **A 0.3 mm via is about 220 C/W at 20 um plating**, slightly above the checklist's old "100-200 C/W"; the checklist now
+  gives both.
+
+## For minipc-power's own docs (not changed here)
+
+- Add the "thermal" section (the fixture is a starting point) and the two path specs to `docs/`, and fix the fuse's cold
+  resistance from the Littelfuse datasheet.
+- power-design.md s8 adds converter losses only; add the battery path (about 3.3 W at the 15 W empty-cell corner).
+- The 15 W budget at an empty cell is not thermally sustainable in a closed box (and trips the BATFET, round 2): a
+  firmware power limit at low cell voltage, a bigger board or airflow. Charging while running will fold back charge
+  current in the box (U2 at its 110 C regulation): expected, but slow charging should be documented.
+- Q1-Q3 pours have no copper of their nets on any other layer: enlarge them, or add B.Cu copper of those nets with vias.
