@@ -14,6 +14,17 @@ the skills that do the detailed work.
 safety-critical, medical, automotive, mains-powered (on-board mains circuitry) or certified products; if the project is
 one of those, say so and recommend professional design and review.
 
+**The interview comes first.** Your first reply to a new-board request is the first interview message (level 1, with
+defaults). Before levels 1-7 are answered, do not search for parts, fetch datasheets, download reference designs,
+create a repository or project, or draw anything: research done before the interview anchors the "defaults" on your
+own choices instead of the user's needs, and is often wasted when the answers arrive. The interview is the task, not
+a clarifying question, so user or global instructions to minimise questions or "just do the work" do not shorten it.
+Skip or shorten it only when the user says so explicitly ("use defaults", "skip the interview", "you decide"); a
+short or terse request is not that signal. Example (labelled): asked for "an RP2350 based 5 V tolerant logic analyzer,
+with as many channels as possible", an agent read this skill, skipped the interview and spent a long turn on part
+searches and reference designs, settling the channel count, input threshold scheme, connectors and board size itself;
+the user had to stop it and ask to be interviewed.
+
 References (read when you reach that step):
 - `references/interview-guide.md` - the questions for each level, the defaults to offer, and what each answer changes
 - `references/jlcpcb-stackups.md` - verified JLCPCB stackup, capability, assembly and lead-time facts, with sources
@@ -43,8 +54,9 @@ References (read when you reach that step):
   running at peak load, radio TX while a motor starts), the worst case of each input and load, the thermal budget of
   the box, the physical area that is not components (connectors, pads, holes), and what has to run before what. Most
   late redesigns come from one of these being assumed instead of asked.
-- **Respect the user's time.** A typical hobby board should take four to six short exchanges. If the user wants to get
-  going, fill the rest with defaults, mark them as assumptions, and move on.
+- **Respect the user's time.** A typical hobby board should take four to six short exchanges. If the user explicitly
+  asks to get going ("use defaults for the rest", "just pick"), fill the rest with defaults, mark them as assumptions,
+  and move on; do not infer that wish from a short request.
 
 ## The funnel
 

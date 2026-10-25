@@ -1,5 +1,9 @@
 # A new design from nothing: project, schematic, board
 
+**Requirements first.** A new board starts with the **kicad-new-board** skill's interview and its
+`docs/requirements.md`. Do not start a schematic until that document exists and the user has agreed it (its status
+line says `agreed`); if it is missing, run the interview first instead of picking the parts and architecture yourself.
+
 kicad-cli cannot create a project, draw a schematic or update a board from a schematic, and pcbnew's python cannot
 set the stackup. These scripts cover that gap. Each one owns one fiddly job (file syntax, escaping, uuids, net names),
 so a generator describes the design and never formats KiCad text itself:
