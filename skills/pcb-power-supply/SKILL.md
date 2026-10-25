@@ -133,10 +133,13 @@ calculations and chosen values in the design doc.
 ## 6. Gather the layout reference pack
 
 Before placing a converter, collect its layout references into the project (e.g. `docs/layout-refs/<part>/`), with a
-README that states the order of authority and names the file and page of each figure:
+README that states the order of authority, and an `INDEX.md` that names the file, source and page of each figure:
 1. **The datasheet's Layout Guidelines text and Layout Example figure** - primary; they win any conflict. Find the pages
    with pcb-part-selection's `datasheet.py find ds.pdf "Layout Example" "Layout Guidelines"` and render them with
-   `datasheet.py page` (record e.g. "datasheet-p35.png = Figure 12-2, layout example").
+   `datasheet.py page ds.pdf 35 datasheet-p35.png --label "Figure 12-2, layout example"`, which writes the INDEX.md
+   row. Render only the pages that hold the figure or text; `datasheet.py index <folder>` fails while any image in the
+   folder has no row (a folder holding p28 and p29 with no note sent a later session to the documentation-support
+   page instead of the layout example).
 2. **The EVM user guide's layout**, if one exists (the datasheet often names the EVM).
 3. **Vendor tool layouts** (WEBENCH's PCB LAYOUT views and its imported EAGLE/Altium board) - reference only: drawn
    around the tool's BOM and a generic stackup.

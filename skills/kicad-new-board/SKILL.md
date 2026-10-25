@@ -135,7 +135,9 @@ Show the user the finished document (or its key tables) and ask for corrections 
    the board from the schematic's netlist with `new_board.py` (outline, layer count), then `board_setup.py --stackup
    <JLC stackup>` for the physical stackup (from `references/jlcpcb-stackups.md`), design rules with margin inside JLC's
    capabilities (0.15 mm track/space, 0.3/0.6 mm vias) and net classes. Draw the board outline and mounting holes from
-   the physical section first, so placement starts inside real limits.
+   the physical section first, so placement starts inside real limits. If the project is generated from scripts,
+   pin the toolchain first (`references/new-design.md` s0: `preflight.py`, `kicad-skills.lock`, `tools/kskills.py`),
+   so every later regeneration uses the same kicad-skills revision and KiCad version.
 2. **Power design** with the **pcb-power-supply** skill, starting from the power budget table.
 3. **Part checks** with the **pcb-part-selection** skill for every candidate before it goes in the schematic.
 4. **Schematic capture and layout** with the **kicad-pcb-workflow** skill (scripted edits, verify, render, look).

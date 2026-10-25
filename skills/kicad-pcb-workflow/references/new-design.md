@@ -15,12 +15,34 @@ so a generator describes the design and never formats KiCad text itself:
 | JLC stackup block, design rules, net classes | `board_setup.py` | python3 |
 | Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely) |
 | Unused and strapped pins as decisions | `nc_audit.py` | python3 |
+| Datasheet typical-application parts vs the schematic | `refparts.py` | python3 |
+| A project's own input files, found one way | `projfiles.py` | python3 |
+| Tools present; kicad-skills revision pinned | `preflight.py`, `skills_rev.py` | python3 |
 | Every BOM part's Datasheet / LCSC present; schematic and board fields equal | `partfields.py check` | python3 |
 
 All of them write through `kicad_sexpr` (no KiCad text is formatted in the scripts), with stable uuids: an unchanged
 design regenerates byte-identical. If you are tempted to write `'(property %s %s ...)' % (...)` in a project
 generator, add what you need to one of these (or to the layer) instead. Hand-written format strings caused a stray `'''` inside a schematic and a duplicated property name on a
 real board; the shared writers assert against both.
+
+## 0. Pin the toolchain
+
+A generated project is only reproducible with the generator revision and KiCad version it was built with (R15, R21).
+At the start, and whenever you deliberately move to a newer kicad-skills:
+1. `scripts/preflight.py --for all` - every tool the scripts need.
+2. Copy `assets/kskills.py` to the project's `tools/` and import it first in every generator: it puts kicad-skills'
+   scripts on `sys.path` (from `KICAD_SKILLS`, default `~/git/kicad-skills`) and stops the build if the checkout is not
+   the pinned commit, has uncommitted changes under `skills/`, or KiCad's version differs.
+3. `scripts/skills_rev.py pin <project>` writes `kicad-skills.lock` (commit and KiCad major.minor); commit it. It
+   refuses a dirty checkout or a commit on no remote branch: a project pinned to an unpublished commit cannot be
+   rebuilt by anyone else. To move to a newer revision: check it out, regenerate, review the diff (`board_diff.py`,
+   `git diff`), then re-pin in the same commit.
+4. Building an older project: `git -C ~/git/kicad-skills worktree add ~/git/kicad-skills-<rev> <rev>` and
+   `KICAD_SKILLS=~/git/kicad-skills-<rev>`; your main checkout stays where it is.
+
+Keep the project's own kicad-skills inputs where `projfiles.py` finds them (`docs/` at the repository root works):
+`pin-decisions.json`, `drc-accept.json`, `field-exemptions.json`, `reference-parts.json`, `review_config.json`,
+`kicad-skills.lock`.
 
 ## 1. Write the circuit down as data first
 

@@ -29,12 +29,16 @@ lists what the scripts cannot see.
 ## 2. Build the analysis pack
 
 ```
-${CLAUDE_SKILL_DIR}/scripts/make_pack.sh <project_dir> <pack_dir>        # writes a starter review_config.json if there is none
-# edit <pack_dir>/review_config.json: net classes (regex -> usb/spi/clock/switch/i2c/...), power runs, hot loops, diff pairs
+${CLAUDE_SKILL_DIR}/scripts/preflight.py --for review                    # every tool the pack needs, before minutes of work
+${CLAUDE_SKILL_DIR}/scripts/make_pack.sh <project_dir> <pack_dir>        # uses the project's review_config.json, or writes
+                                                                         # a STARTER derived from this board's netlist
+# edit <pack_dir>/review_config.json: bus classes (regex -> usb/spi/clock/i2c/analog/...), power runs, diff pairs;
+# check the derived switch nodes and hot loops; delete "starter"; keep it in the project (docs/) for the next review
 ${CLAUDE_SKILL_DIR}/scripts/make_pack.sh <project_dir> <pack_dir> --inner-um 17.5,35    # run in the background: minutes
 ```
 
-It copies the project (never touches the original), refills zones with KiCad, and writes:
+It copies the project (never touches the original), refills zones with KiCad (and says so if DRC failed and the fills
+are stale), and writes:
 `netlist.md` (readable netlist), `board_overview.md` (stackup, copper per layer, vias, widths, parts),
 `power.md` (DC drop, copper loss, current density hotspots, busiest via per power path; ground plane pieces, slots and
 what cuts them; tracks on inner layers), `emc.md` (fast nets off their reference plane, crosstalk, layer changes and
@@ -46,9 +50,18 @@ the ground return of all of them at once, regulator outputs to their loads, long
 `scripts/power.py <pack> --net +12V --source F1:2 --sink J2:1=2.5 ...` prints the drop per sink and the busiest vias.
 `scripts/region.py` and `scripts/view.py` show exactly what copper is where.
 
-Classify every net that matters. Nets that fall through to "slow" are not checked for reference continuity, so a long
-I2C bus running under a noisy high-voltage pour goes unreported. If a bus is slow but long or exposed, give it its own
-class and include it.
+**Roles come from the design's structure; names only override (R17).** `topology.py` derives from the netlist what
+name patterns guess at: ground nets (by IC ground pins), switch nodes (a net where an inductor meets an IC switch pin,
+or an active part with no capacitor to ground - whatever KiCad named it, `Net-(C4-Pad2)` or `U6-L1`), switching ICs,
+the inductor's DC side, and hot-loop candidates (each switching IC's power pins that have a capacitor to ground,
+except the DC side). The analysis uses them whenever the config does not say otherwise, and says when a config rule
+reclasses a derived switch node. Classify the rest (buses, feedback, sense, CC lines) in the config: nets that fall
+through to "slow" are not checked for reference continuity, so a long I2C bus under a noisy pour goes unreported;
+`emc.md` lists them longest first.
+
+**Read the coverage first (R16).** `power.md` and `emc.md` start with "Coverage and warnings": configured items that
+matched nothing, defaults used, derived roles, hot loops not checked, ground nets with no copper. "0 found" under a
+warning is not a pass.
 
 ## 3. Review, area by area
 
@@ -62,6 +75,13 @@ what it costs in board space and risk).
 Rank: **Blocker** (board will not work or cannot be built/ordered), **Major** (works on the bench, fails in the field,
 in production, in compliance testing, or at rated load), **Minor** (margin, cleanliness, cost). Do not inflate; do not
 soften. Mark anything unverified as unverified.
+
+**Findings are ranked, and reported as the shape found (R18).** A list where every item looks alike hides the one that
+matters: the pack sorts reference spans into high (over nothing), medium (over another net's plane, with the nearest
+decoupling capacitor) and low (ground pour on both sides, ground edge), and you report in that order. Report the
+shape the tool measured, not an aggregate: another net's pour inside a ground hole is a pour, each remaining slot has
+its own size, and a branching track corridor is its length and width, not the bounding box of the merged hole
+(minipc-power's B.Cu BAT pour plus nearby tracks once read as a "44.4 x 31.9 mm slot").
 
 ## 4. Adversarial pass
 

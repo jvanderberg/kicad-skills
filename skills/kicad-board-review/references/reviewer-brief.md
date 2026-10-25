@@ -39,6 +39,10 @@ changes and in the analysis you are given, and try hard to find them. Do not sof
    every automated check.
 9. Look hardest at whatever changed most recently (`git diff` against the last commit or the previous review).
 
+10. Read the pack's "Coverage and warnings" and "What was classified" sections first and attack them: nets that fell
+    through to "slow" but carry fast edges or sensitive signals, derived hot loops that are not the datasheet's,
+    configured items that matched nothing, defaults the pack used. An empty table is not evidence until its coverage is.
+
 **Report** (markdown, written to `<pack_dir>/adversarial_review.md`)
 - Blocker / Major / Minor, numbered. Each: what (refdes, net, coordinates), evidence (pack number, datasheet section,
   netlist line, your own solver run), consequence, concrete fix and its cost.

@@ -53,6 +53,14 @@ it and exits 1 on a problem. Example (labelled): minipc-power's 87 BOM parts all
 Datasheet, although JLCImport had written the LCSC link into every imported symbol and every part had an LCSC number:
 the redraw, the placed-symbol writer and the board writer each wrote "" without complaint.
 
+**Tools do not assume their environment (R21).** Scripts resolve every path from their arguments, never from the
+current folder (`board_diff.py HEAD hardware/x.kicad_pcb` works from anywhere), find a project's own inputs by one
+convention (`projfiles.py`: the project folder and its parents up to the repository root, each folder and its
+`docs/`; every caller prints the file it used), pick the board by its `.kicad_pro` name rather than the first file
+listed, and check their dependencies before starting (`preflight.py`). A project that builds with kicad-skills pins
+the exact revision and KiCad version in `kicad-skills.lock` and checks it on every build (`skills_rev.py`,
+`assets/kskills.py`; `references/new-design.md` s0).
+
 ## 0. Before touching anything
 
 1. **Is KiCad open?** Run `${CLAUDE_SKILL_DIR}/scripts/kicad_open.sh <project_dir>`. KiCad keeps its own copy in memory;
@@ -67,7 +75,9 @@ the redraw, the placed-symbol writer and the board writer each wrote "" without 
    board (which layers carry signals, which are planes), and decisions the user already made. A board usually has a
    discipline - e.g. "no signals on inner layers", "all parts on top" - that is not written down anywhere except in the
    copper. Respect it; if your change seems to need breaking it, ask first.
-4. **Baseline the checks** on the unchanged project: `${CLAUDE_SKILL_DIR}/scripts/check.sh <project> <scratch>/base`.
+4. **Preflight**: `${CLAUDE_SKILL_DIR}/scripts/preflight.py --project <project_dir>` - every tool present, and the
+   kicad-skills checkout in use is the revision the project is pinned to.
+5. **Baseline the checks** on the unchanged project: `${CLAUDE_SKILL_DIR}/scripts/check.sh <project> <scratch>/base`.
    Existing warnings the user has accepted are part of the baseline; you will diff against it so you can see exactly
    what your change introduced. Everything new is yours to fix - "it was probably already there" is not a reason.
 
@@ -150,9 +160,11 @@ the redraw, the placed-symbol writer and the board writer each wrote "" without 
 
 ## 4. Copy back, then report
 
-- Diff against the last commit: `python3 ${CLAUDE_SKILL_DIR}/scripts/board_diff.py HEAD <scratch board> --expect
-  x0,y0,x1,y1 ... --expect-refs ... --expect-nets ...`. Everything outside what you meant to change is listed as
-  UNEXPECTED; each one must be explained or reverted before copying back.
+- Diff against the last commit: `python3 ${CLAUDE_SKILL_DIR}/scripts/board_diff.py HEAD:<repo path of the board>
+  <scratch board> --expect x0,y0,x1,y1 ... --expect-refs ... --expect-nets ...` (plain `HEAD` when the scratch copy
+  sits at the board's own path in the repository), and the same for the schematic. Every attribute is compared (fields
+  such as Value and LCSC, pad nets, DNP, models, settings), not only geometry. Everything outside what you meant to
+  change is listed as UNEXPECTED; each one must be explained or reverted before copying back.
 - Check KiCad is still closed and the originals' shasums still match (the user may have edited meanwhile). Copy the
   changed files back, re-run `check.sh` on the real project, delete any `~*.lck` files kicad-cli left behind.
 - Update the design docs the project keeps (as-built values, why decisions were made) in the same change.
