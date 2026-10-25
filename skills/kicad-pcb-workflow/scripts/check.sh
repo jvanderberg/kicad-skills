@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Verify a KiCad project after a change: DRC (with zone refill and schematic parity) and ERC, both run on a COPY so
 # the user's files are not rewritten, summarised and diffed against a baseline.
-#   check.sh PROJECT_DIR OUT_DIR [--baseline BASELINE_OUT_DIR] [--accept ACCEPTED.json] [--save-fill]
+#   check.sh PROJECT_DIR OUT_DIR [--baseline BASELINE_OUT_DIR] [--accept ACCEPTED.json] [--notes PIN_DECISIONS.json]
+#            [--require-notes] [--save-fill]
+# The project's own inputs are found by projfiles.py's convention when not given (drc-accept.json, pin-decisions.json
+# next to the project or in docs/ up to the repository root), and the files used are printed, so this wrapper and the
+# project's own build see the same notes and exemptions.
 # Run it on the unchanged project first to make the baseline (git stash is NOT how: copy HEAD with `git worktree` or
 # `git archive HEAD | tar -x -C base/`). Then every run lists exactly what the change added.
 # --accept: specific known DRC items exempted by name with a reason (drc_summary.py); they are listed as Accepted.
@@ -11,8 +15,13 @@
 # --save-fill copies the refilled board back over the project's board. Only do that when KiCad is closed, and say so.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PROJ="$(cd "$1" && pwd)"; OUT="$2"; shift 2; BASE=""; SAVE=0; ACCEPT=""
-while [ $# -gt 0 ]; do case "$1" in --baseline) BASE="$2"; shift;; --accept) ACCEPT="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift;; --save-fill) SAVE=1;; esac; shift; done
+PROJ="$(cd "$1" && pwd)"; OUT="$2"; shift 2; BASE=""; SAVE=0; ACCEPT=""; NOTES=""; REQ=""
+abspath() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
+while [ $# -gt 0 ]; do case "$1" in --baseline) BASE="$2"; shift;; --accept) ACCEPT="$(abspath "$2")"; shift;;
+  --notes) NOTES="$(abspath "$2")"; shift;; --require-notes) REQ=--require-notes;; --save-fill) SAVE=1;;
+  *) echo "unknown option $1"; exit 2;; esac; shift; done
+[ -n "$ACCEPT" ] || ACCEPT=$(python3 "$HERE/projfiles.py" find "$PROJ" drc-accept.json) || ACCEPT=""
+[ -n "$NOTES" ] || NOTES=$(python3 "$HERE/projfiles.py" find "$PROJ" pin-decisions.json) || NOTES=""
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 KICAD_ENV_NO_PY=1 source "$HERE/kicad_env.sh"
 PCB=$(ls "$PROJ"/*.kicad_pcb | head -1); NAME=$(basename "${PCB%.kicad_pcb}")
@@ -33,9 +42,12 @@ for k in drc erc; do
   awk 'NR > 25 && /^## Accepted/ {f = 1} f' "$OUT/$k.md"     # always show what was exempted
 done
 echo "== board_lint (what DRC does not check)"
-"$KICAD_PYTHON" "$HERE/board_lint.py" "$OUT/proj/$NAME.kicad_pcb" 2>&1 | grep -v 'traits\|wxApp' | tee "$OUT/lint.txt" || true
-python3 "$HERE/nc_audit.py" "$OUT/net.xml" --md "$OUT/nc.md" > /dev/null 2>&1 || true
-[ -f "$OUT/nc.md" ] && echo "== no-connect / strap audit: $(tail -1 "$OUT/nc.md") (table in $OUT/nc.md)"
+"$KICAD_PYTHON" "$HERE/board_lint.py" "$OUT/proj/$NAME.kicad_pcb" 2>&1 | tee "$OUT/lint.txt" || true
+echo "== no-connect / strap audit (every unused, NC-typed or strapped pin needs a datasheet decision)"
+NCARGS=(--md "$OUT/nc.md"); [ -n "$NOTES" ] && NCARGS+=(--notes "$NOTES"); [ -n "$REQ" ] && NCARGS+=("$REQ")
+NCRC=0; python3 "$HERE/nc_audit.py" "$OUT/net.xml" "${NCARGS[@]}" > /dev/null 2> "$OUT/nc.log" || NCRC=$?
+cat "$OUT/nc.log"
+if [ -f "$OUT/nc.md" ]; then echo "$(tail -1 "$OUT/nc.md") (table in $OUT/nc.md)"; else echo "!! nc_audit.py failed (exit $NCRC): no pin audit"; fi
 python3 - "$OUT/drc.json" <<'E'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -46,3 +58,4 @@ if [ "$SAVE" = 1 ]; then
   "$HERE/kicad_open.sh" "$PROJ" >/dev/null || { echo "KiCad is open: not copying the refilled board back"; exit 1; }
   cp "$OUT/proj/$NAME.kicad_pcb" "$PCB"; echo "refilled board copied back to $PCB"
 fi
+[ "$NCRC" = 0 ] || exit "$NCRC"
