@@ -12,8 +12,11 @@ What it does for you (each one was a real DRC failure on a hand-written router):
 - Nets come from the pads, never typed: a track that touches pads of two nets raises an error.
 - Every new via is checked before it is accepted: copper clearance to other nets (pads, tracks, vias, existing and
   new), hole-to-hole distance to EVERY drilled hole whatever its net (vias and pad drills), and the board edge.
-  Same-net copper is skipped for clearance but never for hole-to-hole: a stitching pass that drops a via onto a
-  hand-placed via of the same net is a hole_to_hole DRC error at 0.000 mm.
+  Same-net copper is skipped for clearance - and only for clearance. Hole-to-hole applies whatever the net (a
+  stitching pass that drops a via onto a hand-placed via of the same net is a hole_to_hole DRC error at 0.000 mm),
+  and so does "no via on a pad": a via inside or touching a same-net pad passes DRC and the clearance check, and an
+  unfilled via there wicks solder out of that joint. Intended via-in-pad (thermal vias in an exposed pad) is named:
+  in_pad=('U5', '21') on via() / via_field(); have the fab fill or tent those.
 - Every new track segment is checked against other-net copper on its layer and the board edge; problems are logged
   as VIOLATION (the coordinates are yours, so it does not move them) and make the CLI exit 1.
 - Zone fills are not checked (KiCad refills them); DRC (check.sh) stays the authority.
@@ -27,6 +30,7 @@ Library:
   r.track('F.Cu', 0.3, ('U2', '1'), (115.0, 121.0), ('C2', '1'))      # pads and (x, y) points, net from the pads
   r.track('B.Cu', 0.2, (1, 2), (3, 2), net='EN')                       # no pad on it: give the net
   r.via((x, y), 'GND')                          # checked; returns False and logs REJECTED if it does not fit
+  r.via_field('GND', x0, y0, x1, y1, pitch=1.0, in_pad=('U5', '21'))   # thermal vias in U5's exposed pad, on purpose
   r.via_near('C5', '2')                         # closest legal spot to a pad edge, plus a short link track
   r.via_field('GND', x0, y0, x1, y1, pitch=1.0) # grid of vias, skipping spots that fail a check
   r.zone(net, layer, pts, prio=10, name='VBUS_IN'); r.rect(net, layer, x0, y0, x1, y1)
@@ -91,7 +95,7 @@ def _polys(pl):
 
 class Router:
     def __init__(self, board_json, clearance=None, hole_to_hole=None, edge_clearance=None, via_gap=0.1,
-                 via_size=0.6, via_drill=0.3):
+                 via_size=0.6, via_drill=0.3, via_pad_gap=0.05):
         self.B = json.load(open(board_json)) if isinstance(board_json, str) else board_json
         pro = load_project(self.B)
         rules = pro.get('board', {}).get('design_settings', {}).get('rules', {})
@@ -102,6 +106,7 @@ class Router:
         self.hole_to_hole = hole_to_hole if hole_to_hole is not None else rules.get('min_hole_to_hole', 0.25)
         self.edge_clearance = edge_clearance if edge_clearance is not None else rules.get('min_copper_edge_clearance', 0.3)
         self.via_gap = via_gap          # copper gap between any two vias, same net included (taste, not a DRC rule)
+        self.via_pad_gap = via_pad_gap  # copper gap between a via and any pad it is not meant to be in, same net included
         self.via_size, self.via_drill = via_size, via_drill
         self.layers = self.B['layers']
         edge = unary_union(_polys(self.B.get('edge', [])))
@@ -173,7 +178,38 @@ class Router:
                 out.append(dict(it, gap=d, need=need))
         return out
 
-    def via_problem(self, pt, net, size=None, drill=None, clearance=None):
+    @staticmethod
+    def _pad_keys(in_pad):
+        """in_pad: None, ('U5', '21'), or a list of such -> set of (ref, num)"""
+        if not in_pad:
+            return set()
+        if isinstance(in_pad[0], str):
+            in_pad = [in_pad]
+        return {(r, str(n)) for r, n in in_pad}
+
+    def pad_problem(self, pt, net, size=None, in_pad=None):
+        """None, or the same-net pad this via would sit on or touch (other-net pads are the clearance check's job).
+        DRC and the clearance check both pass such a via; the joint loses its solder down the barrel."""
+        size = size or self.via_size
+        ok = self._pad_keys(in_pad)
+        c = Point(pt).buffer(size / 2 + self.via_pad_gap, 16)
+        x0, y0, x1, y1 = c.bounds
+        for key, lst in self.pads.items():
+            if key in ok:
+                continue
+            for p in lst:
+                if p['net'] != net or not p['layers']:
+                    continue
+                b = p['geom'].bounds
+                if b[0] > x1 or b[2] < x0 or b[1] > y1 or b[3] < y0:
+                    continue
+                if c.intersects(p['geom']):
+                    return ('on or within %.2f mm of same-net pad %s.%s: an open via in a pad wicks solder from the joint '
+                            '(intended via-in-pad, e.g. thermal vias in an exposed pad: in_pad=(%r, %r), filled or tented)'
+                            % (self.via_pad_gap, key[0], key[1], key[0], key[1]))
+        return None
+
+    def via_problem(self, pt, net, size=None, drill=None, clearance=None, in_pad=None):
         """None if a via fits here, else the reason"""
         size, drill = size or self.via_size, drill or self.via_drill
         c = Point(pt)
@@ -183,6 +219,9 @@ class Router:
             gap = math.dist((x, y), pt) - (d + drill) / 2
             if gap < self.hole_to_hole:
                 return 'hole-to-hole %.3f mm to %s (min %.2f)' % (max(gap, 0), what, self.hole_to_hole)
+        why = self.pad_problem(pt, net, size, in_pad)
+        if why:
+            return why
         for at, s in self.old_vias + [(v['at'], v['size']) for v in self.vias]:
             if math.dist(at, pt) < (s + size) / 2 + self.via_gap:
                 return 'copper overlaps / within %.2f mm of the via at %s' % (self.via_gap, tuple(at))
@@ -236,10 +275,10 @@ class Router:
         self._add(net, self.layers, Point(pt).buffer(size / 2, 16))
         return pt
 
-    def via(self, pt, net, size=None, drill=None, check=True, quiet=False, clearance=None):
+    def via(self, pt, net, size=None, drill=None, check=True, quiet=False, clearance=None, in_pad=None):
         size, drill = size or self.via_size, drill or self.via_drill
         if check:
-            why = self.via_problem(pt, net, size, drill, clearance)
+            why = self.via_problem(pt, net, size, drill, clearance, in_pad)
             if why:
                 if not quiet:
                     self.rejected += 1
@@ -278,13 +317,13 @@ class Router:
         self.log.append('REJECTED via_near %s.%s (%s): no legal spot within %.1f mm' % (ref, num, net, max_r))
         return None
 
-    def via_field(self, net, x0, y0, x1, y1, pitch=1.0, size=None, drill=None):
+    def via_field(self, net, x0, y0, x1, y1, pitch=1.0, size=None, drill=None, in_pad=None):
         n = skipped = 0
         y = y0
         while y <= y1 + 1e-6:
             x = x0
             while x <= x1 + 1e-6:
-                if self.via((x, y), net, size, drill, quiet=True):
+                if self.via((x, y), net, size, drill, quiet=True, in_pad=in_pad):
                     n += 1
                 else:
                     skipped += 1

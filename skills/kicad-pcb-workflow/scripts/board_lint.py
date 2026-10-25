@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Checks KiCad's DRC does not make. Run with KiCad's bundled python ($KICAD_PYTHON, from kicad_env.sh):
-  $KICAD_PYTHON board_lint.py BOARD.kicad_pcb [--no-models] [--no-silk] [--no-courtyard]
+  $KICAD_PYTHON board_lint.py BOARD.kicad_pcb [--no-models] [--no-silk] [--no-courtyard] [--no-via-in-pad]
 
 - footprints without a courtyard: DRC's courtyards_overlap cannot see them, so they can sit on top of other parts;
 - 3D models whose file does not exist (${KICAD10_3DMODEL_DIR}, ${KIPRJMOD} and other variables expanded from the
@@ -9,8 +9,13 @@
 - silkscreen text over another footprint's body (the extent of its F.Fab graphics and pads) on the same side:
   DRC checks silk against pads, other silk and the board edge, not against component bodies, so a label printed
   under a part passes DRC and disappears once the part is fitted. Touching a courtyard's clearance margin is not
-  reported; overlaps of less than --min-overlap (0.1 mm) in either direction are ignored.
-Exit 1 if anything is found. It does not replace looking at a 3D render and a silk render.
+  reported; overlaps of less than --min-overlap (0.1 mm) in either direction are ignored;
+- vias on or touching a pad of their own net: DRC and every clearance check skip same-net copper, so a via dropped into
+  a neighbouring pad of the same net (FET source pins side by side, a decoupling cap's ground pad) passes, and the
+  open barrel wicks solder out of that joint. Pads that are exposed / thermal pads (>= 1 mm^2 and >= 2x their
+  footprint's median pad area) are listed as NOTE lines, not problems: vias there are usually intended, and the fab
+  order must say filled / tented (or the paste wicks the same way).
+Exit 1 if anything is found (NOTE lines do not count). It does not replace looking at a 3D render and a silk render.
 """
 import argparse, json, os, re, sys
 
@@ -77,10 +82,43 @@ def bodies(f):
     return [(min(r[0] for r in rs), min(r[1] for r in rs), max(r[2] for r in rs), max(r[3] for r in rs))]
 
 
+def vias_in_pads(b, fps):
+    """(problems, notes): vias whose copper touches a pad of their own net (other nets are DRC's clearance check)"""
+    vias = [v for v in b.GetTracks() if isinstance(v, pcbnew.PCB_VIA)]
+    probs, inexp = [], {}
+    for f in fps:
+        pads = list(f.Pads())
+        areas = sorted(MM(p.GetSize().x) * MM(p.GetSize().y) for p in pads)
+        med = areas[len(areas) // 2] if areas else 0
+        for p in pads:
+            if not p.GetNetname() or p.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH:
+                continue
+            area = MM(p.GetSize().x) * MM(p.GetSize().y)
+            exposed = area >= 1.0 and len(pads) > 2 and area >= 2 * med
+            for v in vias:
+                if v.GetNetname() != p.GetNetname():
+                    continue
+                if not any(v.IsOnLayer(L) for L in p.GetLayerSet().CuStack()):
+                    continue
+                if p.HitTest(v.GetPosition(), int(v.GetWidth(pcbnew.F_Cu) / 2) if hasattr(v, 'GetWidth') else 0):
+                    x, y = MM(v.GetPosition().x), MM(v.GetPosition().y)
+                    if exposed:
+                        inexp.setdefault((f.GetReference(), p.GetNumber()), []).append((x, y))
+                    else:
+                        where = 'centre on' if p.HitTest(v.GetPosition(), 0) else 'annular ring overlaps'
+                        probs.append('VIA IN PAD    via (%s) at (%.2f, %.2f): %s pad %s.%s of its own net - no solder-mask web '
+                                     'between them, the open barrel wicks solder from the joint; move it off the pad (or make it '
+                                     'a filled via-in-pad on purpose)' % (v.GetNetname(), x, y, where, f.GetReference(), p.GetNumber()))
+    notes = ['NOTE          %d via(s) in exposed pad %s.%s (thermal vias?): order them filled or tented, or the paste wicks away' % (
+        len(v), r, n) for (r, n), v in sorted(inexp.items())]
+    return probs, notes
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('board'); ap.add_argument('--no-models', action='store_true'); ap.add_argument('--no-silk', action='store_true')
     ap.add_argument('--no-courtyard', action='store_true'); ap.add_argument('--min-overlap', type=float, default=0.1)
+    ap.add_argument('--no-via-in-pad', action='store_true')
     a = ap.parse_args()
     b = load_board(a.board)
     fps = list(b.GetFootprints())
@@ -123,9 +161,13 @@ def main():
                 if any(overlap(tb, bx, a.min_overlap) for bx in bxs):
                     probs.append('SILK ON PART  "%s"%s on %s at (%.2f, %.2f) lies on the body of %s' % (
                         s, ' (of %s)' % owner if owner else '', b.GetLayerName(layer), (tb[0] + tb[2]) / 2, (tb[1] + tb[3]) / 2, ref))
-    for p in probs:
+    notes = []
+    if not a.no_via_in_pad:
+        vp, notes = vias_in_pads(b, fps)
+        probs += vp
+    for p in probs + notes:
         print(p)
-    print('%d footprints checked: %d problem(s)' % (len(fps), len(probs)))
+    print('%d footprints checked: %d problem(s)%s' % (len(fps), len(probs), ', %d note(s)' % len(notes) if notes else ''))
     sys.exit(1 if probs else 0)
 
 
