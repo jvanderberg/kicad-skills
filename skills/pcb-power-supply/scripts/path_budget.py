@@ -2,7 +2,7 @@
 """Solve a power path's operating point with the source's and the path's own resistance, at every corner, and
 compare the result with every element's limit - latching ones first.
 
-  path_budget.py PATH.json [--md out.md]
+  path_budget.py PATH.json [--md out.md] [--json out.json]
 
 A design current written as P / (eff x V_source) assumes an ideal source and a zero-ohm path. A real path (cell or
 cable resistance, protector FETs, fuse, charger BATFET, copper, connectors, wires) lowers the voltage at the load, and
@@ -29,6 +29,13 @@ PATH.json:
   P_max (watts in that element), latches (what it takes to recover: these are listed first). Transients add C x dV/dt (or "I_add") for duration_s.
 Output: per corner the current, the node voltage, every element's current/dissipation against its limits, the
 largest load power that crosses no limit at that corner, and the lowest source voltage that carries the full load.
+Each corner also shows the series path's own loss (every element's I^2 R, source excluded; in brackets the part of it
+on the board, without elements marked "off_board") next to the converters'
+loss (P_out x (1/eff - 1)): in a low-voltage battery path the series loss is often the larger heat source.
+"ref" on an element (one refdes, or a list sharing its R equally) names the board part that dissipates it, and
+"off_board": true marks one that is not on the board (cell, wires, cable); --json
+writes every corner's rows with those refs, which kicad-board-review's heat table (heat.py, "path_budget" currents)
+reads, so the review's heat sources come from the same solved operating point.
 Exit status 1 if any limit is crossed or the operating point does not exist.
 """
 import argparse, itertools, json, math, os, sys
@@ -75,7 +82,7 @@ def evaluate(spec, scale=1.0, Vsrc=None, Rset=None, extra_I=0.0, duration=None):
     fails, rows = [], []
     for el in spec['path']:
         r = Rset[el['name']]
-        rows.append(dict(name=el['name'], R_mohm=r * 1e3, I=I, P_W=I * I * r))
+        rows.append(dict(name=el['name'], ref=el.get('ref'), run=el.get('from_power_run'), off_board=bool(el.get('off_board')), R_mohm=r * 1e3, I=I, P_W=I * I * r))
         for lim in el.get('limits', []):
             if duration is not None and (lim.get('continuous') or (lim.get('t_trip_s') is not None and duration < lim['t_trip_s'])):
                 continue                                  # a continuous rating or a slower trip does not see a short pulse
@@ -88,7 +95,10 @@ def evaluate(spec, scale=1.0, Vsrc=None, Rset=None, extra_I=0.0, duration=None):
         if Vn < lim['V_min']:
             fails.append(('node %.2f V < %s %.2f V%s' % (Vn, lim['what'], lim['V_min'], ' -> LATCHES: %s' % lim['latches'] if lim.get('latches') else ''),
                           bool(lim.get('latches'))))
-    return dict(I=I, V_node=Vn, rows=rows, fails=fails)
+    path_W = sum(r['P_W'] for r in rows if not r['name'].startswith('source '))
+    board_W = sum(r['P_W'] for r in rows if not r['name'].startswith('source ') and not r['off_board'])
+    conv_W = scale * sum(l['P_out'] * (1 / l.get('eff', 1.0) - 1) for l in spec['loads'] if 'P_out' in l)
+    return dict(I=I, V_node=Vn, rows=rows, fails=fails, path_loss_W=path_W, path_loss_board_W=board_W, converter_loss_W=conv_W)
 
 
 def bisect(f, lo, hi, n=50):
@@ -138,15 +148,16 @@ def report(spec, res):
     L = ['# Path budget: %s' % spec.get('name', ''), '',
          'Loads: %s. Naive current P/(eff x V) ignores the path; the rows below solve I x (V - I R) = P.' % ', '.join(
              '%s %s' % (l['name'], '%.2f W out at %.0f %%' % (l['P_out'], 100 * l.get('eff', 1)) if 'P_out' in l else '%.3f A' % l['I']) for l in spec['loads']), '',
-         '| Source | R corner | R total mOhm | Naive I (A) | Solved I (A) | Node V | Max load W at this corner | Min source V for full load | Result |',
-         '|---|---|---|---|---|---|---|---|---|']
+         '| Source | R corner | R total mOhm | Naive I (A) | Solved I (A) | Node V | Path loss W (on board) | Converter loss W | Max load W at this corner | Min source V for full load | Result |',
+         '|---|---|---|---|---|---|---|---|---|---|---|']
     bad = 0
     for r in res:
         fails = sorted(r['fails'], key=lambda f: not f[1])
         bad += bool(fails)
-        L.append('| %s %.2f V | %s | %.1f | %.2f | %s | %s | %.1f | %s | %s |' % (
+        L.append('| %s %.2f V | %s | %.1f | %.2f | %s | %s | %s | %s | %.1f | %s | %s |' % (
             r['source'], r['V'], r['R_corner'] or '-', r['R_total_mohm'], naive / r['V'],
-            '%.2f' % r['I'] if 'I' in r else '-', '%.2f' % r['V_node'] if 'V_node' in r else '-', r['P_out_max'],
+            '%.2f' % r['I'] if 'I' in r else '-', '%.2f' % r['V_node'] if 'V_node' in r else '-',
+            '%.2f (%.2f)' % (r['path_loss_W'], r['path_loss_board_W']) if 'path_loss_W' in r else '-', '%.2f' % r['converter_loss_W'] if 'converter_loss_W' in r else '-', r['P_out_max'],
             '%.2f' % r['V_src_min'] if r['V_src_min'] else '-',
             r.get('collapse') or ('; '.join(('**' + f + '**') if latch else f for f, latch in fails) or 'ok')))
     if any(r['transients'] for r in res):
@@ -171,14 +182,20 @@ def report(spec, res):
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('path'); ap.add_argument('--md')
+    ap = argparse.ArgumentParser(); ap.add_argument('path'); ap.add_argument('--md'); ap.add_argument('--json')
     a = ap.parse_args()
+    md, js = [os.path.abspath(p) if p else None for p in (a.md, a.json)]
     spec = json.load(open(a.path))
     os.chdir(os.path.dirname(os.path.abspath(a.path)))      # from_power_run paths are relative to the spec file
-    txt, bad = report(spec, solve(spec))
+    res = solve(spec)
+    txt, bad = report(spec, res)
     print(txt)
-    if a.md:
-        open(a.md, 'w').write(txt + '\n')
+    if md:
+        open(md, 'w').write(txt + '\n')
+    if js:
+        keep = ('source', 'V', 'R_corner', 'R_total_mohm', 'I', 'V_node', 'collapse', 'rows', 'path_loss_W', 'path_loss_board_W', 'converter_loss_W', 'P_out_max', 'V_src_min')
+        json.dump(dict(name=spec.get('name', ''), spec=os.path.abspath(os.path.basename(a.path)),
+                       corners=[dict({k: r[k] for k in keep if k in r}, fails=[f for f, _ in r['fails']]) for r in res]), open(js, 'w'), indent=1)
     sys.exit(1 if bad else 0)
 
 

@@ -47,6 +47,24 @@ def test_cli_and_power_run_copper():
     assert r.returncode == 1 and '| copper | 10.0 |' in r.stdout and 'LATCHES' in r.stdout, r.stdout[-1500:]
 
 
+def test_path_loss_and_json_for_the_heat_table():
+    d = tempfile.mkdtemp()
+    spec = {'name': 'cell to converters', 'source': {'name': 'cell', 'V': {'empty': 3.0}, 'R': 0.02},
+            'path': [{'name': 'wires', 'R': 0.01, 'off_board': True}, {'name': 'FETs', 'ref': ['Q1', 'Q2'], 'R': 0.02},
+                     {'name': 'fuse', 'ref': 'F1', 'R': 0.005}],
+            'loads': [{'name': 'boost', 'P_out': 10.0, 'eff': 0.9}]}
+    json.dump(spec, open(os.path.join(d, 'p.json'), 'w'))
+    r = subprocess.run([sys.executable, os.path.join(HERE, 'path_budget.py'), os.path.join(d, 'p.json'), '--json', os.path.join(d, 'o.json')], capture_output=True, text=True)
+    out = json.load(open(os.path.join(d, 'o.json')))
+    c = out['corners'][0]
+    I = c['I']
+    assert abs(c['path_loss_W'] - I * I * 0.035) < 1e-9 and abs(c['path_loss_board_W'] - I * I * 0.025) < 1e-9, c
+    assert abs(c['converter_loss_W'] - 10.0 * (1 / 0.9 - 1)) < 1e-9, c
+    rows = {x['name']: x for x in c['rows']}
+    assert rows['FETs']['ref'] == ['Q1', 'Q2'] and rows['wires']['off_board'] and not rows['fuse']['off_board'], rows
+    assert 'Path loss W (on board)' in r.stdout, r.stdout[:800]
+
+
 if __name__ == '__main__':
     fails = 0
     for k, f in sorted(globals().items()):
