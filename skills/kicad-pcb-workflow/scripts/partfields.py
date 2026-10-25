@@ -147,9 +147,12 @@ def check(sch, pcb=None, require=('Datasheet', 'LCSC|MPN'), accept=None, online=
             if ref and not ref.startswith(('H', 'MH', 'LOGO', 'G', 'REF')):
                 info.append('%s: on the board, not in the schematic' % ref)
     if online:
-        problems += check_links(bom)
+        problems += check_links(bom); info += notes
     n_ds = sum(not blank(e['fields'].get('Datasheet')) for e in bom.values())
     return dict(parts=len(bom), with_datasheet=n_ds, problems=problems, exempt=exempt, info=info)
+
+
+notes = []
 
 
 def check_links(bom):
@@ -175,7 +178,13 @@ def check_links(bom):
             out.append('%s Datasheet: %s does not load (%s)' % (ref, url, txt))
         elif kind == 'html':
             names = [f.get(k, '') for k in SOURCING + ('Value',)]
-            if not any(n and len(n) > 2 and n.lower() in txt.lower() for n in names):
+            an = lambda x: re.sub(r'[^0-9a-z]', '', x.lower())
+            dev = [re.match(r'[a-z]+\d+', an(n)) for n in names if n]
+            named = any(n and len(n) > 2 and an(n) in an(txt) for n in names) or any(m and len(m.group(0)) >= 6 and m.group(0) in an(txt) for m in dev)
+            lc = lcsc_number(f)
+            if lc and lc in url and txt:
+                notes.append('%s: %s opens "%s" (the LCSC page of %s)' % (ref, url, txt[:70], lc))   # tied to the part's own LCSC number
+            elif not named:
                 out.append('%s Datasheet: %s is a page titled "%s", which names none of %s' % (ref, url, txt, [n for n in names if n]))
     return out
 

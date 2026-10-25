@@ -47,10 +47,11 @@ def _schematic(d):
     s.lib('W', lib)
     u1 = s.add('W:LDO', 'U1', 'LDO', 76.2, 63.5, footprint='Package_TO_SOT_SMD:SOT-23-5', lcsc='C1')
     c1 = s.add('Device:C', 'C1', '1u', 55.88, 68.58, footprint='Capacitor_SMD:C_0402_1005Metric',
-               fields={'Voltage': '25V', '_visible': ['Voltage']})
-    r1 = s.add('Device:R', 'R1', '10k', 99.06, 68.58, footprint='Resistor_SMD:R_0402_1005Metric')
-    r2 = s.add('Device:R', 'R2', '100k', 106.68, 80.01, footprint='Resistor_SMD:R_0402_1005Metric')
-    q1 = s.add('W:NFET', 'Q1', 'NFET', 116.84, 76.2, footprint='Package_TO_SOT_SMD:SOT-23')
+               lcsc='C52923', fields={'Voltage': '25V', '_visible': ['Voltage']})
+    r1 = s.add('Device:R', 'R1', '10k', 99.06, 68.58, footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25744')
+    r2 = s.add('Device:R', 'R2', '100k', 106.68, 80.01, footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25741')
+    q1 = s.add('W:NFET', 'Q1', 'NFET', 116.84, 76.2, footprint='Package_TO_SOT_SMD:SOT-23',
+              fields={'Datasheet': 'https://www.example.com/nfet.pdf'})   # every BOM part carries a datasheet (R22)
     vin, en = u1.p('VIN'), u1.p('EN')
     s.wire(vin, (55.88, vin[1]), c1.p(1))
     s.wire(en, (60.96, en[1]), (60.96, vin[1]))
