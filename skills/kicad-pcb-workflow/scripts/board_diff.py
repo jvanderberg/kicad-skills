@@ -1,95 +1,251 @@
 #!/usr/bin/env python3
-"""What changed between two versions of a board, grouped so a human can check it was all intended.
+"""What changed between two versions of a board (or schematic), grouped so a human can check it was all intended.
 
   board_diff.py OLD.kicad_pcb NEW.kicad_pcb [--expect x0,y0,x1,y1 ...] [--expect-refs R1,R2,...] [--expect-nets N1,N2]
-  board_diff.py HEAD NEW.kicad_pcb ...        # OLD may be a git revision of the board in the current repo
+  board_diff.py HEAD NEW.kicad_pcb ...          # OLD = the same file in a git revision (any folder, any cwd)
+  board_diff.py HEAD:hardware/x.kicad_pcb NEW   # an explicit path in a revision (repo-root relative, or ./ relative
+                                                # to the current folder, as git takes it)
+  board_diff.py HEAD NEW.kicad_sch ...          # schematics: symbols by reference, then everything else
 
-Lists footprints added / removed / moved / swapped, copper (tracks, arcs, vias) only in OLD or only in NEW grouped by
-net, layer and area, zones whose outline changed, and board text/graphics that moved. Anything outside the --expect
-boxes, refs and nets is printed under "UNEXPECTED".
+Lists every difference, never only the geometric ones: per footprint (or symbol) every attribute that changed -
+library id, position, rotation, side, every field (Value, LCSC, MPN, Datasheet, ...), attributes (DNP, exclude from
+BOM/position files), pad nets, 3D model paths, and "other content" when anything else inside it differs; copper
+(tracks, arcs, vias) only in OLD or only in NEW grouped by net, layer and area; zones whose outline, net or settings
+changed; board graphics and text; and every other top-level item (setup, stackup, net classes, groups, dimensions...)
+that differs. Anything outside the --expect boxes, refs and nets is marked UNEXPECTED. The last line says how many
+items of each kind were compared, so "0 unexpected" can be read against what was looked at.
 
 Run it before copying a scripted change back into the user's project, against the committed version. It catches the
-silent failure where a rebuild started from an older snapshot and quietly reverted the user's own later edits.
+silent failure where a rebuild started from an older snapshot and quietly reverted the user's own later edits, and a
+field edit (value, LCSC) that no geometry diff can see.
 """
 import argparse, collections, os, re, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sexp import blocks
+from kicad_sexpr import loads, dumps, Node  # noqa: E402
 
-ap = argparse.ArgumentParser(); ap.add_argument('old'); ap.add_argument('new')
-ap.add_argument('--expect', action='append', default=[]); ap.add_argument('--expect-refs', default=''); ap.add_argument('--expect-nets', default='')
-a = ap.parse_args()
-def load(p):
-    if os.path.exists(p): return open(p).read()
-    path = os.path.basename(a.new) if p in ('HEAD',) or ':' not in p else p.split(':', 1)[1]
-    rev = p.split(':', 1)[0]
-    return subprocess.run(['git', 'show', '%s:%s' % (rev, path)], capture_output=True, text=True, check=True,
-                          cwd=os.path.dirname(os.path.abspath(a.new))).stdout
-O, N = load(a.old), load(a.new)
-boxes = [tuple(map(float, b.split(','))) for b in a.expect]
-xrefs = set(filter(None, a.expect_refs.split(','))); xnets = set(filter(None, a.expect_nets.split(',')))
-def inbox(p): return any(x0 <= p[0] <= x1 and y0 <= p[1] <= y1 for x0, y0, x1, y1 in boxes)
-def top(t, head): return [(s, b) for s, b in blocks(t, head) if t[s - 2:s] == '\n\t']
-def pts(b): return [(round(float(x), 3), round(float(y), 3)) for x, y in re.findall(r'\((?:start|mid|end|at|xy) ([-\d.]+) ([-\d.]+)', b)]
-def net(b):
-    m = re.search(r'\(net (?:\d+ )?"([^"]*)"\)', b) or re.search(r'\(net_name "([^"]*)"\)', b); return m.group(1) if m else ''
 
-def fps(t):
-    o = {}
-    for s, b in top(t, 'footprint'):
-        r = re.search(r'\(property "Reference" "([^"]+)"', b)
-        if r: o[r.group(1)] = (re.match(r'\(footprint "([^"]+)"', b).group(1), tuple(float(v) for v in re.search(r'\(at ([-\d. ]+)\)', b).group(1).split()))
-    return o
-fo, fn = fps(O), fps(N)
-unexpected = []
-print('## Footprints')
-for r in sorted(set(fo) | set(fn), key=lambda s: [int(x) if x.isdigit() else x for x in re.split(r'(\d+)', s)]):
-    o, n = fo.get(r), fn.get(r)
-    if o == n: continue
-    what = 'added %s at %s' % n if not o else 'removed (was %s at %s)' % o if not n else \
-           ('swapped %s -> %s' % (o[0], n[0]) if o[0] != n[0] else '') + (' moved %s -> %s' % (o[1], n[1]) if o[1] != n[1] else '')
-    ok = r in xrefs or all(inbox(p[1][:2]) for p in (o, n) if p)
-    print('- %s %s%s' % (r, what.strip(), '' if ok else '   <-- UNEXPECTED')); ok or unexpected.append(r)
+def git_show(spec, new):
+    """'HEAD' -> the NEW file's own path in HEAD; 'REV:path' -> as git resolves it from the current folder"""
+    if ':' in spec:
+        cwd = os.getcwd()
+    else:
+        cwd = os.path.dirname(os.path.abspath(new))
+        spec = '%s:./%s' % (spec, os.path.basename(new))   # ./ = relative to cwd, so the board need not be at the repo root
+    r = subprocess.run(['git', 'show', spec], capture_output=True, text=True, cwd=cwd)
+    if r.returncode:
+        sys.exit('git show %s (in %s) failed: %s' % (spec, cwd, r.stderr.strip()))
+    return r.stdout
 
-def copper(t):
-    o = {}
-    for head in ('segment', 'arc', 'via'):
-        for s, b in top(t, head):
-            lay = re.search(r'\(layers? ([^)]*)\)', b)
-            o[(head, net(b), lay.group(1) if lay else '', tuple(pts(b)))] = 1
-    return o
-co, cn = copper(O), copper(N)
-print('\n## Copper (tracks, arcs, vias), grouped by net / layer')
-for tag, A, Bx in (('only in OLD', co, cn), ('only in NEW', cn, co)):
-    g = collections.defaultdict(list)
-    for k in A:
-        if k not in Bx: g[(k[1], k[2], k[0])].append(k[3])
-    print('### %s' % tag)
-    for (n_, lay, head), v in sorted(g.items()):
-        P = [p for q in v for p in q]
-        ok = n_ in xnets or all(inbox(p) for p in P)
-        print('- %-22s %-18s %-7s %3d  x %.1f-%.1f  y %.1f-%.1f%s' % (n_, lay, head, len(v), min(p[0] for p in P), max(p[0] for p in P),
-              min(p[1] for p in P), max(p[1] for p in P), '' if ok else '   <-- UNEXPECTED'))
-        ok or unexpected.append('%s %s' % (n_, lay))
 
-def outline(b): return tuple(pts(re.sub(r'\(filled_polygon.*', '', b, flags=re.S)))
-zo = collections.Counter((net(b), outline(b)) for s, b in top(O, 'zone')); zn = collections.Counter((net(b), outline(b)) for s, b in top(N, 'zone'))
-print('\n## Zones whose outline changed')
-for tag, A, Bx in (('only in OLD', zo, zn), ('only in NEW', zn, zo)):
-    for (n_, P), c in (A - Bx).items():
-        ok = n_ in xnets or all(inbox(p) for p in P)
-        print('- %s %-16s x %.1f-%.1f y %.1f-%.1f%s' % (tag, n_ or 'keepout', min(p[0] for p in P), max(p[0] for p in P), min(p[1] for p in P), max(p[1] for p in P),
-              '' if ok else '   <-- UNEXPECTED'))
-        ok or unexpected.append('zone ' + n_)
-print('\n## Board text and graphics that changed')
-for head in ('gr_text', 'gr_line', 'gr_rect', 'gr_poly', 'gr_arc', 'gr_circle'):
-    key = lambda b: re.sub(r'\s+', ' ', re.sub(r'\(uuid "[^"]+"\)', '', b))
-    go = {key(b): b for s, b in top(O, head)}; gn = {key(b): b for s, b in top(N, head)}
-    for tag, A, Bx in (('only in OLD', go, gn), ('only in NEW', gn, go)):
-        for k, b in A.items():
-            if k in Bx: continue
-            P = pts(b); tx = re.match(r'\(gr_text "([^"]*)"', b)
-            ok = all(inbox(p) for p in P)
-            print('- %s %s %s at %s%s' % (tag, head, '"%s"' % tx.group(1) if tx else '', P[0] if P else '?', '' if ok else '   <-- UNEXPECTED'))
-            ok or unexpected.append(head)
-print('\n%d unexpected change groups%s' % (len(unexpected), ': check each one was intended' if unexpected else ''))
-sys.exit(1 if unexpected else 0)
+def load(p, new):
+    return open(p).read() if os.path.exists(p) else git_show(p, new)
+
+
+def nat(s): return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', s)]
+
+
+def strip_ids(n):
+    """a copy without uuids / tstamps (ids are bookkeeping, not design)"""
+    c = n.deepcopy()
+    for x in list(c.walk()):
+        for k in ('uuid', 'tstamp', 'tstamps'):
+            x.remove_all(k)
+    c.remove_all('uuid'); c.remove_all('tstamp')
+    return c
+
+
+def norm(n): return re.sub(r'\s+', ' ', dumps(strip_ids(n)))
+
+
+def props(n): return collections.OrderedDict((str(p[1]), str(p[2])) for p in n.nodes('property'))
+
+
+def pts(n):
+    out = []
+    for x in n.walk():
+        if x.head in ('start', 'mid', 'end', 'at', 'xy', 'center') and len(x) >= 3:
+            try:
+                out.append((round(x.number(1), 3), round(x.number(2), 3)))
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def netname(n):
+    x = n.find('net')
+    if x is None:
+        return ''
+    return str(x[-1]) if len(x) > 1 else ''
+
+
+def fp_attrs(f):
+    a = collections.OrderedDict()
+    a['lib_id'] = str(f[1])
+    at = f.find('at')
+    a['at'] = tuple(round(at.number(i, 0.0), 3) for i in (1, 2)) if at is not None else None
+    a['rotation'] = round(at.number(3, 0.0), 3) if at is not None and len(at) > 3 else 0.0
+    a['side'] = str(f.get('layer', ''))
+    for k, v in props(f).items():
+        a['field ' + k] = v
+    at_ = f.find('attr')
+    a['attributes'] = ' '.join(str(x) for x in at_[1:]) if at_ is not None else ''
+    for k in ('locked', 'dnp'):
+        if f.find(k) is not None:
+            a[k] = str(f.get(k))
+    for p in f.nodes('pad'):
+        a['pad %s net' % p[1]] = netname(p)
+    a['3D models'] = ' '.join(str(m[1]) for m in f.nodes('model'))
+    return a
+
+
+def sym_attrs(s):
+    a = collections.OrderedDict()
+    a['lib_id'] = str(s.get('lib_id', ''))
+    at = s.find('at')
+    a['at'] = tuple(round(at.number(i, 0.0), 3) for i in (1, 2)) if at is not None else None
+    a['rotation'] = round(at.number(3, 0.0), 3) if at is not None and len(at) > 3 else 0.0
+    a['mirror'] = str(s.get('mirror', ''))
+    for k in ('in_bom', 'on_board', 'dnp', 'exclude_from_sim', 'in_pos_files'):
+        if s.find(k) is not None:
+            a[k] = str(s.get(k))
+    for k, v in props(s).items():
+        a['field ' + k] = v
+    return a
+
+
+def inner_rest(n, drop_props=True):
+    """the item's text without what fp_attrs/sym_attrs already compared (to catch anything else that changed)"""
+    c = strip_ids(n)
+    for h in ('property', 'at', 'attr', 'locked', 'dnp', 'model', 'layer', 'lib_id', 'mirror', 'in_bom', 'on_board',
+              'exclude_from_sim', 'in_pos_files', 'instances', 'pin'):
+        c.remove_all(h)
+    for p in c.nodes('pad'):
+        p.remove_all('net')
+    return re.sub(r'\s+', ' ', dumps(c))
+
+
+def main():
+    ap = argparse.ArgumentParser(); ap.add_argument('old'); ap.add_argument('new')
+    ap.add_argument('--expect', action='append', default=[]); ap.add_argument('--expect-refs', default='')
+    ap.add_argument('--expect-nets', default='')
+    a = ap.parse_args()
+    O, N = loads(load(a.old, a.new)), loads(load(a.new, a.new))
+    sch = O.head == 'kicad_sch'
+    boxes = [tuple(map(float, b.split(','))) for b in a.expect]
+    xrefs = set(filter(None, a.expect_refs.split(','))); xnets = set(filter(None, a.expect_nets.split(',')))
+    inbox = lambda p: any(x0 <= p[0] <= x1 and y0 <= p[1] <= y1 for x0, y0, x1, y1 in boxes)
+    unexpected, counted = [], collections.Counter()
+    mark = lambda ok: '' if ok else '   <-- UNEXPECTED'
+
+    # ---- parts (footprints or symbols) by reference, every attribute
+    head, attrs = ('symbol', sym_attrs) if sch else ('footprint', fp_attrs)
+    def parts(t):
+        out = {}
+        for n in t.nodes(head):
+            r = props(n).get('Reference', '')
+            if sch and r.startswith('#'):
+                # power symbols and flags are renumbered whenever one is added: match them by what and where they are
+                at = n.find('at')
+                r = '%s %s @%.2f,%.2f' % (n.get('lib_id'), props(n).get('Value', ''), at.number(1), at.number(2))
+            unit = str(n.get('unit', '1')) if sch else ''
+            out[r + ('#%s' % unit if sch and unit != '1' else '')] = n
+        return out
+    po, pn = parts(O), parts(N)
+    counted[head + 's'] = len(set(po) | set(pn))
+    print('## %s (every attribute)' % ('Symbols' if sch else 'Footprints'))
+    for r in sorted(set(po) | set(pn), key=nat):
+        o, n = po.get(r), pn.get(r)
+        ref = r.split('#')[0] if not r.startswith('power:') else r
+        if o is None or n is None:
+            x = n if o is None else o
+            A = attrs(x)
+            ok = ref in xrefs or (A['at'] is not None and inbox(A['at']))
+            print('- %s %s %s at %s%s' % (r, 'added' if o is None else 'removed', A['lib_id'], A['at'], mark(ok)))
+            ok or unexpected.append(r); continue
+        ao, an = attrs(o), attrs(n)
+        diffs = [(k, ao.get(k), an.get(k)) for k in list(ao) + [k for k in an if k not in ao] if ao.get(k) != an.get(k)]
+        if r.startswith('power:'):
+            diffs = [d for d in diffs if d[0] != 'field Reference']
+        if not diffs and inner_rest(o) != inner_rest(n):
+            diffs = [('other content (pads, graphics, text layout)', 'differs', '')]
+        if not diffs:
+            continue
+        geo_only = all(k in ('at', 'rotation') for k, _, _ in diffs)
+        ok = ref in xrefs or (geo_only and all(inbox(x['at']) for x in (ao, an) if x['at'] is not None))
+        print('- %s: %s%s' % (r, '; '.join('%s %r -> %r' % (k, v1, v2) if v2 != '' else '%s %s' % (k, v1) for k, v1, v2 in diffs), mark(ok)))
+        ok or unexpected.append(r)
+
+    if not sch:
+        # ---- copper
+        def copper(t):
+            o = collections.Counter()
+            for h in ('segment', 'arc', 'via'):
+                for n in t.nodes(h):
+                    lay = n.find('layer') or n.find('layers')
+                    o[(h, netname(n), ' '.join(str(x) for x in lay[1:]) if lay is not None else '', norm(n))] += 1
+            return o
+        co, cn = copper(O), copper(N)
+        counted['copper items'] = sum((co | cn).values())
+        print('\n## Copper (tracks, arcs, vias), grouped by net / layer')
+        for tag, A, Bx in (('only in OLD', co, cn), ('only in NEW', cn, co)):
+            g = collections.defaultdict(list)
+            for k, c in (A - Bx).items():
+                g[(k[1], k[2], k[0])].append(pts(loads(k[3])))
+            print('### %s' % tag)
+            for (n_, lay, h), v in sorted(g.items()):
+                P = [p for q in v for p in q]
+                ok = n_ in xnets or all(inbox(p) for p in P)
+                print('- %-22s %-18s %-7s %3d  x %.1f-%.1f  y %.1f-%.1f%s' % (n_, lay, h, len(v), min(p[0] for p in P), max(p[0] for p in P),
+                      min(p[1] for p in P), max(p[1] for p in P), mark(ok)))
+                ok or unexpected.append('%s %s' % (n_, lay))
+        # ---- zones (outline, net, layers, settings; fills are derived and ignored)
+        def zones(t):
+            o = collections.Counter()
+            for z in t.nodes('zone'):
+                c = strip_ids(z); c.remove_all('filled_polygon'); c.remove_all('fill_segments')
+                o[(netname(z) or str(z.get('name', '')) or 'keepout', re.sub(r'\s+', ' ', dumps(c)))] += 1
+            return o
+        zo, zn = zones(O), zones(N)
+        counted['zones'] = sum((zo | zn).values())
+        print('\n## Zones whose outline, net, layers or settings changed (fills ignored)')
+        for tag, A, Bx in (('only in OLD', zo, zn), ('only in NEW', zn, zo)):
+            for (n_, txt), c in (A - Bx).items():
+                P = pts(loads(txt))
+                ok = n_ in xnets or all(inbox(p) for p in P)
+                print('- %s %-16s x %.1f-%.1f y %.1f-%.1f%s' % (tag, n_, min(p[0] for p in P), max(p[0] for p in P),
+                      min(p[1] for p in P), max(p[1] for p in P), mark(ok)))
+                ok or unexpected.append('zone ' + n_)
+
+    # ---- everything else at the top level: graphics, text, wires, labels, setup, nets, groups...
+    done = {head} | (set() if sch else {'segment', 'arc', 'via', 'zone'}) | {'uuid', 'version', 'generator', 'generator_version'}
+    if sch:
+        done |= {'lib_symbols', 'sheet_instances', 'symbol_instances'}
+    def rest(t):
+        o = collections.Counter()
+        for n in t.nodes():
+            if n.head not in done:
+                o[(n.head, norm(n))] += 1
+        return o
+    ro, rn = rest(O), rest(N)
+    counted['other top-level items'] = sum((ro | rn).values())
+    print('\n## Other items that changed (graphics, text%s, setup, nets, groups, ...)' % (', wires, labels, junctions' if sch else ''))
+    g = collections.defaultdict(lambda: [0, 0, []])
+    for tag, A, Bx in ((0, ro, rn), (1, rn, ro)):
+        for (h, txt), c in (A - Bx).items():
+            g[h][tag] += c; g[h][2] += pts(loads(txt))
+    for h, (nold, nnew, P) in sorted(g.items()):
+        geo = h.startswith(('gr_', 'wire', 'junction', 'label', 'global_label', 'hierarchical_label', 'no_connect', 'text', 'bus', 'polyline'))
+        ok = geo and bool(P) and all(inbox(p) for p in P)
+        print('- %-18s %d only in OLD, %d only in NEW%s%s' % (h, nold, nnew, ' at x %.1f-%.1f y %.1f-%.1f' % (
+            min(p[0] for p in P), max(p[0] for p in P), min(p[1] for p in P), max(p[1] for p in P)) if P else '', mark(ok)))
+        ok or unexpected.append(h)
+    if sch and norm(O.find('lib_symbols') or Node('lib_symbols')) != norm(N.find('lib_symbols') or Node('lib_symbols')):
+        print('- lib_symbols: embedded library symbols differ (a symbol was redrawn or re-imported)')
+
+    print('\nCompared: %s' % ', '.join('%d %s' % (v, k) for k, v in counted.items()))
+    print('%d unexpected change groups%s' % (len(unexpected), ': check each one was intended' if unexpected else ''))
+    sys.exit(1 if unexpected else 0)
+
+
+if __name__ == '__main__':
+    main()

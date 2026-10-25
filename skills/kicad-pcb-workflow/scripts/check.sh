@@ -15,6 +15,15 @@
 # has a datasheet link and a sourcing field, and every schematic field matches the board; exit 1 if not).
 # --save-fill copies the refilled board back over the project's board. Only do that when KiCad is closed, and say so.
 set -euo pipefail
+# the project's board: the one named after its .kicad_pro, else the only .kicad_pcb; never "the first one ls prints"
+pick_board() {
+  local d="$1" pros n
+  pros=$(ls "$d"/*.kicad_pro 2>/dev/null || true); n=$(printf '%s' "$pros" | grep -c . || true)
+  if [ "$n" = 1 ] && [ -f "${pros%.kicad_pro}.kicad_pcb" ]; then echo "${pros%.kicad_pro}.kicad_pcb"; return; fi
+  local boards; boards=$(ls "$d"/*.kicad_pcb 2>/dev/null || true); n=$(printf '%s' "$boards" | grep -c . || true)
+  if [ "$n" = 1 ]; then echo "$boards"; return; fi
+  echo "!! $d holds $n boards and no single .kicad_pro names one: $(echo $boards)" >&2; return 1
+}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PROJ="$(cd "$1" && pwd)"; OUT="$2"; shift 2; BASE=""; SAVE=0; ACCEPT=""; NOTES=""; REQ=""
 abspath() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
@@ -25,7 +34,7 @@ while [ $# -gt 0 ]; do case "$1" in --baseline) BASE="$2"; shift;; --accept) ACC
 [ -n "$NOTES" ] || NOTES=$(python3 "$HERE/projfiles.py" find "$PROJ" pin-decisions.json) || NOTES=""
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 KICAD_ENV_NO_PY=1 source "$HERE/kicad_env.sh"
-PCB=$(ls "$PROJ"/*.kicad_pcb | head -1); NAME=$(basename "${PCB%.kicad_pcb}")
+PCB=$(pick_board "$PROJ"); NAME=$(basename "${PCB%.kicad_pcb}")
 python3 "$HERE/sexp.py" check "$PROJ"/*.kicad_sch "$PCB" || echo "!! s-expression problems above: fix these first"
 rsync -a --delete --exclude .git --exclude 'production*' --exclude '*-backups' --exclude '*.lck' "$PROJ/" "$OUT/proj/"
 # refill twice: after zone edits the first refill can leave clearance errors that the second clears

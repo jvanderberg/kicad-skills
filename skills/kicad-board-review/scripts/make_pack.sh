@@ -5,13 +5,22 @@
 # netlist, then run planes / emc / power (if PACK_DIR/review_config.json has power_runs) and write the markdown reports.
 # Override tool paths with KICAD_CLI, KICAD_PYTHON and PY (a python with numpy, scipy, shapely>=2, matplotlib).
 set -euo pipefail
+# the project's board: the one named after its .kicad_pro, else the only .kicad_pcb; never "the first one ls prints"
+pick_board() {
+  local d="$1" pros n
+  pros=$(ls "$d"/*.kicad_pro 2>/dev/null || true); n=$(printf '%s' "$pros" | grep -c . || true)
+  if [ "$n" = 1 ] && [ -f "${pros%.kicad_pro}.kicad_pcb" ]; then echo "${pros%.kicad_pro}.kicad_pcb"; return; fi
+  local boards; boards=$(ls "$d"/*.kicad_pcb 2>/dev/null || true); n=$(printf '%s' "$boards" | grep -c . || true)
+  if [ "$n" = 1 ]; then echo "$boards"; return; fi
+  echo "!! $d holds $n boards and no single .kicad_pro names one: $(echo $boards)" >&2; return 1
+}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PROJ="$(cd "$1" && pwd)"; PACK="$2"; shift 2
 POWER=1; INNER="17.5,35"
 while [ $# -gt 0 ]; do case "$1" in --no-power) POWER=0;; --inner-um) INNER="$2"; shift;; esac; shift; done
 mkdir -p "$PACK"; PACK="$(cd "$PACK" && pwd)"
 source "$HERE/kicad_env.sh"
-PCB=$(ls "$PROJ"/*.kicad_pcb | head -1); SCH="${PCB%.kicad_pcb}.kicad_sch"
+PCB=$(pick_board "$PROJ"); SCH="${PCB%.kicad_pcb}.kicad_sch"
 [ -f "$SCH" ] || { echo "no root schematic next to $PCB"; exit 1; }
 if ls "$PROJ"/*.lck "$PROJ"/~*.lck >/dev/null 2>&1; then echo "note: KiCad lock files present; the pack reads the files as saved on disk"; fi
 # work on a copy of the whole project (schematics, project-local libraries and lib tables resolve via ${KIPRJMOD})
