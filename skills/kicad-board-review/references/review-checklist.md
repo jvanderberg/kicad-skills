@@ -114,7 +114,11 @@ while others are absent.
   side; for a buck-boost, both. The capacitor must sit at the pins (measure edge-to-edge; `emc.py` reports pad centres),
   on the same layer, with the ground return directly under or beside it. Compare with the datasheet's layout example
   item by item - it is usually explicit, and small items (a high-frequency capacitor at VOUT, the AGND/PGND tie point)
-  are easy to miss without it. Use the project's layout reference pack and compliance file if it has them
+  are easy to miss without it. Diff the datasheet's typical application against the schematic part by part
+  (`kicad-pcb-workflow/scripts/refparts.py` with the project's `reference-parts.json`; write one if it has none):
+  a vendor tool's BOM or "a capacitor of that kind nearby" is not evidence that the datasheet's part is there.
+  Check each hot loop's electrical numbers in `emc.md` too (ground return resistance, share through the busiest
+  via): a 2 mm loop whose return dives through one 0.2 mm via is not a tight loop. Use the project's layout reference pack and compliance file if it has them
   (kicad-pcb-workflow `layout-stages.md`), and re-tick each rule against a net-coloured render (`view.py`) rather than
   trusting the file: a blanket ground pour or a stitching via beside every pad silently breaks single-point analog
   grounds. A deviation marked "no room" needs evidence of what was tried (smaller package, other value, position).
@@ -199,14 +203,17 @@ Derate everything; datasheet maxima are limits, not targets:
   assume a copper area - check the board gives that area.
 - Every pin of every IC deliberately handled: tied, pulled, or explicitly no-connect per the datasheet (example of what
   goes wrong: mode pins hard-tied to the wrong level, status LEDs fed from a rail that can exceed the pin rating).
-  A no-connect flag makes ERC silent, so audit them: `kicad-pcb-workflow/scripts/nc_audit.py` lists every unused pin
-  and every input strapped to a rail; each row needs the datasheet's pin-table reason.
+  A no-connect flag makes ERC silent, so audit them: `kicad-pcb-workflow/scripts/nc_audit.py` lists every unused pin,
+  every pin the symbol types no_connect, and every input strapped to a rail; each row needs the datasheet's pin-table
+  instruction (`--datasheet REF=ds.pdf` prints it). A symbol's NC type is the symbol author's guess, not a decision:
+  an "NC" pin can be one the datasheet says to ground.
 
 For every IC and every non-trivial discrete:
 - **Absolute maximum per pin**, including pin current limits (example: when a TVS clamps above a sense input's voltage
   abs max, series resistance that keeps the pin current within its few-mA limit is what makes it acceptable).
 - **Required external parts** and their values (series resistors, pull-ups for pins that reset with pull-downs, a pull-
-  up on a second chip select, bootstrap caps).
+  up on a second chip select, bootstrap caps): every part in the datasheet's typical application, matched to the
+  schematic part that satisfies it (`refparts.py`), or a recorded reason it is left out.
 - **Variant suffixes** that change the part: voltage (memories and regulators sold in 3.3 V and 1.8 V versions that
   differ by one suffix letter), forced PWM vs auto light-load mode, automotive vs commercial, package.
 - **Power-up behaviour** (example: some converters need I2C configuration before their output turns on - unacceptable

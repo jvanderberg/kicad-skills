@@ -29,7 +29,8 @@ References (read the one you need):
       `part_gate.py`): tool recommendations and distributor stock are snapshots, not evidence the part is made or
       buyable.
 - [ ] **Design for the exact orderable variant** and its own datasheet.
-- [ ] **Collect the layout reference pack** for the chosen part before placement (step 6).
+- [ ] **Collect the layout reference pack** for the chosen part before placement (step 6), including the
+      datasheet typical application's full parts list (`reference-parts.json`, checked with `refparts.py`).
 
 ## 1. Pin down the requirement
 
@@ -117,6 +118,21 @@ Then write down, per converter, as rules for its layout brief (kicad-pcb-workflo
 hot loop and which parts must sit at which pins, the quiet-side parts, the feedback and sense routing, the ground
 scheme (single-point analog ground?), the switch-node limits, and the thermal-pad via pattern. These references are
 re-read when the block is placed and again when it is routed; the block is checked against them in the compliance file.
+
+**The datasheet's typical application and layout figure are the parts list, not a vendor BOM (R19).** Transcribe
+every part they draw - bootstrap, VCC/LDO bypass, small high-frequency capacitors at the input and output pins,
+snubbers, RC filters on sense or COMP pins, divider and frequency resistors, not only the bulk capacitors - into the
+project's `reference-parts.json` (format in kicad-pcb-workflow `scripts/refparts.py`): the two pins each one sits
+between, its value and tolerance, and from the layout figure how close to the pin it must be. Then
+`refparts.py SHEET [BOARD]` names the schematic part that satisfies each entry, or says MISSING / WRONG VALUE / FAR;
+one schematic part satisfies one entry, so a 47 uF bulk capacitor 3 mm away does not tick "1 uF at the VOUT pins".
+Run it when the schematic is drawn (against WEBENCH's BOM too: a part in the datasheet's list and not in WEBENCH's
+stays unless the datasheet calls it optional) and again after placement with the board. Each compliance row then names
+the part that satisfies it.
+
+**Every unused, NC, DNC or reserved pin gets the pin table's instruction**, whatever type the symbol gives it: "NC"
+can mean "connect to ground for thermal dissipation" (TPS61088-Q1 pins 11/12), "do not connect" or "tie to VIN".
+`nc_audit.py --datasheet U5=ds.pdf --require-notes` lists them with the pin-table row beside each.
 
 ## 7. Lay it out
 
