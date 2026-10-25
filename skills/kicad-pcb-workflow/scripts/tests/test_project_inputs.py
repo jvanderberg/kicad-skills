@@ -11,6 +11,7 @@ NET = '''<export version="E"><components>
 <comp ref="U1"><value>BOOSTER</value></comp><comp ref="U2"><value>SENSOR</value></comp></components><nets>
 <net code="1" name="unconnected-(U1-NC-Pad11)"><node ref="U1" pin="11" pinfunction="NC" pintype="no_connect"/></net>
 <net code="2" name="unconnected-(U2-DNC-Pad3)"><node ref="U2" pin="3" pinfunction="DNC" pintype="no_connect"/></net>
+<net code="4" name="Net-(U1-VREG)"><node ref="U1" pin="5" pinfunction="VREG" pintype="power_out"/><node ref="U2" pin="7" pinfunction="MODE" pintype="input"/></net>
 <net code="3" name="GND"><node ref="U1" pin="1" pinfunction="GND" pintype="power_in"/><node ref="U2" pin="1" pinfunction="GND" pintype="power_in"/></net>
 </nets></export>'''
 DS1 = 'Pin Functions\nNAME   NO.   I/O   DESCRIPTION\n          No connection inside. Connect these pins to the ground plane\nNC     11, 12  -\n          for thermal dissipation\n'
@@ -43,10 +44,11 @@ def test_symbol_nc_pins_need_notes_and_show_pin_table():
     root = tree()
     r = nc(root, '--require-notes', '--datasheet', 'U1=%s/ds1.txt' % root, '--datasheet', 'SENSOR=%s/ds2.txt' % root)
     assert r.returncode == 1, r.stdout                      # symbol-NC pins without a note fail --require-notes
-    assert '2 without a decision' in r.stdout, r.stdout
+    assert '3 without a decision' in r.stdout, r.stdout
+    assert 'U2.7 | SENSOR | MODE | input | tied to Net-(U1-VREG)' in r.stdout, r.stdout   # a rail by structure, not by name
     assert 'Connect these pins to the ground plane' in r.stdout and 'Must be left floating' in r.stdout, r.stdout
     assert 'no pin-decisions.json found' in r.stderr, r.stderr
-    json.dump({'U1.11': 'NC: ground per pin table (thermal)', 'U2.3': 'DNC: left floating per pin table'},
+    json.dump({'U1.11': 'NC: ground per pin table (thermal)', 'U2.3': 'DNC: left floating per pin table', 'U2.7': 'MODE high = PWM'},
               open(os.path.join(root, 'docs', 'pin-decisions.json'), 'w'))
     r = nc(root, '--require-notes')                         # found by discovery, no --notes needed
     assert r.returncode == 0 and '0 without a decision' in r.stdout, (r.stdout, r.stderr)

@@ -61,7 +61,9 @@ def audit(root, rail_regex):
             pname = re.sub(r'_%s$' % re.escape(n.get('pin')), '', func) if func else ''
             if len(nodes) == 1:
                 state = 'symbol NC' if base == 'no_connect' else 'unconnected'
-            elif base == 'input' and rail.search(name):
+            elif base == 'input' and (rail.search(name) or any(m is not n and m.get('pintype', '').split('+')[0] in ('power_in', 'power_out')
+                                                                for m in nodes)):
+                # a rail by name, or by structure: the net carries some part's supply pin (an LDO output, VCC, VSYS)
                 state = 'tied to %s' % name
             else:
                 continue
