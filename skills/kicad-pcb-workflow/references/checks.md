@@ -13,6 +13,7 @@ Say in the report which checks ran and which blind spots were covered how.
 | 3D render (`render.py --3d`) | what the assembled board looks like | parts with a missing model show as bare pads and look like "nothing there": run `board_lint.py` first |
 | Full-board copper render | coarse layout | once a ground pour exists everything is one colour: use `view.py` (nets coloured and labelled, with a grid) for routing checks |
 | `router.py` checks | new copper clears other nets (net-class clearance), hole-to-hole for every drill, board edge | custom `.kicad_dru` rules, zone fills, thermal reliefs: DRC after applying |
+| `partfields.py check` | every BOM part has a datasheet link and an LCSC/MPN in schematic and board; every schematic field equals the board's | that the link is the right part's datasheet: `--online` checks it loads and names the MPN; that the LCSC number is the right part: `bom_check.py`, by hand |
 | `bom_check.py` / `part_gate.py` | stock now, lifecycle where a product page can be read | that the LCSC number is the part the symbol means (value, voltage, package, pinout): check by hand; stock moves daily: re-run before ordering |
 
 ## Exemptions: name the item, never the category

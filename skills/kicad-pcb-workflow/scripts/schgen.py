@@ -22,6 +22,7 @@ import math, os, re, shutil, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kicad_sexpr import Schematic, SymbolLibrary, loads, pins_of  # noqa: E402
+from partfields import blank, resolve_datasheet  # noqa: E402
 
 G = 1.27
 
@@ -55,9 +56,9 @@ class SymLib:
     """A .kicad_sym library (from a file or its text). get(name) returns the symbol as a kicad_sexpr node
     (derived symbols flattened, a fresh copy each call)."""
 
-    def __init__(self, nickname, path=None, text=None):
+    def __init__(self, nickname, path=None, text=None, lib=None):
         self.nick = nickname
-        self.lib = SymbolLibrary.from_text(text, nickname) if text is not None else SymbolLibrary.load(path, nickname)
+        self.lib = lib if lib is not None else SymbolLibrary.from_text(text, nickname) if text is not None else SymbolLibrary.load(path, nickname)
 
     def names(self):
         return self.lib.names()
@@ -134,9 +135,17 @@ class Sch:
         self.libs, self.used = {}, {}
         self.parts, self.wires, self.labels, self.noconnects, self.texts, self.extra_junctions = [], [], [], [], [], []
         self.pwr_n = 0
+        self.accepted = {}                # (ref, field) -> reason a BOM part may be written without that field
+        self.field_sources = {}           # ref -> where its Datasheet came from
 
-    def lib(self, nickname, path=None, text=None):
-        self.libs[nickname] = SymLib(nickname, path, text)
+    def accept_missing(self, ref, field, reason):
+        """Let write() keep a BOM part with a blank field (e.g. a bare test pad has no datasheet). By name, with a
+        reason; listed by write()."""
+        self.accepted[(ref, field)] = reason
+
+    def lib(self, nickname, path=None, text=None, lib=None):
+        """a symbol library by file, by text, or as a kicad_sexpr SymbolLibrary (e.g. symgen.library(...))"""
+        self.libs[nickname] = SymLib(nickname, path, text, lib)
 
     def libsym(self, lib_id):
         """The library symbol 'Lib:Name' as a kicad_sexpr node (a fresh copy)."""
@@ -263,17 +272,46 @@ class Sch:
             return left, top - 1.27, left, bot + 2.54, 0, 'left'
         return p.x + 3.81, p.y - 3.81, p.x + 3.81, p.y + 3.81, 90 if p.rot in (90, 270) else 0, 'left'
 
+    def carried_fields(self, p):
+        """The part's fields with everything its library symbol carries that the caller did not override: Footprint,
+        Datasheet, Description and any custom property (LCSC, MPN, Manufacturer from an imported symbol). Datasheet
+        falls back to the LCSC datasheet URL. Data that exists upstream is never dropped here."""
+        lib = {str(q[1]): str(q[2]) for q in self.used[p.lib_id].nodes('property') if not str(q[1]).startswith('ki_')}
+        f = {k: v for k, v in lib.items() if k not in ('Reference', 'Value') and not blank(v)}
+        f.update({k: v for k, v in p.fields.items() if not (k in ('Datasheet', 'Description') and blank(v))})
+        ds, src = resolve_datasheet(p.fields.get('Datasheet'), lib.get('Datasheet'), f)
+        if ds:
+            f['Datasheet'] = ds
+        self.field_sources[p.ref] = src
+        fp = p.footprint or f.get('Footprint', '')
+        f.pop('Footprint', None)
+        return f, fp
+
+    def missing_fields(self):
+        """[(ref, field)] for BOM parts that would be written without a datasheet link, minus accepted ones"""
+        out = []
+        for p in self.parts:
+            if p.ref.startswith('#') or not p.in_bom or not p.on_board:
+                continue
+            f, _ = self.carried_fields(p)
+            if blank(f.get('Datasheet')) and (p.ref, 'Datasheet') not in self.accepted:
+                out.append((p.ref, 'Datasheet'))
+        return out
+
     def _place(self, sch, p):
         """Add part p to a kicad_sexpr Schematic: the field set and layout this generator decides (Reference, Value,
         Footprint, Datasheet, then the extra fields hidden, then the _visible ones stacked under the value)."""
         visible = p.fields.get('_visible', [])
-        extra = [k for k in p.fields if k != 'Datasheet' and not k.startswith('_') and k not in visible]
+        allf, footprint = self.carried_fields(p)
+        # a library Description goes where KiCad puts it; one the caller gave stays in the caller's field order
+        desc = allf.pop('Description', None) if blank(p.fields.get('Description')) else None
+        extra = [k for k in allf if k != 'Datasheet' and not k.startswith('_') and k not in visible]
         names = ['Reference', 'Value', 'Footprint', 'Datasheet'] + extra
         assert len(names) == len(set(names)), '%s: duplicate property names %s' % (p.ref, names)
-        fields = {k: p.fields[k] for k in extra + list(visible)}
-        s = sch.add_symbol(p.lib_id, p.ref, p.value, (p.x, p.y), p.rot, p.mirror, footprint=p.footprint,
-                           datasheet=p.fields.get('Datasheet', ''), fields=fields, in_bom=p.in_bom,
-                           on_board=p.on_board, dnp=p.dnp, lib_fields=('Reference', 'Value', 'Footprint', 'Datasheet'))
+        fields = {k: allf[k] for k in extra + list(visible)}
+        s = sch.add_symbol(p.lib_id, p.ref, p.value, (p.x, p.y), p.rot, p.mirror, footprint=footprint,
+                           datasheet=allf.get('Datasheet', ''), description=desc, fields=fields, in_bom=p.in_bom,
+                           on_board=p.on_board, dnp=p.dnp, lib_fields=('Reference', 'Value', 'Footprint', 'Datasheet', 'Description'))
         p.uuid = s.uuid
         rx, ry, vx, vy, ang, just = self._field_spots(p)
         rx, ry = p.fields.get('_ref_at', (rx, ry))
@@ -284,7 +322,7 @@ class Sch:
             s.set_field(k, at=(snap(x), snap(y)), angle=ang, justify=[just], hide=hide)
         put('Reference', rx, ry, p.ref.startswith('#'))
         put('Value', vx, vy, p.fields.get('_hide_value', p.lib_id == 'power:GND'))
-        for k in ['Footprint', 'Datasheet'] + extra:
+        for k in ['Footprint', 'Datasheet'] + (['Description'] if desc is not None else []) + extra:
             put(k, p.x, p.y, True)
         for i, k in enumerate(visible):
             put(k, vx, vy + 2.54 * (i + 1), False)
@@ -304,6 +342,14 @@ class Sch:
         Ids are stable: items keep the uuid they had in ``previous`` (default: the file being overwritten, if it
         exists; None = from scratch), matched by reference / position; new items get ids derived from their key, so
         an unchanged design rewrites the same bytes and board footprints stay linked to their symbols."""
+        miss = self.missing_fields()
+        if miss:
+            raise ValueError('BOM parts with no datasheet link anywhere upstream (not in the call, not in the library '
+                             'symbol, no LCSC number): %s. Give fields={"Datasheet": url} (the manufacturer\'s page for the '
+                             'exact part), an LCSC number, or Sch.accept_missing(ref, "Datasheet", reason).'
+                             % ', '.join(r for r, _ in miss))
+        for (r, k), why in sorted(self.accepted.items()):
+            print('schgen: %s written without %s (accepted: %s)' % (r, k, why))
         self.wires = self.split_wires()
         if previous == 'auto':
             previous = path if os.path.exists(path) else None

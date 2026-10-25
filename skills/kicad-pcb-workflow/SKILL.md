@@ -41,6 +41,18 @@ net and geometry, zones by name), else one derived from that same key. The write
 (`router.py --previous` for routing, since its input board has none), so an unchanged design regenerates
 byte-identical, a change touches only its own lines, and GUI edits keep their ids. Never generate random ids.
 
+**Data that exists upstream is carried forward (R22).** Every stage of the pipeline either keeps each field it receives
+or stops with an error that names the part and the field: imported symbol -> redrawn symbol (`symgen.ic(...,
+inherit=)`), library symbol -> placed symbol (`schgen` copies the library's Datasheet, Footprint, Description and
+custom fields unless the call overrides them, falls back to the LCSC datasheet URL, and `write()` raises for a BOM part
+with no datasheet link anywhere upstream unless `accept_missing(ref, field, reason)` names it), schematic -> netlist ->
+board (`new_board.py` copies every field, Datasheet and Description included). `partfields.py check SHEET BOARD`
+proves it at the end: every BOM part has a Datasheet link (not "" or "~") and an LCSC/MPN, and every schematic field
+(Value, Footprint, Datasheet, Description, LCSC, MPN, custom fields, DNP / in-BOM) equals the board's; `check.sh` runs
+it and exits 1 on a problem. Example (labelled): minipc-power's 87 BOM parts all reached the board with an empty
+Datasheet, although JLCImport had written the LCSC link into every imported symbol and every part had an LCSC number:
+the redraw, the placed-symbol writer and the board writer each wrote "" without complaint.
+
 ## 0. Before touching anything
 
 1. **Is KiCad open?** Run `${CLAUDE_SKILL_DIR}/scripts/kicad_open.sh <project_dir>`. KiCad keeps its own copy in memory;

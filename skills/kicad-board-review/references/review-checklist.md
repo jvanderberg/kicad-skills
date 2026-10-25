@@ -234,6 +234,10 @@ page that contains the real PDF link.
 
 ## 8. Sourcing and assembly  (the **pcb-part-selection** skill, `bom_check.py`)
 
+- **Every BOM part has its datasheet link and sourcing data**, in the schematic and on the board, identical in both
+  (`kicad-pcb-workflow/scripts/partfields.py check SHEET BOARD`; `netlist.md` section 7 lists BOM parts with no
+  link). A blank Datasheet on a part with an LCSC number means a stage threw the link away; it is a finding, and the
+  reviewer cannot have read a datasheet the board does not name.
 - Every part in stock for the order quantity plus attrition, in the region the assembler buys from; re-check right
   before ordering (stock moves daily; a part with a handful of units can sell out or be restocked within a week).
 - Special parts with no substitute (polarity-marked inductors, specific crystals, modules): find the second source or

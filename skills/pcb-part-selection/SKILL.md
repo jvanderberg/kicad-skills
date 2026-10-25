@@ -101,7 +101,15 @@ matcher proposed a wrong pin count or body size for most of the parts it was ask
 - check pad numbering against the symbol: a KiCad footprint may merge pins into one pad (e.g. FET source pins 5-8 as
   pad "5"), so the symbol must use the footprint's numbers;
 - 3D models can be offset from the pads or missing (`board_lint.py` lists missing files) - check in a 3D render;
-- set the `LCSC` field on the symbol so the BOM and the stock sweep find it.
+- set the `LCSC` field on the symbol so the BOM and the stock sweep find it;
+- **keep the imported data when you replace the drawing.** The imported symbol carries the Datasheet link (JLCImport
+  writes `https://www.lcsc.com/datasheet/C<n>.pdf`), LCSC number, manufacturer and description. A redraw takes them
+  over (`symgen.ic(..., inherit=<the imported symbol>)`), a placed symbol takes its library's values (`schgen`), the
+  board takes the schematic's (`new_board.py`), and `partfields.py check` fails the build when any BOM part ends up
+  without a datasheet link or with a field that differs between schematic and board (kicad-pcb-workflow
+  `SKILL.md`, "Data that exists upstream is carried forward"). Prefer the manufacturer's canonical URL for the exact
+  part where one exists (TI: `https://www.ti.com/lit/ds/symlink/<device>.pdf` returns the PDF itself); the LCSC URL is
+  the fallback, and it opens a viewer page whose title names the MPN.
 
 **Installing jlcimport-cli** (checked October 2026): `pipx install git+https://github.com/jvanderberg/kicad_jlcimport`
 (pipx brings its own recent pip; a system Python 3.9 with pip 21 could not do an editable `pip install -e` of the

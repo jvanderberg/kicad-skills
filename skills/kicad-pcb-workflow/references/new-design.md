@@ -15,6 +15,7 @@ so a generator describes the design and never formats KiCad text itself:
 | JLC stackup block, design rules, net classes | `board_setup.py` | python3 |
 | Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely) |
 | Unused and strapped pins as decisions | `nc_audit.py` | python3 |
+| Every BOM part's Datasheet / LCSC present; schematic and board fields equal | `partfields.py check` | python3 |
 
 All of them write through `kicad_sexpr` (no KiCad text is formatted in the scripts), with stable uuids: an unchanged
 design regenerates byte-identical. If you are tempted to write `'(property %s %s ...)' % (...)` in a project
@@ -29,6 +30,9 @@ it. Pin numbers are the footprint's pad numbers, so pick the footprints now (`fp
 
 ## 2. Symbols
 
+- A redrawn symbol keeps the data of the one it replaces: `symgen.ic(..., inherit=SymLib('JLCImport',
+  'JLCImport.kicad_sym').libsym('JLCImport:<name>'))` takes over its Datasheet, Footprint, Description, LCSC,
+  manufacturer and MPN wherever the call does not give them.
 - Library symbols are fine where they read well. Redraw a symbol when it does not: an imported one with pins in package
   order, "unspecified" pin types, off-grid pins. `symgen.ic()` groups pins by function (inputs and supplies left,
   outputs right, supply pins top, ground bottom, related pins adjacent) with real types from the datasheet pin table,
@@ -61,9 +65,13 @@ through bodies, overlapping bodies) must be empty and `find_merges(s, NETS)` mus
    passed ERC with one unrelated warning; netspec caught it at once, and `find_merges()` then named the pin and
    coordinate where the two nets touched.
 2. `kicad-cli sch erc` - clean, or every remaining item explained.
-3. `python3 scripts/nc_audit.py sheet.kicad_sch --notes nc-notes.json` - every unused pin and every input strapped to a
-   rail gets a recorded decision from the datasheet pin table (`--require-notes` before calling the schematic done).
-4. Render the PDF (`kicad-cli sch export pdf`, `pdftoppm -r 150`) and **look at every page**: overlapping text,
+3. `python3 scripts/nc_audit.py sheet.kicad_sch --require-notes` - every unused pin, every pin the symbol types
+   no_connect, and every input strapped to a rail gets a recorded decision from the datasheet pin table (notes in the
+   project's `pin-decisions.json`, found by `projfiles.py`; `--datasheet U5=ds.pdf` prints the pin-table row next to
+   each pin).
+4. `python3 scripts/partfields.py check sheet.kicad_sch` - every BOM part has a datasheet link and an LCSC/MPN. Run it
+   again with the board once it exists (`partfields.py check sheet.kicad_sch board.kicad_pcb`): every field must match.
+5. Render the PDF (`kicad-cli sch export pdf`, `pdftoppm -r 150`) and **look at every page**: overlapping text,
    labels on wires, values on bodies, crossings that could be avoided. A clean ERC is not a readable sheet.
 
 ## 5. Footprints

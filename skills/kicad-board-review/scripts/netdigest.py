@@ -14,7 +14,9 @@ for c in x.find('components'):
     comps[c.get('ref')] = dict(ref=c.get('ref'), value=c.findtext('value'), fp=(c.findtext('footprint') or '').split(':')[-1],
                                lcsc=f.get('LCSC', '') or f.get('LCSC Part', ''), mpn=f.get('Manufacturer Part', '') or f.get('MPN', ''),
                                desc=(c.findtext('description') or '')[:70], sheet=sp.get('names') if sp is not None else '/',
-                               dnp=any(p.get('name') == 'dnp' for p in c.findall('property')), pins={})
+                               dnp=any(p.get('name') == 'dnp' for p in c.findall('property')),
+                               in_bom=not any(p.get('name') == 'exclude_from_bom' for p in c.findall('property')),
+                               datasheet=(f.get('Datasheet') or c.findtext('datasheet') or '').strip(), pins={})
 nets = {}
 for n in x.find('nets'):
     name = n.get('name'); nodes = []
@@ -135,6 +137,10 @@ for r, c in sorted(comps.items(), key=lambda kv: natkey(kv[0])):
     pkg = next((k for k in PKG_W if k in c['fp']), None)
     flag = ' <-- over 50 %% of the %s rating (%.0f mW)' % (pkg, PKG_W[pkg] * 1e3) if pkg and pw > 0.5 * PKG_W[pkg] else ''
     a4.append('%s %s on %s (%.3g V): ~%.1f mW (assuming 2 V LED drop)%s' % (r, c['value'], rail[0], v, pw * 1e3, flag))
+nods = [r for r, c in sorted(comps.items(), key=lambda kv: natkey(kv[0])) if not r.startswith('#') and c['in_bom'] and not c['dnp'] and c['datasheet'] in ('', '~')]
+out += ['### BOM parts with no datasheet link', '', '- %d of %d: %s' % (len(nods), sum(1 for r, c in comps.items() if not r.startswith('#') and c['in_bom'] and not c['dnp']),
+        ', '.join(nods) if nods else 'none') + (' - the link exists upstream (LCSC number, imported symbol); find the stage that dropped it '
+        '(kicad-pcb-workflow partfields.py) and read each part\'s datasheet' if nods else ''), '']
 out += ['### LED series resistor power', ''] + (['- ' + x for x in a4] or ['- none found (set "rail_voltages" in review_config.json for rails whose name has no voltage)'])
 open(R + 'netlist.md', 'w').write('\n'.join(out) + '\n')
 json.dump(dict(components=comps, nets={n: [list(t) for t in v] for n, v in nets.items()}), open(R + 'netlist.json', 'w'), indent=1)

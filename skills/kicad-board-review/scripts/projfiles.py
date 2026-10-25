@@ -13,7 +13,8 @@ options. Every caller prints which file it used, or that none was found and wher
 runs without the project's notes reports a different answer from the project's own build.
 
 Known inputs (KNOWN below): pin-decisions.json (nc_audit.py --notes), drc-accept.json (check.sh --accept),
-review_config.json (make_pack.sh), reference-parts.json (refparts.py), kicad-skills.lock (skills_rev.py).
+review_config.json (make_pack.sh), reference-parts.json (refparts.py), kicad-skills.lock (skills_rev.py),
+field-exemptions.json (partfields.py).
 Identical copies in kicad-pcb-workflow/scripts and kicad-board-review/scripts (each skill folder is self-contained).
 """
 import os
@@ -25,6 +26,7 @@ KNOWN = {
     'review_config.json': 'board review analysis config (make_pack.sh)',
     'reference-parts.json': "parts each IC's datasheet typical application requires (refparts.py)",
     'kicad-skills.lock': 'the kicad-skills revision this project builds with (skills_rev.py)',
+    'field-exemptions.json': 'named exemptions from the part-field check, with reasons (partfields.py --accept)',
 }
 
 
