@@ -144,7 +144,7 @@ def deps(data, parts, refs):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('cmd', choices=('check', 'deps')); ap.add_argument('sch'); ap.add_argument('refs', nargs='*')
     ap.add_argument('--values', help='explicit design-values.json'); ap.add_argument('--netlist', help='kicadxml netlist instead of exporting one')
     ap.add_argument('--kicad-cli')

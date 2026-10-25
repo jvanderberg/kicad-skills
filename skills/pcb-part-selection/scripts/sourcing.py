@@ -180,7 +180,7 @@ def check_part(lcsc, ctx, per_board=1, cli=None):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
     s = sub.add_parser('show'); s.add_argument('project', nargs='?')
     s = sub.add_parser('init'); s.add_argument('project'); s.add_argument('--assembler', required=True)
