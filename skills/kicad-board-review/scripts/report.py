@@ -47,7 +47,8 @@ p = ['# Power distribution and planes', '',
      'Method: resistive-grid DC solve per net over the saved copper (zone fills, tracks, pads) on every layer, joined by via barrels (20 um plating) '
      'and plated pads. Copper at 20 C (+0.39 %/C). The source pad is 0 V; each sink draws its current; "drop" is the mean voltage over the sink pad. '
      'Hotspots: current per mm of copper width above 75 % of a rough IPC-2221 isolated-trace limit (outer 3.2 A/mm, inner 1.6 A/mm), pessimistic for planes. '
-     'Component drops (fuses, FETs, shunts, connectors) are not included.', '']
+     'Component drops (fuses, FETs, shunts, connectors) are not included. Heat (these copper losses plus every part\'s) and '
+     'temperatures: thermal.md.', '']
 p += coverage_lines(P and P.get('coverage'))
 if not runs:
     p += ['## Runs', '', '- **No DC runs in this pack**: review_config.json has no power_runs (or the pack was built with --no-power). '

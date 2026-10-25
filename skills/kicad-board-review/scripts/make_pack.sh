@@ -2,7 +2,7 @@
 # Build a review pack for a KiCad project.
 #   make_pack.sh PROJECT_DIR PACK_DIR [--no-power] [--inner-um 17.5,35]
 # Steps: copy the board, refill its zones on the copy (never the original), export the netlist, dump geometry, digest the
-# netlist, then run planes / emc / power (if PACK_DIR/review_config.json has power_runs) and write the markdown reports.
+# netlist, then run planes / emc / power (if PACK_DIR/review_config.json has power_runs) / thermal and write the reports.
 # Override tool paths with KICAD_CLI, KICAD_PYTHON and PY (a python with numpy, scipy, shapely>=2, matplotlib).
 set -euo pipefail
 # the project's board: the one named after its .kicad_pro, else the only .kicad_pcb; never "the first one ls prints"
@@ -37,7 +37,9 @@ rm -f "$PACK/drc.json"
 # from this board's netlist (topology.py) - never placeholder refs that silently match nothing
 STARTER=0
 if [ ! -f "$PACK/review_config.json" ]; then
-  if FOUND=$(python3 "$HERE/projfiles.py" find "$PROJ" review_config.json 2>"$PACK/.cfgmsg"); then cp "$FOUND" "$PACK/review_config.json"; fi
+  if FOUND=$(python3 "$HERE/projfiles.py" find "$PROJ" review_config.json 2>"$PACK/.cfgmsg"); then
+    cp "$FOUND" "$PACK/review_config.json"; echo "$FOUND" > "$PACK/.config_source"    # relative inputs (path_budget files) resolve next to it
+  fi
   cat "$PACK/.cfgmsg"; rm -f "$PACK/.cfgmsg"
 fi
 "$PY" "$HERE/netdigest.py" "$PACK" "$(basename "${PCB%.kicad_pcb}")"
@@ -54,6 +56,9 @@ fi
 if [ "$POWER" = 1 ] && "$PY" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("power_runs") else 1)' "$PACK/review_config.json"; then
   for um in ${INNER//,/ }; do "$PY" "$HERE/power.py" "$PACK" --inner-um "$um" --tag "inner_${um}um"; done
 fi
+# heat: always runs - with no "thermal" config it still lists every candidate heat source as UNKNOWN, measures the
+# thermal vias and the stitching, and says that no temperature was computed
+"$PY" "$HERE/thermal.py" "$PACK" || echo "!! thermal.py failed: no thermal.md"
 "$PY" "$HERE/report.py" "$PACK"
 "$PY" "$HERE/drc_summary.py" "$PACK/drc.json" > "$PACK/drc.md" || true
-echo "pack ready: $PACK (netlist.md board_overview.md power.md emc.md drc.md) - read the 'Coverage and warnings' section of power.md and emc.md first"
+echo "pack ready: $PACK (netlist.md board_overview.md power.md emc.md thermal.md drc.md) - read the 'Coverage and warnings' section of power.md, emc.md and thermal.md first"

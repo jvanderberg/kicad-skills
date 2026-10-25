@@ -72,6 +72,14 @@ def track_geom(t):
     if t['a'] == t['b']: return Point(t['a']).buffer(t['w'] / 2, 8)
     return LineString([t['a'], t['b']]).buffer(t['w'] / 2, 8)
 
+def rect_dims(g):
+    """(length, width) of a shape's minimum rotated rectangle"""
+    mrr = g.minimum_rotated_rectangle
+    if mrr.geom_type != 'Polygon': return 0.0, 0.0
+    xs, ys = mrr.exterior.xy
+    e = sorted({round(math.dist((xs[i], ys[i]), (xs[i + 1], ys[i + 1])), 2) for i in range(4)})
+    return max(e), min(e)
+
 def seg_len(t):
     return math.dist(t['a'], t['m']) + math.dist(t['m'], t['b']) if t.get('arc') else math.dist(t['a'], t['b'])
 

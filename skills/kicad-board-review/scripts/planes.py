@@ -33,12 +33,6 @@ def what_is_inside(hole, L):
 ZCLR = {}
 for z in B['zones']:
     if not z['keepout']: ZCLR[z['net']] = max(ZCLR.get(z['net'], 0), z.get('clearance') or 0)
-def rect_dims(g):
-    mrr = g.minimum_rotated_rectangle
-    if mrr.geom_type != 'Polygon': return 0.0, 0.0
-    xs, ys = mrr.exterior.xy
-    e = sorted({round(math.dist((xs[i], ys[i]), (xs[i + 1], ys[i + 1])), 2) for i in range(4)})
-    return max(e), min(e)
 def split_hole(hp, L):
     """(other-net pours inside the hole, slot pieces left after removing them plus clearance)"""
     pours, cut = [], []

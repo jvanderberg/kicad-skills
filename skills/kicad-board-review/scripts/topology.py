@@ -6,6 +6,8 @@
 # Needs only PACK/netlist.json (netdigest.py). Every derivation carries a "why" so a reader can check it, and anything
 # that could not be derived is listed under "underived" instead of being dropped.
 import json, os, re, sys, collections
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import heat
 
 def natkey(s): return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', s)]
 
@@ -169,8 +171,10 @@ def starter_config(t, nl):
         ('rail_voltages', {}),
         ('hot_loops', loops),
         ('power_runs', []),
+        ('thermal', heat.starter(heat.candidates(list(nl.get('components', {}).values())))),
         ('_todo', ['classify buses and sensitive nets (feedback, current sense, CC, I2C) into classes; nets that fall through are "slow" and get no reference check',
-                   'rail_voltages for rails whose name has no voltage'] + t.underived)])
+                   'rail_voltages for rails whose name has no voltage',
+                   'thermal: every candidate heat source is UNKNOWN until given a loss per corner; set ambient_C and the corners'] + t.underived)])
 
 def load(pack):
     pack = os.path.abspath(pack) + os.sep

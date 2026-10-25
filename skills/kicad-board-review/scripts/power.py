@@ -1,6 +1,7 @@
 # DC drop, copper loss, current-density hotspots and per-via current for power paths.
 #
-# Batch (runs from review_config.json "power_runs", writes PACK/power_runs_<tag>.json and maps/*.png):
+# Batch (runs from review_config.json "power_runs", writes PACK/power_runs_<tag>.json, maps/*.png and maps/*_loss.npz,
+# where each run's copper loss sits - thermal.py places it as heat along the copper):
 #   python power.py PACK [--inner-um 17.5] [--tag 05oz]
 # One-off question ("does this shunt have enough vias?", "what does the regulator see from one input alone?"):
 #   python power.py PACK --net +12V --source F1:2 --sink J2:1=2.5 --sink J3:1=2.5 [--h 0.1] [--vias 12]
@@ -47,7 +48,12 @@ def run(r, tag='', plotit=True):
     region = box(*r['region']) if r.get('region') else None
     res = solve(r['net'], [refpad(s) for s in r['source']], sinks_of(r), h=r.get('h', 0.15), t_in=T_IN, region=region)
     hs = hotspots(res, min(THR_OUT, THR_IN) * 0.75, top=10)
-    if plotit: plot(res, r['name'], tag)
+    if plotit:
+        plot(res, r['name'], tag)
+        # where the copper loss sits, for thermal.py (a power run's loss is a heat source spread along its copper)
+        g = res['grid']
+        np.savez_compressed(PACK + 'maps/%s%s_loss.npz' % (r['name'], ('_' + tag) if tag else ''), x0=g['x0'], y0=g['y0'], h=g['h'],
+                            layers=np.array(list(res['_loss'])), **{'L%d' % i: res['_loss'][L] for i, L in enumerate(res['_loss'])})
     worst = max([s['drop_mV'] for s in res['sinks'] if s['amps'] != 0] or [0])
     if worst > 1e5: print('  !! %s: a sink reports %.3g mV, almost certainly a grid artefact; re-run with h=%.2f' % (r['name'], worst, r.get('h', 0.15) * 0.95))
     itot_ = sum(abs(i) for _, i in sinks_of(r))

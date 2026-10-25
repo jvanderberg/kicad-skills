@@ -65,10 +65,12 @@ for f in b.GetFootprints():
         fd['pads'].append(dict(num=p.GetNumber(), net=p.GetNetname(), x=mm(p.GetPosition().x), y=mm(p.GetPosition().y), layers=layers,
                                th=p.GetAttribute() == pcbnew.PAD_ATTRIB_PTH, drill=mm(p.GetDrillSize().x), poly=poly_set(shp)))
     D['footprints'].append(fd)
+# via type by name: the enum's numbers differ between KiCad versions (THROUGH is 3 in KiCad 9, 4 in KiCad 10)
+_VT = {getattr(pcbnew, 'VIATYPE_' + k): k.lower() for k in ('THROUGH', 'BLIND', 'BURIED', 'BLIND_BURIED', 'MICROVIA') if hasattr(pcbnew, 'VIATYPE_' + k)}
 for t in b.GetTracks():
     if t.GetClass() == 'PCB_VIA':
         D['vias'].append(dict(x=mm(t.GetPosition().x), y=mm(t.GetPosition().y), net=t.GetNetname(), size=mm(t.GetWidth(pcbnew.F_Cu)),
-                              drill=mm(t.GetDrillValue()), type=int(t.GetViaType())))
+                              drill=mm(t.GetDrillValue()), type=int(t.GetViaType()), type_name=_VT.get(t.GetViaType(), 'unknown')))
     elif t.GetClass() == 'PCB_ARC':
         D['tracks'].append(dict(a=(mm(t.GetStart().x), mm(t.GetStart().y)), m=(mm(t.GetMid().x), mm(t.GetMid().y)), b=(mm(t.GetEnd().x), mm(t.GetEnd().y)),
                                 w=mm(t.GetWidth()), layer=b.GetLayerName(t.GetLayer()), net=t.GetNetname(), arc=True))

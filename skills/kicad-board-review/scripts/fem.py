@@ -95,7 +95,7 @@ def solve(net, source, sinks, h=0.15, t_in=None, region=None, extra_vias=()):
     res = dict(net=net, cells=n, vias=len(barrels), h=h, sinks=[])
     for ((ref, num), amps), cs in zip(sinks, sink_cells):
         res['sinks'].append(dict(ref=ref, pad=num, amps=amps, drop_mV=-1e3 * float(np.mean(V[cs]))))
-    P = 0.0; hot = {}
+    P = 0.0; hot = {}; loss = {}
     for L in LAYERS:
         ii = idx[L]; g = t[L] / RHO
         Vg = np.full(ii.shape, np.nan); Vg[ii >= 0] = V[ii[ii >= 0]]
@@ -104,6 +104,11 @@ def solve(net, source, sinks, h=0.15, t_in=None, region=None, extra_vias=()):
         P += float((dx ** 2).sum() / g + (dy ** 2).sum() / g)
         jx[:, :-1] += dx / 2; jx[:, 1:] += dx / 2; jy[:-1, :] += dy / 2; jy[1:, :] += dy / 2
         hot[L] = np.hypot(jx, jy) / h    # amps per mm of copper width
+        # where the copper loss is dissipated (W per cell: each link's I^2/g split between its two cells), for thermal.py
+        w = np.zeros(ii.shape)
+        ex, ey = dx ** 2 / g, dy ** 2 / g
+        w[:, :-1] += ex / 2; w[:, 1:] += ex / 2; w[:-1, :] += ey / 2; w[1:, :] += ey / 2
+        loss[L] = w
     # current through each via / plated hole, summed over its layer links
     vi = collections.defaultdict(float)
     for (x, y, La, Lb, a, b, g) in links:
@@ -113,7 +118,7 @@ def solve(net, source, sinks, h=0.15, t_in=None, region=None, extra_vias=()):
     res['link_flows'] = [(x, y, La, Lb, float(g * (V[a] - V[b]))) for (x, y, La, Lb, a, b, g) in links]
     res['P_W'] = P
     res['grid'] = dict(x0=x0, y0=y0, h=h, shape=(ny, nx))
-    res['_hot'] = hot; res['_V'] = V; res['_idx'] = idx
+    res['_hot'] = hot; res['_V'] = V; res['_idx'] = idx; res['_loss'] = loss
     return res
 
 def hotspots(res, thr, top=6):
