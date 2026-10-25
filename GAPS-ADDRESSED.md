@@ -404,3 +404,121 @@ the vias are still measured.
   firmware power limit at low cell voltage, a bigger board or airflow. Charging while running will fold back charge
   current in the box (U2 at its 110 C regulation): expected, but slow charging should be documented.
 - Q1-Q3 pours have no copper of their nets on any other layer: enlarge them, or add B.Cu copper of those nets with vias.
+
+---
+
+# Round 4: availability, coupled values and approved decisions (protection FET re-selection)
+
+Source: minipc-power, 2026-10-25. The battery-protection FETs (Q1-Q3) were re-selected to cut heat. A search with
+`jlcimport-cli search` and no `--region` (its saved default on that machine: `cn`) showed the Vishay SiSS80DN (C3289423)
+with 12,000 in stock; its datasheet and footprint were checked, the user approved it, and the protection block was
+laid out around it. Only `bom_check.py` at the end (which passes `--region global`) found 0 in the warehouse
+international JLCPCB buys from. The block was redone around a Diodes DMN1004UFV (C316138, 317 in global stock) with
+about 2.5x the R_DS(on); the protector senses over-current as I x (R_Q2 + R_Q3), so the trip moved, the protector
+variant picked for the SiSS80DN (75 mV) would now trip below the 15 W peak, and it was being re-chosen without asking
+the user, who had settled the protection values. Three tool bugs surfaced on the way (below). Branch `availability`
+from `thermal` (5143b79). minipc-power was read from git only (scratch copies of HEAD d2f7dcd); it was not modified.
+
+## Classes, and where they differ from the brief's reading
+
+| Class | Rule |
+|---|---|
+| A context-dependent fact (stock, price) looked up without its context; the context (assembler, region) lived nowhere, hard-coded in two scripts and left to a third-party default on the path actually used at selection | **R24 (new)**, applying R3, R13 and R21 |
+| A value computed from one part's parameters keeps the old part's number after a swap; nothing links the value to the part | **R25 (new)** |
+| A change forced by circumstances treated as licence to change approved decisions, and its cascade done as follow-up fixes | **R26 (new)**, generalising R10 and R2 |
+| A config entry naming a design object that the design renamed (KiCad's auto net names follow pads) crashes the tool | R16 (coverage: report it by name) |
+| An exemption made for one rule leaks into another (same-net skip in clearance also skipping "no via on a pad") | R8's cousin: an exemption belongs to the one rule it was made for |
+| A summary line printing two counts swapped | (test now asserts the exact line) |
+
+Where this differs from the brief:
+- **The region default was the trigger, not the root.** `bom_check.py` and `part_gate.py` already passed `--region
+  global`; the selection itself went through a hand-typed search, so the scripted gate was not on the path where the
+  decision was made, and the region was not project data anyone could read. The fix makes the project's sourcing
+  context a file with one owner (R13), makes every lookup - including the free-text search used while browsing -
+  go through it (`sourcing.py search`), and refuses to run without it (R21: no third-party default stands in for a
+  fact that depends on context). Making the skill text say "always pass --region" alone would have left the region
+  in the agent's memory instead of the project.
+- **The gate also could not take the candidate as found.** `part_gate.py` matched device names only; a C-number from
+  a search could not be gated. It now takes C-numbers.
+- **R25 is checked, not only written.** A dependency note in a design doc goes stale the same way the value did. The
+  record is JSON (`design-values.json`), `derived_check.py` compares it against the schematic's parts, and
+  `bom_check.py` - which is what runs after any part change - runs it.
+- **R26 is a new rule rather than an edit of R10** because R10 lived in the layout stages only and is about
+  feasibility; the failure here was in part selection, and the new point is that a forced change is still a new
+  decision and its whole cascade is one question to the user.
+- **The via bug is a class in the skills too, and the cheaper catch is downstream.** kicad-skills' `router.py` had the
+  same gap (verified: `via_near` put a via in the centre of a neighbouring same-net pad). It is fixed there, and
+  `board_lint.py` now reports VIA IN PAD on any board, so a project's own router - where this one actually happened -
+  is covered too.
+
+## Rules and where each one now lives
+
+| Rule | Canonical statement | Also applied in |
+|---|---|---|
+| R24 Availability is a fact about (part, the assembler's warehouse region, quantity, date): the project states its sourcing context once, every lookup reads it and names the region, no third-party default, checked for every candidate at selection before approval or layout | ps `SKILL.md` "Availability is a fact about one warehouse" | `sourcing.py` (new), `part_gate.py`, `bom_check.py`; `projfiles.py` (sourcing.json, 3 copies); `preflight.py --project` (both copies); nb SKILL step 6/8, interview-guide s6/s8, requirements template s6/s8; psu SKILL checklist; wf SKILL s1 and mistakes, layout-stages point 5 and stage 1; rev checklist s8 **Output**, reviewer-brief 7; README |
+| R25 Every derived value records the part parameters it came from; a swap re-derives each dependent, and the review re-checks them | ps `SKILL.md` "Deriving values" | `derived_check.py` (new), `bom_check.py`; psu SKILL checklist, step 3 (variants), step 4, step 8; bat protection-and-safety.md (trip belongs to the FETs); rev checklist s7 **Output** |
+| R26 Approved decisions are frozen; changing one (forced or not, with its cascade) goes back to the user with evidence, consequences and options before any edit | wf `SKILL.md` "Approved decisions are frozen" | ps SKILL "Substituting a part the user approved" (procedure); wf layout-stages point 4, SKILL s1 and mistakes; nb SKILL "Never decide silently", requirements template s9 ("Agreed by user"); psu SKILL step 3; bat protection-and-safety.md; rev checklist s8; `derived_check.py` (approved values) |
+| R16 (applied) | as round 2 | `power.py` NOT RUN runs in power_runs*.json, power.md coverage and table, thermal.md coverage; `derived_check.py` coverage line; `bom_check.py` says when there is no design-values.json |
+
+## Gap -> change -> verification
+
+| Gap | What changed (files) | How it was verified |
+|---|---|---|
+| Stock looked up in the wrong region | ps `scripts/sourcing.py` (new: `show`, `init`, `search`, `stock`; `resolve()` stops with neither sourcing.json nor --region; every row tagged with region and currency; a short part's other-region stock shown as not counting), `part_gate.py` (region and need from sourcing.json, C-numbers exact, other region beside a short part), `bom_check.py` (header line with assembler / region / quantity / date / source, stock policy and named exceptions, region and date in --json), `projfiles.py` x3, `preflight.py` x2 (sourcing.json required for the parts skill; reports jlcimport's saved default when it differs) | Real lookups, 2026-10-25: `jlcimport-cli search C3289423 --region global` -> stock empty (0), `--region cn` -> 12000; without `--region` -> 12000 (this machine's `jlcimport.json` says `"region": "cn"`). C316138: 317 in both. `part_gate.py C3289423 C316138 SISS80DN BQ25606 --per-board 3` in a scratch project with global: `C3289423 ... 0 in stock ... <-- STOCK 0 < 17 in global [cn has 12,000 - does not count: JLCPCB buys from global]`, C316138 317 ok, BQ25606 ACTIVE 8,190. Without sourcing.json every script stops with how to create it, before any lookup. `preflight.py --project`: "sourcing.json: JLCPCB, region global; jlcimport-cli's default region is cn (...jlcimport.json)" |
+| bom_check summary swapped | `bom_check.py` rewritten into functions; summary from the rows | minipc HEAD copy: `57 unique LCSC parts, 0 with problems, 38 extended, 0 without a datasheet link, 0 parts without an LCSC number` (the old line printed "0 extended, 38 without a datasheet link"). With Q1-Q3 set to C3289423: `C3289423 3 0 ... STOCK 0 < need 17 (global), extended [cn has 12,000 - does not count: JLCPCB buys from global]`, exit 1 |
+| Coupled values not re-derived after a swap | ps `scripts/derived_check.py` (new: `check`, `deps`; STALE names the parameter and number to re-read; approved values point to R26; coverage of ICs/FETs/inductors/fuses no value names), `bom_check.py` runs it | minipc HEAD copy (Q2/Q3 = DMN1004UFV C316138) with a design-values.json recording the protector trip as derived from C3289423 (approved): 2 STALE lines (Q2, Q3) each "Re-read 'R_DS(on) max at Vgs 2.5 V' from the new part's datasheet ... User-approved value: take the re-derived result to the user before changing anything (R26)"; `deps ... U3` lists the trip with its VDIP input |
+| Approved decision changed silently | Text: R26 (above) | Text |
+| power.py crash on a renamed net | rev `power.py` (`run_problems`: net has copper, parts and pads exist and are on the net, a renamed net names where the pads are now; solver errors caught per run; `not_run` in the JSON), `fem.py` (clear error for a net with no copper), `report.py`, `thermal.py` | Synthetic pack, run `net: Net-(J3-Pad1)` on a board where its pads are on VSYS: the thermal-branch `power.py` -> `ValueError: cannot convert float NaN to integer`; new -> `power run renamed NOT RUN: net Net-(J3-Pad1) is not on the board; the run's pads are now on: C1:1 -> VSYS, R1:1 -> VSYS (renamed after a part change? update "net" in review_config.json)`, exit 0, other runs solved: `tests/test_pack_synthetic.py` |
+| Via in a neighbouring same-net pad | wf `router.py` (`pad_problem`: no via on or within 0.05 mm of a same-net pad unless `in_pad=` names it; via/via_field/via_near), `board_lint.py` (VIA IN PAD; exposed-pad vias as NOTE), routing.md, checks.md, check.sh, SKILL s3 | Synthetic FET with three same-net source pads: thermal-branch `router.py` `via_near('Q2','2')` -> (10.0, 10.0), the centre of Q2.1; new -> a spot touching no pad; `via((11.3,10),'SRC')` REJECTED naming Q2.3, accepted with `in_pad=('Q2','3')`; a via field on an exposed pad needs `in_pad`: `tests/test_router_checks.py`. board_lint on a generated board (via on R1's ground pad, one clear, one in a QFN exposed pad): 1 VIA IN PAD, 1 NOTE, exit 1: `tests/test_board_lint_vias.py` |
+
+### minipc-power (HEAD d2f7dcd), found by the new checks
+
+- `board_lint.py`: 4 VIA IN PAD - ground vias beside C17.2, C18.2, C19.2 and C31.2 whose annular ring overlaps the pad
+  (C19: via centre 0.15 mm outside the pad edge, so the 0.3 mm drill's edge sits on the pad edge; no mask web between
+  them). 1 NOTE: one via in U1's exposed pad (order it filled or tented). Not fixed here (another repository).
+- `bom_check.py`: everything in stock in global for 5 boards; 38 of 57 parts Extended.
+
+### Audit: config entries that name design objects
+
+| Where | Entry | On a missing object |
+|---|---|---|
+| `review_config.json` power_runs | net, source/sink pads | was: crash (NaN) or an assert ending the batch; now: NOT RUN with reason |
+| `review_config.json` hot_loops | IC, nets | NOT CHECKED (round 2) |
+| `review_config.json` thermal | refs, power runs | UNKNOWN / "not in the pack" (round 3) |
+| `pin-decisions.json`, `reference-parts.json` | refs and pins | reported by nc_audit / refparts (rounds 1-2) |
+| `design-values.json` | refs and parts | STALE (new) |
+| `sourcing.json` exceptions | LCSC numbers | bom_check notes exceptions no longer in the BOM (new) |
+
+### Test runs
+
+- ps `scripts/tests` (new; `python3 -m pytest -q tests`): 8 passed, 1 skipped; with `LCSC_LIVE=1` 9 passed (the live
+  test asserts C3289423 is 0 in global and stocked in cn, and C316138 is stocked in global). The fake jlcimport-cli
+  exits 3 on any search without `--region`.
+- wf `python3 -m pytest -q kicad_sexpr/tests tests`: 55 passed, 2 skipped (was 53 / 2; new: `test_router_checks.py`,
+  which reruns itself under the analysis venv for shapely, and `test_board_lint_vias.py`, which needs KiCad's python).
+  The router + DRC pipeline test in `test_writers.py` still passes with the pad check in `via_near`.
+- rev `python3 -m pytest -q tests`: 11 passed, 2 skipped (was 10 / 2; new: the NOT RUN test in
+  `test_pack_synthetic.py`; the 2 skips are the minipc thermal tests without `MINIPC_PACK`).
+- psu `python3 -m pytest -q tests`: 4 passed (unchanged).
+
+## Left open, and why
+
+- **Assemblers other than JLCPCB/LCSC**: `sourcing.json` names the assembler, but the lookups are LCSC only; another
+  assembler's stock is "check by hand" (said in the docstring).
+- **design-values.json is written by hand.** Nothing infers which values depend on which parts; the coverage line
+  lists ICs, FETs, inductors and fuses no value names, as a prompt. Values computed in a project's own generator could
+  write their records there.
+- **Approvals are recorded, not enforced.** R26 is a rule for the agent; `derived_check.py` marks approved values and
+  the requirements template has an "Agreed by user" column, but no tool can tell that a change was discussed.
+- **Price currency** is per region (USD global, CNY cn, as jlcimport reports it); prices are not converted.
+- **board_lint's exposed-pad test** (>= 1 mm^2 and >= 2x the footprint's median pad) is a heuristic; a big pad that
+  is not a thermal pad gets a NOTE instead of a problem.
+
+## For minipc-power's own docs (not changed here)
+
+- Add `docs/sourcing.json` (JLCPCB, global, 5 boards) and a `docs/design-values.json` with at least the protector
+  trip (inputs: Q2, Q3 R_DS(on) at the cell's minimum gate drive, hot; U3's threshold variant), the EN/UVLO dividers,
+  the inductor I_sat margins and the heat estimates, marking the values the user approved.
+- Move the 4 ground vias off C17/C18/C19/C31's ground pads (or keep a mask web), and order U1's exposed-pad via
+  filled or tented.
+- skill-gaps.md: R24-R26 to add to its rules table.
