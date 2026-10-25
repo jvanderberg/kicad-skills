@@ -11,7 +11,7 @@ changes and in the analysis you are given, and try hard to find them. Do not sof
 
 **Inputs**
 - Project: `<project_dir>` (schematics `*.kicad_sch`, board `*.kicad_pcb`, project libraries, docs).
-- Analysis pack: `<pack_dir>` - `netlist.md` (pin-level netlist), `board_overview.md`, `power.md`, `emc.md`, `drc.md`,
+- Analysis pack: `<pack_dir>` - `netlist.md` (pin-level netlist), `board_overview.md`, `power.md`, `emc.md`, `thermal.md`, `drc.md`,
   and the JSON behind them. Treat it as evidence to challenge: the DC solver, plane and EMC scripts have known blind
   spots (see `analysis-limits.md`), and net classes come from name patterns.
 - Tools: `scripts/power.py <pack> --net N --source R:P --sink R:P=A` for any current path; `region.py <pack> LAYER
@@ -29,6 +29,11 @@ changes and in the analysis you are given, and try hard to find them. Do not sof
    turn-on vs its converter's soft-start, inrush vs every upstream trip, and which trips latch.
 3. Use the power results and run your own: neck-downs, thin inner copper, via fields, ground return under full load.
 4. Check every inner-layer track and every slot in a plane: what return current crosses it.
+4b. Attack the heat result (`thermal.md`): every UNKNOWN row and every "negligible" reason; the corner currents (solved
+   with the path resistance, at the lowest source voltage?); R_DS(on) at the real gate drive and hot; efficiencies at the
+   operating point, not the headline; the series path's own loss (FETs, fuse, BATFET, copper) next to the converters';
+   the ambient (inside the enclosure?) and h; a hot part on a pour with no via to a plane of its net. If the pack has
+   no thermal inputs, heat was NOT CHECKED: say so as a finding.
 5. Check every fast and exposed signal: reference continuity, layer changes and return vias, crosstalk, termination,
    length, edge proximity, ESD at connectors.
 6. Check regulator layouts against their datasheet layout examples item by item.

@@ -61,6 +61,11 @@ Keyed connectors and holders that physically reject a reversed cell are the chea
 
 ## Thermal and mechanical
 
+- **The battery path is a heat source.** At the lowest cell voltage and full load the cell current is highest, and the
+  protector's two FETs, any reverse-block FET, the fuse and the charger's BATFET each dissipate I^2 R (R_DS(on) at the
+  cell's own gate drive, hot). Example (labelled): 6.6 A through three ~15 mOhm FETs and a 19.5 mOhm BATFET is about 2.8 W,
+  more than three converters lose together. Solve the current (`path_budget.py`), list each element in the heat table
+  (pcb-power-supply step 8, kicad-board-review `thermal.md`), and give each FET's pour copper on another layer or area.
 - Keep the cell away from heat sources (regulators, chargers, power resistors, LEDs, motors). Cell temperature, not
   ambient, decides the charge window and the aging rate.
 - **Puncture and crushing:** no sharp parts, screws, component leads or through-hole pins pressing on a pouch cell;

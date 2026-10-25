@@ -4,7 +4,8 @@
   closed-form microstrip over the nearest copper layer (stripline overstated).
 - **Copper at 20 C**, no plating build-up on outer layers, 20 um via plating, solder in plated holes ignored. Hot
   copper is about 0.39 % per C worse.
-- **Components are not in the model.** Fuses, FETs, shunts, PTCs, connector contacts and wires add their own drops.
+- **Components are not in the DC model.** Fuses, FETs, shunts, PTCs, connector contacts and wires add their own drops
+  (`path_budget.py` adds them to the operating point; `thermal.py` adds their heat).
 - **Zone fills are KiCad's saved fills** after the pack's refill of a copy. If the user's file was saved without a
   refill, the user's board can differ until they refill.
 - **Grid artefacts.** A pad cell isolated by grid alignment reports an absurd drop; re-run at another pitch.
@@ -21,7 +22,22 @@
   functions (`topology.py`). A switch node driven only by discrete FETs has no derived hot loop (reported as
   underived), and a derived candidate is a prompt to confirm against the datasheet, not a datasheet rule.
 - **Crossings are not parallel runs**; a high crosstalk figure on a short overlap is usually an artefact.
-- **No thermal model.** Copper loss in watts is reported; temperature rise needs judgment (area, airflow, neighbours).
+- **Heat (`thermal.py`, `thermal.md`) is a steady-state board model, not an enclosure model.** The losses are only as
+  good as their inputs (currents, efficiencies, R_DS(on) at temperature): every row names its basis, and a part with no
+  data is UNKNOWN and left out of the temperatures (the coverage says so). The solve conducts heat through each copper
+  layer (nets kept apart), FR4 between layers (k 0.3 W/mK by default) and via barrels, and loses it from both faces
+  through one effective film coefficient h (convection plus radiation) to one ambient temperature. Not modelled: the
+  enclosure's air and walls (ambient is the air around the board, so a closed box's own rise must be added to it or
+  folded into a lower h), airflow, heat leaving through wires, cells, connectors, screws or a chassis (often large on a
+  small board: the model is pessimistic there), the parts' own bodies and their top-side convection (heat enters at the
+  pads), transients (the report gives the bare board's time constant: a corner shorter than that does not reach the
+  steady temperature), copper resistance rising with temperature (not iterated), and tracks running diagonally across
+  cells (they conduct less than they should; planes and pours are unaffected). **h is the dominant uncertainty**: still
+  air is roughly 5-10 W/m^2K effective inside a closed box and 10-15 in open air, which is why every temperature is shown
+  at a low, nominal and high h. The board average P / (A (h_top + h_bottom)) is exact for any layout; layout only
+  changes how far the peak sits above it. Junction temperatures use the datasheet's psi_JB or theta_JC where given;
+  psi_JB was measured on a JEDEC board, so treat Tj as an estimate within several kelvin. Thermal-via counts use a rule
+  of thumb (0.3 mm vias at 1.0 mm pitch) unless `thermal.pads` gives the datasheet's pattern.
 - **Design intent is not in the pack.** The scripts and DRC measure copper and rules, not whether a block follows its
   datasheet layout (single-point grounds, hot-loop parts at the pins) or the intended netlist. Check those against the
   references themselves (datasheet figure, netspec file); kicad-pcb-workflow `checks.md` lists what each check misses.

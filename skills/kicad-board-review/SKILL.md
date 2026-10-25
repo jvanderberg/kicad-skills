@@ -42,7 +42,18 @@ are stale), and writes:
 `netlist.md` (readable netlist), `board_overview.md` (stackup, copper per layer, vias, widths, parts),
 `power.md` (DC drop, copper loss, current density hotspots, busiest via per power path; ground plane pieces, slots and
 what cuts them; tracks on inner layers), `emc.md` (fast nets off their reference plane, crosstalk, layer changes and
-return vias, edge proximity, switching nodes, hot loops, microstrip Z0, diff pair skew), `drc.md`, plus JSON for all of it.
+return vias, edge proximity, switching nodes, hot loops, microstrip Z0, diff pair skew), `thermal.md` (heat-source table
+per corner, board and part temperatures at a low / nominal / high film coefficient next to the board-average check,
+junction estimates, thermal vias per exposed pad, the pour under each hot part, ground stitching and a stitching
+what-if), `drc.md`, plus JSON for all of it.
+
+Give the config a `"thermal"` section (format in `scripts/heat.py`; example in `assets/review_config.example.json`): the
+ambient around the board, the corners that bound the heat (worst discharge at the lowest source voltage, typical,
+charging while running), and a loss per candidate heat source - currents from `pcb-power-supply/scripts/path_budget.py
+--json`, R_DS(on) hot, efficiencies from the vendor tool, the datasheet's psi_JB / theta_JC per IC. Without it the pack
+still lists every candidate as UNKNOWN and reports heat as NOT CHECKED. The path's copper comes from the pack's power
+runs, so solve it after the first build (`path_budget.py SPEC --json <pack_dir>/path_out.json`; relative paths resolve in
+the pack, then next to the project's config) and re-run only `scripts/thermal.py <pack_dir>` (seconds).
 
 Write power runs for every path that carries real current: each input connector -> fuse -> protection -> rail -> loads,
 the ground return of all of them at once, regulator outputs to their loads, long thin rails. Use realistic currents
@@ -59,7 +70,7 @@ reclasses a derived switch node. Classify the rest (buses, feedback, sense, CC l
 through to "slow" are not checked for reference continuity, so a long I2C bus under a noisy pour goes unreported;
 `emc.md` lists them longest first.
 
-**Read the coverage first (R16).** `power.md` and `emc.md` start with "Coverage and warnings": configured items that
+**Read the coverage first (R16).** `power.md`, `emc.md` and `thermal.md` start with "Coverage and warnings": configured items that
 matched nothing, defaults used, derived roles, hot loops not checked, ground nets with no copper. "0 found" under a
 warning is not a pass.
 
@@ -68,6 +79,10 @@ warning is not a pass.
 Go through every section of `references/review-checklist.md`: power path and protection, copper capacity and heat,
 ground and return paths, decoupling and regulator layout, signal integrity and EMC, ESD and external interfaces,
 component and datasheet compliance, sourcing and assembly, mechanical and silkscreen, firmware-visible consequences.
+**Every area produces a recorded output (R23).** The checklist marks each area's output (the heat-source table and the
+temperatures for heat, the solved operating point for a power path, the edge-stitch gaps and weak pieces for stitching).
+An area without its output in the review is reported as NOT CHECKED, not as fine: a review that skipped heat because the
+checklist only said "list the heat sources" reported nothing about a battery path dissipating more than the converters.
 For each finding record: **what** (with refdes, net, coordinates), **evidence** (the number from the pack, the
 datasheet section and page, the netlist line), **consequence** (what fails, when, how badly), **fix** (concrete, and
 what it costs in board space and risk).
@@ -100,7 +115,8 @@ not done get an explicit reason (no room, part unavailable, user decision) and a
 ## 6. Report
 
 Lead with blockers and majors, each with evidence and a recommended fix; then minors; then what was checked and found
-fine (so the user knows the coverage); then limits of the analysis. Write the result into the project's docs if it
+fine (so the user knows the coverage), with each area's output (the heat table and the temperature range belong here
+even when nothing is over a limit); then the areas NOT CHECKED and why; then limits of the analysis. Write the result into the project's docs if it
 keeps a design log. When the user asks follow-up questions ("is this the voltage drop?", "what are the ground plane's
 limits?", "enough vias?"), answer from measured numbers, explain the physics plainly, and run the ad hoc solver rather
 than estimating - see `references/interpreting-results.md` for how to answer them.

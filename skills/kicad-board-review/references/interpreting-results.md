@@ -35,6 +35,19 @@ via's current, the barrel resistance (about 1.3 mOhm for 0.3 mm / 20 um / 1.6 mm
 rest of the path, and the heat per via (I^2 R, milliwatts). The usual answer: the vias are not the limit; the pour is.
 Uneven sharing (front row takes most) is normal.
 
+## "Will it get hot?" / "Does the board need more stitching vias for heat?"
+
+Answer from `thermal.md`, in this order. (1) The loss, per corner, and where it is: a battery path's FETs, fuse and
+BATFET at the lowest cell voltage can out-heat every converter together. (2) The board average, P / (A (h_top + h_bottom)):
+it depends only on the total loss, the board area and the cooling, so if it is already past a limit, no copper or via
+change fixes it - the loss, the area, the enclosure or the airflow must change. (3) How far each hot part sits above that
+average: that excess is what copper, pours and vias can reduce. (4) The what-if: ground stitching vias on a grid, solved
+again. If it moves no hot part by more than a kelvin or two, stitching is not what limits the temperature (it is still an
+EMC question); if it does, it is a cheap fix. A pour of a net that exists on no other layer cannot be stitched at all:
+give the net copper on another layer, enlarge the pour, or lower the loss. Always quote the range over h (still air in a
+closed box is the largest uncertainty), the ambient you assumed, and what the model leaves out (wires and cells carry
+heat away; the box warms up), and compare the corner's duration with the board's time constant.
+
 ## "The pack found nothing" / "0 hot loops"
 
 Read the "Coverage and warnings" section before any table. An empty table under a warning ("hot loop U3: NOT

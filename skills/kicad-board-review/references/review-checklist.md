@@ -4,6 +4,11 @@ What to look at, why it matters, and how to check it with evidence. Each item na
 it. "Example" lines are illustrative, with typical numbers; use them to calibrate what a real problem looks like, not
 as values to reuse.
 
+**Every area ends with a recorded output (R23).** An item marked **Output:** is not done until that table or number is
+in the review, with its coverage: a heat-source table, a solved operating point, a temperature at the stated h. An area
+with no output is reported as NOT CHECKED, never as fine. Prose ("check it has copper") is a prompt; the output is the
+check.
+
 Contents: 1 Power entry and protection - 1b Start-up, shutdown and transients - 2 Copper capacity and heat - 3 Ground and return paths - 4 Regulators and
 decoupling - 5 Signal integrity and EMC - 6 ESD and external interfaces - 7 Datasheet compliance and derating -
 8 Sourcing and assembly - 9 Mechanical and silkscreen - 10 Firmware-visible consequences - 11 Audits worth scripting
@@ -84,7 +89,7 @@ A board that is fine in steady state can trip, latch or lose a part in the first
   its load; at low battery a load step times the path resistance is smaller than the converter's UVLO hysteresis, or
   the rail oscillates on and off.
 
-## 2. Copper capacity and heat  (`power.md`, `power.py`, `view.py`)
+## 2. Copper capacity and heat  (`power.md`, `power.py`, `thermal.md`, `thermal.py`, `view.py`)
 
 - **Measure the drop and the loss of every high-current path** with the DC solver: input terminal to fuse, fuse to
   FET, FET to shunt, shunt to every load, and the whole ground return at full load. Look at worst-sink drop, copper W,
@@ -107,8 +112,33 @@ A board that is fine in steady state can trip, latch or lose a part in the first
   0.6/0.3 vias with 0.1 mm clearance) and check `planes.py` / DRC `isolated_copper` after.
 - **Shunt resistors.** Use the manufacturer's land pattern (wide-terminal shunts need long pads); Kelvin-connect the
   sense lines from the inner ends of the pads; check power rating at the max current (I^2 R) with derating.
-- **Heat sources.** List every part dissipating more than about 0.25 W (FETs, fuses, shunts, regulators, PTCs at
-  load) and check it has copper and is not stacked next to another hot part or under a tall part that blocks airflow.
+- **Heat-source table, every corner.** **Output:** `thermal.md` "Heat sources per corner" with no UNKNOWN row you have
+  not explained. Give `review_config.json` "thermal" (format in `scripts/heat.py`) the corners that bound the heat - the
+  worst discharge (lowest source voltage, full load), typical use, and charging while running, each with its ambient -
+  and a loss for every candidate the pack lists (ICs, FETs, inductors, fuses, diodes, beads, shunts, parts on power-run
+  ends):
+  - I^2 R for FETs at the real gate drive and hot (R_DS(on) x the datasheet's normalised-resistance factor), fuses,
+    shunts, BATFETs, inductor DCR and copper (the power runs' loss, scaled to the corner's current), with the current
+    taken from the solved operating point (`path_budget.py --json`), not P / V;
+  - converter loss from the efficiency at that operating point (vendor tool or datasheet curve), with the inductor's
+    share separated when it is listed on its own;
+  - linear drop (V_in - V_out) x I for LDOs, linear chargers and resistive droppers;
+  - "negligible" only with a reason (a few mA), so the decision is recorded.
+  **Add up the series path, not only the converters.** At a low-voltage source (a 1S cell, 5 V USB at the end of a cable)
+  the current is high and the path's I^2 R - protector FETs, reverse-block FET, fuse, charger BATFET, copper - often
+  exceeds every converter's loss together; `thermal.md` says so when conduction exceeds conversion. Example: 15 W from a
+  3.0 V cell is about 6.6 A; three CSD13202Q2-class FETs hot (about 15 mOhm each) and a 19.5 mOhm BATFET dissipate about
+  2.8 W, against about 1 W in the three converters and their inductors (minipc-power, labelled example).
+- **Board and part temperatures.** **Output:** `thermal.md` "Board temperature" and "Parts" at the low, nominal and high
+  h, next to the board-average check P / (2 A h). The average is where every watt must go: if it is already past a
+  limit, the loss, the board area or the cooling has to change - copper and vias cannot fix an average. A part far above
+  the average has its heat trapped locally (pours, pads, vias help there). Compare each part's estimated Tj (psi_JB or
+  theta_JC from the datasheet) with its limit and with any function that folds back before it (a charger's thermal
+  regulation cuts charge current at about 110 C); compare the board with its laminate limit; and compare the corner's
+  duration with the board's time constant before calling a short peak a failure. h is the largest uncertainty: give the
+  user the range, not one number, and say what the enclosure adds.
+- **Spacing and airflow.** Hot parts not stacked next to each other, not under a tall part that blocks airflow, and
+  away from the cell, electrolytics and precision references.
 
 ## 3. Ground and return paths  (`power.md` ground sections, `planes.py`, `emc.md`)
 
@@ -126,6 +156,14 @@ A board that is fine in steady state can trip, latch or lose a part in the first
   breaks their intent. Route on the outer layers, reuse existing escape routes, or ask.
 - **Stitching.** Ground pours on outer layers need vias to the plane (`weakly_stitched_gnd_pieces`); board edges and
   connectors where cables leave need stitching (`edge_stitch` gaps > 10 mm near cable exits matter for emissions).
+  **Output:** the edge-stitch count and gaps and every weakly stitched piece, with what sits on it, in the review.
+- **Stitching for heat.** A pour under a hot part needs vias to a plane *of the same net*; a pour of a net that exists on
+  no other layer (a protector FET's drain, a switch node) reaches the planes only through the dielectric. `thermal.md`
+  "Pours under hot parts" gives, per pour, its vias, the FR4 under it and the solved temperature step to the layer below;
+  "Ground stitching" flags a weak ground island that carries a hot part as a heat finding; the what-if adds ground
+  vias on a grid and shows whether stitching changes any hot part's temperature at all. Report which it is: stitching
+  that the solve shows does not matter thermally is still an EMC question (above), and a hot spot that stitching does
+  not move needs a bigger pour, the net on another layer, or less loss.
 - **Inner-layer crossings: how to judge them.** Screen every inner-layer signal segment for its nearest reference and
   the plane slot it makes. A crossing is acceptable when a short, continuous alternate return is verified: the other
   plane is solid there, or a stitching via pair sits within about 1-2 mm on both sides of the cut. Vias alone do not
@@ -311,8 +349,10 @@ page that contains the real PDF link.
   sides if wires are soldered from either side), polarity and pin 1 marked, one pad-shape convention, pairs in the same
   order everywhere.
 
-- **Thermal vias:** a 0.3 mm plated via through 1.6 mm is roughly 100-200 C/W each, so they work in numbers: about 9 at
-  1.0-1.2 mm pitch under a 3x3 mm exposed pad, or the datasheet's pattern.
+- **Thermal vias:** a 0.3 mm plated via through 1.6 mm is roughly 100-200 C/W each (about 220 C/W at 20 um plating), so
+  they work in numbers: about 9 at 1.0-1.2 mm pitch under a 3x3 mm exposed pad, or the datasheet's pattern (put it in
+  `thermal.pads` and the pack checks against it). **Output:** `thermal.md` "Exposed pads and thermal vias": per pad the
+  vias in and beside it, their resistance to the nearest plane, the drop at the part's worst loss, and the shortfall.
 - **Electrolytic life** roughly doubles per 10 C below its rating (L = L0 x 2^((T_rated - T_actual)/10)): keep them away
   from hot parts.
 - **Test points:** about 1 mm pads at >= 2-2.54 mm pitch, one side, >= 3 mm from the edge for fixtures; SWD and boot

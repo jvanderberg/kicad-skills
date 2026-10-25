@@ -11,6 +11,9 @@ Use with the **kicad-board-review** skill (`review-checklist.md` sections 1, 4, 
 - [ ] Charge current from the program resistor at the K-factor extremes stays within the cell's limit.
 - [ ] Linear charger worst-case dissipation (Vin_max - V_precharge_threshold) x I_charge computed and covered by copper
       or thermal regulation.
+- [ ] Battery-path heat at the lowest cell voltage and full load (protector FETs, reverse-block FET, fuse, BATFET,
+      copper: I^2 R at the solved current, R_DS(on) hot) and the charger's loss while charging and running, in the
+      review's heat-source table with board temperatures (kicad-board-review `thermal.md`).
 - [ ] NTC fitted against the cell, wired to TS; trip temperatures computed for the actual thermistor and within the
       cell's charge range. TS not disabled.
 - [ ] Safety timers enabled and long enough for the capacity at the programmed current.

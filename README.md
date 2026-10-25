@@ -50,15 +50,16 @@ All tools also work without Claude.
 | `kicad-pcb-workflow/scripts/sexp.py` | Check s-expression files (balance, raw newlines in strings, duplicate uuids); list/get footprints and symbols |
 | `kicad-pcb-workflow/scripts/render.py` | Render a window of chosen layers by KiCad coordinates to PNG (or a 3D render); also boards without an outline (imported reference layouts) |
 | `kicad-pcb-workflow/scripts/kicad_open.sh` | Is KiCad holding the project open? |
-| `kicad-board-review/scripts/make_pack.sh` | Build the analysis pack: netlist digest, board overview, DC power runs, planes, EMC, DRC; each report starts with its coverage and warnings |
+| `kicad-board-review/scripts/make_pack.sh` | Build the analysis pack: netlist digest, board overview, DC power runs, planes, EMC, heat, DRC; each report starts with its coverage and warnings |
 | `kicad-board-review/scripts/topology.py` | Ground nets, switch nodes, switching ICs and hot-loop candidates derived from the netlist's structure (not net names); writes a starter review config for the board |
 | `kicad-board-review/scripts/power.py` | Resistive-grid DC solver: drop per load, copper loss, current density hotspots, current per via |
 | `kicad-board-review/scripts/planes.py`, `emc.py` | Ground plane pieces, slots (each with its own size; other nets' pours reported as pours) and stitching; reference continuity ranked by severity, crosstalk, layer changes, hot loops with a DC solve of each return path, Z0 |
+| `kicad-board-review/scripts/thermal.py`, `heat.py`, `thermal_model.py` | Heat-source table per part per corner (every candidate listed, unknown losses as UNKNOWN); steady-state layered thermal solve on the board's copper at a low / nominal / high film coefficient, next to the board-average check; junction estimates; thermal vias per exposed pad; pours under hot parts; ground stitching for heat, with a stitching what-if |
 | `kicad-board-review/scripts/region.py`, `view.py` | List or render the copper inside a box |
 | `pcb-part-selection/scripts/bom_check.py` | Stock, package size and assembly-class sweep of the whole BOM via JLCImport |
 | `pcb-part-selection/scripts/part_gate.py` | Lifecycle (TI product pages) and LCSC stock per exact orderable variant for candidate parts, or for part numbers found in pasted text (e.g. WEBENCH's table view) |
 | `pcb-part-selection/scripts/datasheet.py` | Fetch a datasheet only if it is really a PDF; find the pages holding a section or figure; render a page and record what it shows in the folder's INDEX.md |
-| `pcb-power-supply/scripts/path_budget.py` | Operating point of a power path with the source's and the path's resistance at every corner, plus transients, against every element's limit (latching trips first) |
+| `pcb-power-supply/scripts/path_budget.py` | Operating point of a power path with the source's and the path's resistance at every corner, plus transients, against every element's limit (latching trips first); the path's own loss next to the converters', and --json for the review's heat table |
 
 ## Requirements
 

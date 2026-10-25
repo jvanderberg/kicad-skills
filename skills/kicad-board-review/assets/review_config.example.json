@@ -1,5 +1,5 @@
 {
-  "_comment": "Example per-board analysis config for a hypothetical board: a 12 V input on J1 (net VIN) through fuse F1 onto +12V, which feeds output connectors J2-J5 and a 5 V buck U2 (output inductor L1); a 3.3 V buck U3 (output inductor L2) feeds the MCU U1 and a radio module U4. Every ref, pad and net here is a placeholder: replace them with your own board's, after reading netlist.md, and delete entries that do not apply. Regexes match KiCad net names exactly as they appear in netlist.md (sheet-local nets look like /Power/NAME); the first matching rule wins. Power runs: the source pad is held at 0 V and each sink draws its amps; negative amps inject current (ground returns). Optional per run: h (grid pitch, mm) and region [x0, y0, x1, y1] (only copper inside the box is solved). rail_voltages gives the voltage of rails whose name does not contain it.",
+  "_comment": "Example per-board analysis config for a hypothetical board: a 12 V input on J1 (net VIN) through fuse F1 onto +12V, which feeds output connectors J2-J5 and a 5 V buck U2 (output inductor L1); a 3.3 V buck U3 (output inductor L2) feeds the MCU U1 and a radio module U4. Every ref, pad and net here is a placeholder: replace them with your own board's, after reading netlist.md, and delete entries that do not apply. Regexes match KiCad net names exactly as they appear in netlist.md (sheet-local nets look like /Power/NAME); the first matching rule wins. Power runs: the source pad is held at 0 V and each sink draws its amps; negative amps inject current (ground returns). Optional per run: h (grid pitch, mm) and region [x0, y0, x1, y1] (only copper inside the box is solved). rail_voltages gives the voltage of rails whose name does not contain it. thermal: the heat-source table and the thermal solve (format in scripts/heat.py). Corners name the operating points that bound the heat; a current is a number, a name defined in the corner, {\"run\": power run} or {\"path_budget\": a file written by pcb-power-supply path_budget.py --json, \"source\", \"R_corner\"}. Any value can be per corner ({\"full_load\": x}); a corner missing from such a dict is UNKNOWN there. psi_jb / theta_jc and the limits come from each part's datasheet; the numbers below are illustrative, not data.",
   "ground_nets": ["GND"],
   "net_classes": [
     {"match": "^(USB_D[+-]|/?USB_)", "class": "usb"},
@@ -28,5 +28,25 @@
      "source": ["L1:2"], "sinks": [["U3:1", 0.6]]},
     {"name": "p3v3", "net": "+3V3", "title": "3.3 V buck output to the MCU and the radio", "h": 0.19,
      "source": ["L2:2"], "sinks": [["U1:1", 0.15], ["U4:2", 0.5]]}
-  ]
+  ],
+  "thermal": {
+    "ambient_C": 45, "h_W_m2K": {"low": 5, "nominal": 7, "high": 10}, "board_T_max_C": 105,
+    "corners": {
+      "full_load": {"title": "12 V in, all outputs at their rated current", "currents": {"I_in": 10.6, "I_L1": 0.6, "I_L2": 0.65}},
+      "idle": {"title": "12 V in, outputs off, MCU and radio idle", "currents": {"I_in": 0.1, "I_L1": 0.05, "I_L2": 0.06}}
+    },
+    "sources": [
+      {"ref": "F1", "what": "input fuse", "kind": "i2r", "R_ohm": 0.0035, "I": "I_in", "group": "input path", "basis": "fuse datasheet cold resistance"},
+      {"copper_run": "p12v_rail", "I": {"full_load": 10, "idle": 0}, "group": "input path"},
+      {"ref": "U2", "what": "5 V buck", "kind": "converter", "P_out": {"full_load": 3.0, "idle": 0.3}, "eff": {"full_load": 0.90, "idle": 0.80},
+       "eff_includes": ["L1"], "basis": "efficiency curve at 12 V in"},
+      {"ref": "L1", "what": "5 V buck inductor", "kind": "i2r", "R_ohm": 0.045, "I": "I_L1", "basis": "inductor DCR"},
+      {"ref": "U3", "what": "3.3 V buck", "kind": "converter", "P_out": {"full_load": 2.15, "idle": 0.2}, "eff": {"full_load": 0.88, "idle": 0.75}, "eff_includes": ["L2"]},
+      {"ref": "L2", "what": "3.3 V buck inductor", "kind": "i2r", "R_ohm": 0.06, "I": "I_L2"},
+      {"ref": "U4", "what": "radio module", "kind": "fixed", "P_W": {"full_load": 0.6, "idle": 0.05}, "basis": "module datasheet, TX average"},
+      {"ref": "U1", "kind": "negligible", "why": "MCU, about 30 mA at 3.3 V (0.1 W)"}
+    ],
+    "parts": {"U2": {"psi_jb": 12.0, "Tj_max_C": 125, "basis": "datasheet thermal information table"}},
+    "pads": {"U2:9": {"vias": 6, "basis": "datasheet layout example"}}
+  }
 }

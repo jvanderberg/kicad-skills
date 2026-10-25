@@ -54,6 +54,10 @@ at its input makes it draw more current, which lowers the voltage again. For eve
       load at the worst corner, with each trip's delay (`transients` in the same file).
 - [ ] The load-step voltage drop (I_step x R_path) is smaller than the converter's UVLO hysteresis, or the converter
       can oscillate on and off at low battery.
+- [ ] Read the path's own loss next to the converters' (`path_budget.py` prints both per corner): at a low source
+      voltage the series elements' I^2 R often exceeds every converter's loss together, and it is heat on the board
+      (mark cells, wires and cables `"off_board"`, give each on-board element its `"ref"`, and write `--json` for the
+      heat table below).
 Example (labelled): minipc-power's 15 W at 88.5 % from a 3.0 V cell is 5.6 A by division; with ~87 mOhm of cell (20 mOhm assumed), FETs,
 fuse, BATFET and copper it is 7.1 A at 2.4 V - past the BATFET's latching 6.0 A trip and below the 5 V boost's UVLO.
 15 W needs about 3.35 V at the cell.
@@ -182,8 +186,17 @@ exposed pad.
 - Start-up, shutdown and transients: kicad-board-review's checklist s1b (every load switch's turn-on vs the
   converter's soft-start, inrush through body diodes, upstream trips with their delays, datasheet capacitance-ratio
   rules, hot-plug, shutdown backfeed).
-- Losses and temperature: converter efficiency curve at your operating point x load; LDO P = dV x I; check theta-JA
-  against the copper you actually gave it.
+- **Losses and temperature: a heat-source table at every corner, not a converter sum.** For each corner (worst
+  discharge at the lowest source voltage, typical, charging while running): every converter's loss from its
+  efficiency at that operating point (P_out x (1/eff - 1), inductor DCR listed on its own if you have it), every LDO's
+  (V_in - V_out) x I, and **the series path's I^2 R element by element** - protector and reverse-block FETs at the real
+  gate drive and hot (R_DS(on) x the datasheet's normalised-resistance factor, often 1.3-1.5), fuse, shunt, charger
+  BATFET, copper - with the current from `path_budget.py`, not P / V. At a 1S cell the path is often the largest heat
+  source on the board (labelled example: about 2.8 W in three protector/reverse FETs and the BATFET at 15 W from a 3.0 V
+  cell, against about 1 W in the three converters; the design notes had added up only the converters). Put the table in
+  the design doc and in kicad-board-review's `review_config.json` "thermal" (`scripts/heat.py` there), which turns it
+  into board and junction temperatures at a range of film coefficients. theta-JA is a JEDEC-board number, not your
+  board's: use psi_JB / theta_JC with the board temperature the review computes.
 - Layout review (kicad-board-review skill): hot loop distances edge-to-edge, switch node area, FB/EN routing not
   splitting the local ground, return paths, thermal.
 - On the bench (say this in the report; it is not optional for a new design): output ripple with a short ground spring,

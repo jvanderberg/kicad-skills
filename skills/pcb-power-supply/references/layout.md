@@ -63,6 +63,14 @@ datasheet suggests one.
 - The datasheet's theta-JA is measured on a JEDEC test board and is not your board's number; heat leaves mostly through
   the board copper, so copper area and vias matter more than the package [TI SPRA953D].
 - Spread hot parts (inductor, IC, rectifier) apart; keep electrolytics and precision analog away from them.
+- Vias only move heat to copper of their own net: a thermal pad on a ground plane drains well; a power FET's drain or a
+  protector FET's pour on a net that exists on no other layer reaches the planes only through the dielectric (about
+  0.2 mm prepreg on a 4-layer board, 1.5 mm on a 2-layer one). Give such a net copper on another layer (with vias), or
+  enough area on its own layer. kicad-board-review's `thermal.md` reports, per hot part, the pour, its vias and the
+  solved temperature step to the next layer.
+- The board's own average rise is P_total / (A x (h_top + h_bottom)), with h about 5-10 W/m^2K in still air in a closed
+  box: a 50 x 35 mm board at 2 W is already about 55-115 K above the air around it, whatever the layout. Check the total
+  loss against the board area before the layout, not after.
 
 ## 7. Via current
 
