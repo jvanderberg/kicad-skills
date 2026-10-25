@@ -33,6 +33,10 @@ pulse), plus a TVS. Check the result against the regulator's VIN absolute maximu
 
 ## Inrush
 
+Inrush adds to the load already running and passes every element upstream: check it against each trip with its
+delay at the worst source corner (`scripts/path_budget.py` "transients"), and make every downstream load switch slower
+than its converter's soft-start (kicad-board-review checklist s1b).
+
 Charging capacitance from a stiff source draws I = C dV/dt - large enough to trip upstream protection or droop a shared
 rail (a 100 uF load switched onto a 3.3 V rail can pull several amps and drop the rail [TI SLVA670A]). Use the
 converter's soft start, a load switch with controlled slew, a hot-swap/eFuse controller, or an NTC/resistor for

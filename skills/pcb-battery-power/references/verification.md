@@ -19,7 +19,12 @@ Use with the **kicad-board-review** skill (`review-checklist.md` sections 1, 4, 
 - [ ] Input power covers system peak and charging at the same time (`charging.md` "Charging while running").
 - [ ] With a PD sink: the charger's input current limit is within the negotiated contract, the fallback when the
       requested voltage is not offered is known (or designed for), and the D+/D- (BC1.2) wiring decision is recorded.
-- [ ] Protector trip current at the cell's minimum voltage covers the peak load (boost input current at V_cell_min).
+- [ ] Protector trip current at the cell's minimum voltage covers the peak load: the boost input current **solved with
+      the path resistance** (cell, FETs, fuse, BATFET, copper; `pcb-power-supply/scripts/path_budget.py`), not
+      P / (eff x V_cell_min), and the same current checked against the charger's BATFET over-current limit (some latch
+      off until the input returns) and the converters' UVLO at the resulting system voltage.
+- [ ] Start-up: every load switch turns on after its converter is regulating, and the inrush (C x dV/dt) plus the
+      running load stays under every upstream trip at an empty cell (kicad-board-review checklist s1b).
 - [ ] Power path: the system runs with no cell and with a dead cell; downstream regulators rated for the highest
       system voltage.
 - [ ] Protector on every bare cell (or PCM confirmed in the pack); OVP / UVP thresholds suit the cell; overcurrent trip

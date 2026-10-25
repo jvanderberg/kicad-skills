@@ -4,7 +4,7 @@ What to look at, why it matters, and how to check it with evidence. Each item na
 it. "Example" lines are illustrative, with typical numbers; use them to calibrate what a real problem looks like, not
 as values to reuse.
 
-Contents: 1 Power entry and protection - 2 Copper capacity and heat - 3 Ground and return paths - 4 Regulators and
+Contents: 1 Power entry and protection - 1b Start-up, shutdown and transients - 2 Copper capacity and heat - 3 Ground and return paths - 4 Regulators and
 decoupling - 5 Signal integrity and EMC - 6 ESD and external interfaces - 7 Datasheet compliance and derating -
 8 Sourcing and assembly - 9 Mechanical and silkscreen - 10 Firmware-visible consequences - 11 Audits worth scripting
 
@@ -33,6 +33,11 @@ while others are absent.
 - **Reverse polarity.** Series diode (simple, lossy), P-FET, or ideal-diode controller + N-FET (low loss, needs layout
   care). Check the FET's V_DS and V_GS ratings against the max input plus surge, its R_DS(on) loss at full current,
   and that every part downstream survives the moment before the protection acts.
+- **Operating point with the source's and the path's resistance.** For every power path, solve the current instead
+  of dividing power by voltage: `pcb-power-supply/scripts/path_budget.py` with each element's resistance (cell or
+  cable, FETs at the real gate drive, fuse, BATFET, connector, copper from `power.py`'s R_eff) and the source's corners.
+  Compare the solved current and node voltage with every element's limit, latching trips first (example: 15 W from a
+  3.0 V cell through ~87 mOhm is 7.1 A, not 5.6 A, past a charger BATFET trip that latches until USB returns).
 - **Series-path loss and heat.** Add up fuse resistance + FET R_DS(on) + shunt + connector contacts + copper. Example:
   a 3 mOhm fuse, 1.5 mOhm FET, 2 mOhm shunt and some copper at 20 A is roughly 0.2 V and 4 W per path; several such
   paths are real heat that needs copper area and airflow, and a number the user should know.
@@ -56,6 +61,28 @@ while others are absent.
 - **Every output that leaves on a cable** has its own overcurrent element rated for that wire.
 - **A small-signal zener is not a surge clamp.** A 500 mW zener across a rail has a tiny pulse rating; use a TVS rated
   by peak pulse power / I_pp.
+
+## 1b. Start-up, shutdown and transients
+
+A board that is fine in steady state can trip, latch or lose a part in the first millisecond. For every rail:
+- **Each output switch** (load switch, disconnect FET, eFuse, ideal diode): compute its turn-on time from the gate
+  network (gate RC, or Q_g over the drive current) and compare it with the upstream converter's soft-start time. A
+  switch that closes before the converter regulates puts the load capacitance straight on the converter's input path;
+  for a boost that path is always there (VIN -> inductor -> rectifier body diode -> VOUT), so the inrush is limited
+  only by the source and the path.
+- **Inrush current** = C_load x dV/dt for every switch-on and hot-plug, added to the load already running, against
+  every upstream current trip with its delay (protector OCD/SCD delay, BATFET over-current - often immediate and
+  latching - eFuse, PTC/fuse I^2t): `path_budget.py` "transients". Example: a 10 nF gate capacitor turned a P-FET load
+  switch on in ~0.1 ms, ~5 A into 100 uF on top of the running load; 100 nF made it ~1 ms and ~0.5 A.
+- **Datasheet start-up rules**: maximum output capacitance for soft-start, capacitance-ratio rules for disconnect FETs
+  (e.g. capacitance after the FET at most 10x the converter's own output capacitance), required EN delay or sequence.
+- **Sequencing**: which rails come up in which order, from what (EN thresholds and dividers), and what is powered while
+  the controller is not; nothing back-feeds an unpowered rail through an IO pin or a body diode.
+- **Hot-plug**: input capacitance plus cable inductance rings to up to twice the input (pcb-power-supply
+  `input-protection.md`); the peak stays under every abs max on that rail.
+- **Shutdown and brown-out**: output capacitors discharge somewhere defined; a disabled converter is not back-driven by
+  its load; at low battery a load step times the path resistance is smaller than the converter's UVLO hysteresis, or
+  the rail oscillates on and off.
 
 ## 2. Copper capacity and heat  (`power.md`, `power.py`, `view.py`)
 

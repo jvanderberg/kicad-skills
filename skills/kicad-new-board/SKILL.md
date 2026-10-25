@@ -72,6 +72,8 @@ Work through these levels in order. `references/interview-guide.md` has the deta
    every rail, each load's average and peak current, and protection needs (reverse polarity, fusing, surge, hot-plug).
    Fill in the power budget table. **Check the input against everything that can draw at once**: input power >=
    system peak / efficiency + charge current x charge voltage / charger efficiency (for a 1S lithium cell, 4.2 V).
+   Use the input voltage at the board, after the cable and connector (a 5 V source can arrive below 4.5 V through a
+   long cable at 3 A: pcb-power-supply `path_budget.py`), and the battery current solved with the path's resistance.
    A plain 5 V USB-C input is 15 W at most (5 V / 3 A, and only from a source that advertises it); if the check fails,
    the design needs USB PD or a lower charge current - say so, or the board discharges while plugged in. Detailed
    regulator design belongs to the **pcb-power-supply** skill; batteries, charging and sleep-current budgets to the

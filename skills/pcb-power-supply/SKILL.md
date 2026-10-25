@@ -18,6 +18,8 @@ References (read the one you need):
 - `references/input-protection.md` - reverse polarity, surge/TVS, hot-plug overshoot, inrush, fusing, UVLO
 - `references/webench.md` - driving TI WEBENCH Power Designer from the browser: what it gives, what needs a login
 - `references/sources.md` - the app notes and datasheets these are drawn from
+- `scripts/path_budget.py` - operating point of a power path with the source and path resistance, at every corner and
+  with transients, against every element's limit
 
 ## Before choosing any switching regulator
 
@@ -31,6 +33,30 @@ References (read the one you need):
 - [ ] **Design for the exact orderable variant** and its own datasheet.
 - [ ] **Collect the layout reference pack** for the chosen part before placement (step 6), including the
       datasheet typical application's full parts list (`reference-parts.json`, checked with `refparts.py`).
+
+## Operating points are solved, not divided (R20)
+
+A current written as P / (eff x V_source) assumes an ideal source and a zero-ohm path. Every source has resistance
+(a cell's internal resistance, a USB cable, a long input lead) and every path adds more (protector FETs, fuse, the
+charger's BATFET, an eFuse, connectors, copper). A switching converter is a constant-power load, so the lower voltage
+at its input makes it draw more current, which lowers the voltage again. For every power path:
+- [ ] List each element with its resistance at typ and max (FET R_DS(on) at the real gate drive and temperature,
+      fuse cold resistance, copper from kicad-board-review's `power.py` R_eff), the source's voltage corners (cell
+      empty / nominal / full, USB 4.75 V at the far end of the cable) and its own resistance.
+- [ ] Solve the operating point at every corner: `scripts/path_budget.py PATH.json` (I x (V - I R) = P). It reports
+      the current, the voltage at the load, every element's limit crossed (latching ones first, in bold), the largest
+      load power each corner can carry and the lowest source voltage that carries the full load - or that no
+      operating point exists (P > V^2 / 4R).
+- [ ] Compare against **every** limit along the path, not only the converter's: protector and BATFET over-current
+      (and whether they latch: a BQ25606 BATFET over-current turns the battery off until USB returns), fuse and
+      PTC derating, connector rating, converter UVLO at the solved node voltage, the cell's maximum discharge current.
+- [ ] Add the transients (start-up inrush C x dV/dt through each load switch, load steps, hot-plug) to the steady
+      load at the worst corner, with each trip's delay (`transients` in the same file).
+- [ ] The load-step voltage drop (I_step x R_path) is smaller than the converter's UVLO hysteresis, or the converter
+      can oscillate on and off at low battery.
+Example (labelled): minipc-power's 15 W at 88.5 % from a 3.0 V cell is 5.6 A by division; with ~87 mOhm of cell, FETs,
+fuse, BATFET and copper it is 7.1 A at 2.4 V - past the BATFET's latching 6.0 A trip and below the 5 V boost's UVLO.
+15 W needs about 3.35 V at the cell.
 
 ## 1. Pin down the requirement
 
@@ -148,7 +174,11 @@ exposed pad.
 
 - Calculations reviewed against the datasheet procedure; numbers in the doc.
 - Worst-case startup: lowest input after all upstream drops still above UVLO and enough for regulation; highest input
-  plus surge below every abs max.
+  plus surge below every abs max. "After all upstream drops" means the solved operating point (`path_budget.py`),
+  since the drops grow with the current the converter draws at that lower voltage.
+- Start-up, shutdown and transients: kicad-board-review's checklist s1b (every load switch's turn-on vs the
+  converter's soft-start, inrush through body diodes, upstream trips with their delays, datasheet capacitance-ratio
+  rules, hot-plug, shutdown backfeed).
 - Losses and temperature: converter efficiency curve at your operating point x load; LDO P = dV x I; check theta-JA
   against the copper you actually gave it.
 - Layout review (kicad-board-review skill): hot loop distances edge-to-edge, switch node area, FB/EN routing not
