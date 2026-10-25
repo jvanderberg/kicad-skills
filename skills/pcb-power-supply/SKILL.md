@@ -54,7 +54,7 @@ at its input makes it draw more current, which lowers the voltage again. For eve
       load at the worst corner, with each trip's delay (`transients` in the same file).
 - [ ] The load-step voltage drop (I_step x R_path) is smaller than the converter's UVLO hysteresis, or the converter
       can oscillate on and off at low battery.
-Example (labelled): minipc-power's 15 W at 88.5 % from a 3.0 V cell is 5.6 A by division; with ~87 mOhm of cell, FETs,
+Example (labelled): minipc-power's 15 W at 88.5 % from a 3.0 V cell is 5.6 A by division; with ~87 mOhm of cell (20 mOhm assumed), FETs,
 fuse, BATFET and copper it is 7.1 A at 2.4 V - past the BATFET's latching 6.0 A trip and below the 5 V boost's UVLO.
 15 W needs about 3.35 V at the cell.
 

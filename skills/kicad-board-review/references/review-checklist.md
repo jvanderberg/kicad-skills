@@ -37,7 +37,7 @@ while others are absent.
   of dividing power by voltage: `pcb-power-supply/scripts/path_budget.py` with each element's resistance (cell or
   cable, FETs at the real gate drive, fuse, BATFET, connector, copper from `power.py`'s R_eff) and the source's corners.
   Compare the solved current and node voltage with every element's limit, latching trips first (example: 15 W from a
-  3.0 V cell through ~87 mOhm is 7.1 A, not 5.6 A, past a charger BATFET trip that latches until USB returns).
+  3.0 V cell through ~87 mOhm (cell and wiring resistance assumed) is 7.1 A, not 5.6 A, past a charger BATFET trip that latches until USB returns).
 - **Series-path loss and heat.** Add up fuse resistance + FET R_DS(on) + shunt + connector contacts + copper. Example:
   a 3 mOhm fuse, 1.5 mOhm FET, 2 mOhm shunt and some copper at 20 A is roughly 0.2 V and 4 W per path; several such
   paths are real heat that needs copper area and airflow, and a number the user should know.
