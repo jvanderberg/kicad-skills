@@ -5,7 +5,9 @@
 
 Prints one row per dependency: found / version / what needs it / how to install, and exits 1 when anything a chosen
 skill requires is missing or too old. With --project it also checks the project's pinned kicad-skills revision
-(kicad-skills.lock, see skills_rev.py). A script that fails halfway because a tool was never installed wastes the run
+(kicad-skills.lock, see skills_rev.py) and its sourcing context (sourcing.json: assembler and LCSC region; required
+for the parts skill, since stock differs by region and jlcimport-cli's own default region is whatever its KiCad
+plugin last used). A script that fails halfway because a tool was never installed wastes the run
 and can leave half-written outputs; one that silently skips a step reports a pass it did not earn.
 Identical copies in kicad-pcb-workflow/scripts and kicad-board-review/scripts (with skills_rev.py); keep them in sync.
 """
@@ -97,6 +99,38 @@ def checks():
     return out
 
 
+def jlcimport_default_region():
+    """the region jlcimport-cli's search uses when --region is missing: its config file (written by the KiCad plugin's
+    region menu), else global"""
+    base = {'darwin': '~/Library/Preferences/kicad', 'win32': os.path.join(os.environ.get('APPDATA', ''), 'kicad')}.get(sys.platform, '~/.config/kicad')
+    p = os.path.join(os.path.expanduser(base), 'jlcimport.json')
+    try:
+        import json
+        return json.load(open(p)).get('region', 'global'), p
+    except (OSError, ValueError):
+        return 'global', None
+
+
+def sourcing_check(project):
+    """(ok, message): the project's sourcing.json names assembler and region; jlcimport's own default noted"""
+    import json
+    sys.path.insert(0, HERE)
+    import projfiles
+    p, msg = projfiles.describe(project, 'sourcing.json')
+    dflt, cfgp = jlcimport_default_region()
+    tail = "; jlcimport-cli's default region is %s (%s): the skills' scripts always pass --region, never run its search by hand without it" % (
+        dflt, cfgp or 'built in')
+    if not p:
+        return False, msg + ' - create it: pcb-part-selection/scripts/sourcing.py init <project> --assembler JLCPCB --region global' + tail
+    try:
+        d = json.load(open(p))
+    except (OSError, ValueError) as e:
+        return False, '%s unreadable: %s' % (p, e)
+    if not d.get('assembler') or d.get('region') not in ('global', 'cn'):
+        return False, '%s must name "assembler" and "region" (global | cn)' % p
+    return True, '%s: %s, region %s%s' % (p, d['assembler'], d['region'], tail if dflt != d['region'] else '')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--for', dest='skills', default='all'); ap.add_argument('--project')
@@ -119,6 +153,10 @@ def main():
             ok, msg = False, 'skills_rev.py is not next to this script: cannot check the pinned revision'
         print('%-50s %-8s %s' % ('kicad-skills revision (kicad-skills.lock)', 'ok' if ok else 'MISMATCH', msg))
         bad += not ok
+        ok, msg = sourcing_check(a.project)
+        req = 'parts' in want
+        print('%-50s %-8s %s' % ('sourcing context (sourcing.json)', 'ok' if ok else ('MISSING' if req else 'optional'), msg))
+        bad += (not ok) and req
     print('\n%s' % ('all required tools present' if not bad else '%d required item(s) missing or wrong: fix them before running the skills\' scripts' % bad))
     sys.exit(1 if bad else 0)
 

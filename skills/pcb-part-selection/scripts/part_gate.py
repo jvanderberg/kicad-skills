@@ -1,24 +1,34 @@
 #!/usr/bin/env python3
 """Lifecycle + stock gate for candidate parts, before any design work is spent on them.
 
-  part_gate.py TPS61088 TPS61088-Q1 BQ25606 ... [--need 50] [--cli jlcimport-cli]
-  pbpaste | part_gate.py --from-text [--need 50]      # pasted text, e.g. WEBENCH's TABLE VIEW: part numbers are found
+  part_gate.py TPS61088 TPS61088-Q1 BQ25606 C316138 ... [--project DIR] [--per-board 3 | --need 50] [--region R]
+  pbpaste | part_gate.py --from-text                  # pasted text, e.g. WEBENCH's TABLE VIEW: part numbers are found
+
+Stock is looked up in the project's region from its sourcing.json (sourcing.py; found from --project, default the
+current folder, up to the repository root), with --region passed explicitly to jlcimport-cli: there is no default
+region, and stock in the other warehouse does not count (shown beside a short part, labelled as such). The required
+stock is per-board count x boards x (1 + attrition) from sourcing.json, at least its stock policy, or --need.
 
 For each device name it prints:
 - lifecycle from the manufacturer's product page, where that can be read automatically (TI: ti.com/product/<NAME>,
   the page's status tag: ACTIVE / NRND / LAST TIME BUY / OBSOLETE / PREVIEW). A missing product page (HTTP 404) is
   reported as SUSPECT: treat the part as discontinued until the manufacturer says otherwise. Other vendors: "check by
   hand" (open the product page and record the status);
-- every orderable LCSC variant of that exact device (jlcimport-cli search --region global), with stock and the total.
+- every orderable LCSC variant of that exact device in the project's region, with stock (an LCSC C-number is looked
+  up as exactly that part).
   Variants are kept apart: an automotive "-Q1" device is a different part with its own datasheet (equations, limits,
   Rds(on) can differ), so a "-Q1" query only matches orderable numbers ending in Q1, and a plain query excludes them.
 Exit 1 if any part is SUSPECT/NRND/OBSOLETE/LAST TIME BUY or has less stock than --need.
 
 Why: distributor stock is not evidence a part is still made (a discontinued part showed 7,130 units at LCSC), and a
 design tool's top picks may have no stock at all. Run this on every candidate before customising a design around it,
-and again right before ordering. Results are a snapshot: record the date with them.
+and again right before ordering, and present every candidate to the user with its stock, region and date (the
+first output line). Results are a snapshot.
 """
-import argparse, csv, io, os, re, shutil, subprocess, sys, urllib.error, urllib.request
+import argparse, os, re, sys, urllib.error, urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sourcing  # noqa: E402
 
 TI_PREFIX = r'(?:TPSM?|LMR|LMQ|LMZ|LM|TLV|LP|BQ|UCC|LMG|CSD|TLC|TPA|TCA|INA|LMS|TPD|TS)'
 NAME_RE = re.compile(r'\b(%s\d[0-9A-Z]*(?:-Q1)?)\b' % TI_PREFIX)
@@ -72,31 +82,36 @@ def is_ti(name):
     return re.match(TI_PREFIX + r'\d', name) is not None
 
 
-def lcsc_variants(name, cli):
+def lcsc_variants(name, region, cli):
+    """orderable variants of a device name in one region, most stock first; a C-number is looked up exactly"""
+    if re.match(r'^C\d+$', name):
+        row = sourcing.lookup(name, region, cli)
+        return [row] if row else []
     base = name[:-3] if name.upper().endswith('-Q1') else name
     q1 = name.upper().endswith('Q1')
-    r = subprocess.run([cli, 'search', base, '--region', 'global', '--min-stock', '0', '--csv', '-n', '30'],
-                       capture_output=True, text=True, timeout=120)
     rows = []
-    for row in csv.DictReader(io.StringIO(r.stdout)):
-        part = (row.get('Part') or '').upper()
-        if not part.startswith(base.upper()) or 'JLCPCB' in (row.get('Brand') or '').upper():
+    for row in sourcing.search(base, region, cli, n=30):
+        part = (row.get('part') or '').upper()
+        if not part.startswith(base.upper()) or 'JLCPCB' in (row.get('brand') or '').upper():
             continue
         rest = part[len(base):]
         if rest[:1].isdigit():                       # TPS61088 must not match TPS610881
             continue
         if q1 != part.endswith('Q1'):
             continue
-        rows.append(dict(lcsc=row['LCSC'], part=row['Part'], stock=int(row['Stock'] or 0), type=row.get('Type', ''),
-                         package=row.get('Package', ''), price=row.get('Price', '')))
-    return sorted(rows, key=lambda x: -x['stock']), r.returncode
+        rows.append(row)
+    return sorted(rows, key=lambda x: -x['stock'])
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('names', nargs='*'); ap.add_argument('--from-text', action='store_true')
-    ap.add_argument('--need', type=int, default=1, help='minimum stock of the best variant (boards x per-board x 1.1)')
-    ap.add_argument('--cli', default=os.environ.get('JLCIMPORT_CLI') or shutil.which('jlcimport-cli') or 'jlcimport-cli')
+    ap.add_argument('--project', help='folder to find sourcing.json from (default: the current folder)')
+    ap.add_argument('--region', choices=sorted(sourcing.REGIONS), help="override sourcing.json's region")
+    ap.add_argument('--sourcing', help='explicit sourcing.json')
+    ap.add_argument('--per-board', type=int, default=1, help='parts of this kind per board (sets the order need)')
+    ap.add_argument('--need', type=int, help='minimum stock of the best variant, instead of the sourcing.json order need')
+    ap.add_argument('--cli', default=sourcing.default_cli())
     ap.add_argument('--no-lifecycle', action='store_true')
     a = ap.parse_args()
     names = list(a.names)
@@ -105,9 +120,21 @@ def main():
     names = list(dict.fromkeys(n.upper() for n in names))
     if not names:
         sys.exit('no part names given or found')
+    try:
+        ctx = sourcing.resolve(a.project, a.region, a.sourcing)
+    except sourcing.SourcingError as e:
+        sys.exit('part_gate: %s' % e)
+    print(sourcing.header(ctx))
+    for n in ctx['notes'][1:]:
+        print('  note: ' + n)
+    reg = ctx['region']
     bad = 0
     for n in names:
-        if not is_ti(n):
+        order, policy, _ = sourcing.need_for(ctx, a.per_board, n if re.match(r'^C\d+$', n) else None)
+        need = a.need if a.need is not None else max(order, policy)
+        if re.match(r'^C\d+$', n):
+            life = 'check by hand (LCSC number: read the MPN below)'
+        elif not is_ti(n):
             life = 'check by hand (not a TI part number)'
         elif a.no_lifecycle:
             life = '-'
@@ -115,20 +142,34 @@ def main():
             life, page = ti_resolve(n)
             if page != n:
                 life += ' (as %s)' % page
-        rows, rc = lcsc_variants(n, a.cli)
+        try:
+            rows = lcsc_variants(n, reg, a.cli)
+            err = None
+        except sourcing.SourcingError as e:
+            rows, err = [], str(e)
         best = rows[0]['stock'] if rows else 0
         flags = []
         if re.match(r'SUSPECT|NRND|OBSOLETE|LAST TIME', life):
             flags.append('LIFECYCLE')
-        if best < a.need:
-            flags.append('STOCK %d < %d' % (best, a.need))
+        if best < need:
+            flags.append('STOCK %d < %d in %s' % (best, need, reg))
+        other = ''
+        if best < need and not err:
+            try:
+                alt = lcsc_variants(n, sourcing.other(reg), a.cli)
+            except sourcing.SourcingError:
+                alt = []
+            if alt and alt[0]['stock']:
+                other = '   [%s has %s - does not count: %s buys from %s]' % (
+                    sourcing.other(reg), '{:,}'.format(alt[0]['stock']), ctx['assembler'], reg)
         bad += bool(flags)
-        print('%-14s lifecycle %-28s LCSC global: %s%s' % (
-            n, life, '%d in stock (best variant), %d variants' % (best, len(rows)) if rows else
-            ('search failed (exit %d)' % rc if rc else 'no orderable variant found'),
-            '   <-- ' + ', '.join(flags) if flags else ''))
+        print('%-14s lifecycle %-28s LCSC %s: %s%s%s' % (
+            n, life, reg, '%s in stock (best variant), %d variants' % ('{:,}'.format(best), len(rows)) if rows else
+            ('search failed: %s' % err if err else 'no orderable variant found'),
+            '   <-- ' + ', '.join(flags) if flags else '', other))
         for r in rows[:6]:
-            print('    %-11s %-22s %8d  %-9s %s' % (r['lcsc'], r['part'], r['stock'], r['type'], r['package']))
+            print('    %-11s %-22s %8s  %-9s %-16s %s %s' % (r['lcsc'], r['part'], '{:,}'.format(r['stock']), r['type'], r['package'],
+                                                       r['price'], r['currency']))
     sys.exit(1 if bad else 0)
 
 

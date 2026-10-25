@@ -14,8 +14,10 @@ runs without the project's notes reports a different answer from the project's o
 
 Known inputs (KNOWN below): pin-decisions.json (nc_audit.py --notes), drc-accept.json (check.sh --accept),
 review_config.json (make_pack.sh), reference-parts.json (refparts.py), kicad-skills.lock (skills_rev.py),
-field-exemptions.json (partfields.py).
-Identical copies in kicad-pcb-workflow/scripts and kicad-board-review/scripts (each skill folder is self-contained).
+field-exemptions.json (partfields.py), sourcing.json (bom_check.py, part_gate.py, sourcing.py),
+design-values.json (derived_check.py, bom_check.py).
+Identical copies in kicad-pcb-workflow/scripts, kicad-board-review/scripts and pcb-part-selection/scripts (each skill
+folder is self-contained).
 """
 import os
 import sys
@@ -27,6 +29,8 @@ KNOWN = {
     'reference-parts.json': "parts each IC's datasheet typical application requires (refparts.py)",
     'kicad-skills.lock': 'the kicad-skills revision this project builds with (skills_rev.py)',
     'field-exemptions.json': 'named exemptions from the part-field check, with reasons (partfields.py --accept)',
+    'sourcing.json': "assembler, the warehouse region it buys from, order quantity, stock policy (every stock lookup)",
+    'design-values.json': "each derived value and the part parameters it was computed from (derived_check.py)",
 }
 
 
