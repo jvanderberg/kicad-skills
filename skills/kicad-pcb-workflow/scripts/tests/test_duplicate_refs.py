@@ -1,7 +1,7 @@
 """Duplicate footprint references: Board.validate() (which save() runs) and `sexp.py check` follow KiCad's own rule.
     python3 tests/test_duplicate_refs.py
-KiCad's DRC never counts board-only footprints (logos, graphics) as duplicates; placeholder references (REF**, G***)
-are left to DRC. Two G*** logos on one board used to make save() refuse the board and `sexp.py check` fail it."""
+KiCad's DRC (checked with kicad-cli --schematic-parity): in file order, a footprint whose reference, in any case, was
+already seen is a duplicate unless it is board-only itself; placeholder references (REF**, G***) are left to DRC. Two G*** logos on one board used to make save() refuse the board and `sexp.py check` fail it."""
 import os, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
@@ -11,7 +11,9 @@ CASES = [   # (references and attributes on one board, duplicate reported)
     ([('G***', ()), ('G***', ())], None),
     ([('REF**', ()), ('REF**', ())], None),
     ([('LOGO1', ('board_only',)), ('LOGO1', ('board_only', 'exclude_from_bom'))], None),
-    ([('LOGO1', ('board_only',)), ('LOGO1', ())], None),                    # one counted: not a duplicate
+    ([('LOGO1', ('board_only',)), ('LOGO1', ())], 'LOGO1'),                 # file order matters, as in KiCad:
+    ([('LOGO1', ()), ('LOGO1', ('board_only',))], None),                    # only a later plain one is a duplicate
+    ([('r1', ()), ('R1', ())], 'R1'),                                       # references compare in any case
     ([('X1', ('exclude_from_pos_files', 'exclude_from_bom')), ('X1', ('exclude_from_bom',))], 'X1'),
     ([('R1', ()), ('R1', ())], 'R1'),
 ]

@@ -3,9 +3,10 @@
 
   board_diff.py OLD.kicad_pcb NEW.kicad_pcb [--expect x0,y0,x1,y1 ...] [--expect-refs R1,R2,...] [--expect-nets N1,N2]
   board_diff.py HEAD NEW.kicad_pcb ...          # OLD = the same file in a git revision (any folder, any cwd)
-  board_diff.py HEAD SCRATCH/x.kicad_pcb --repo PROJECT   # a scratch copy outside the repository: OLD = the file of
-                                                # that name in HEAD of PROJECT's repository (the current folder's
-                                                # without --repo); it prints which file it used
+  board_diff.py HEAD SCRATCH/x.kicad_pcb --repo PROJECT   # a scratch copy (outside the repository, or inside
+                                                # it untracked): OLD = the file of that name in HEAD of PROJECT's
+                                                # repository (the current folder's without --repo); it prints which
+                                                # file it used
   board_diff.py HEAD:hardware/x.kicad_pcb NEW   # an explicit path in a revision (repo-root relative, or ./ relative
                                                 # to --repo or the current folder, as git takes it)
   board_diff.py HEAD NEW.kicad_sch ...          # schematics: symbols by reference, then everything else
@@ -39,10 +40,10 @@ def work_tree(d):
 
 def find_in_rev(rev, name, top, here):
     """the one file called `name` in revision `rev` of the repository at `top` (the one in folder `here`, when several)"""
-    r = git(top, 'ls-tree', '-r', '--name-only', '--full-tree', rev)
+    r = git(top, 'ls-tree', '-r', '-z', '--name-only', '--full-tree', rev)    # -z: non-ASCII names unquoted
     if r.returncode:
         sys.exit('git ls-tree %s (in %s) failed: %s' % (rev, top, r.stderr.strip()))
-    cands = [f for f in r.stdout.splitlines() if os.path.basename(f) == name]
+    cands = [f for f in r.stdout.split('\0') if f and os.path.basename(f) == name]
     if len(cands) > 1:
         rel = os.path.relpath(os.path.realpath(here), os.path.realpath(top))
         cands = [f for f in cands if os.path.dirname(f) == ('' if rel == '.' else rel)] or cands
@@ -53,23 +54,26 @@ def find_in_rev(rev, name, top, here):
 
 
 def git_show(spec, new, repo=None):
-    """'HEAD' -> NEW's own path in HEAD when NEW is inside a git work tree (and in --repo, if given); a scratch copy
-    outside it -> the file of NEW's name in HEAD of --repo, else of the repository holding the current folder.
+    """'HEAD' -> NEW's own path in HEAD when it is tracked there (NEW inside the repository, and in --repo if given);
+    otherwise - a scratch copy outside the repository, or inside it but untracked - the file of NEW's name in HEAD of
+    --repo, else of the repository holding the current folder, else of the one holding NEW.
     'REV:path' -> as git resolves it from --repo, else from the current folder."""
     home = os.path.dirname(os.path.abspath(new))
+    own = work_tree(home)
     if ':' in spec:
         cwd = repo or os.getcwd()
-    elif work_tree(home) and (repo is None or work_tree(home) == work_tree(repo)):
-        cwd = home
-        spec = '%s:./%s' % (spec, os.path.basename(new))   # ./ = relative to cwd, so the board need not be at the repo root
     else:
-        top = work_tree(repo or os.getcwd())
+        if own and (repo is None or own == work_tree(repo)):
+            r = git(home, 'show', '%s:./%s' % (spec, os.path.basename(new)))   # ./ = relative to NEW's folder
+            if r.returncode == 0:
+                return r.stdout
+        top = work_tree(repo) if repo else (work_tree(os.getcwd()) or own)
         if not top:
             sys.exit('%s is outside any git repository and so is %s: give the repository, --repo DIR, or REV:path '
                      'from inside it' % (new, repo or 'the current folder %s' % os.getcwd()))
         spec = '%s:%s' % (spec, find_in_rev(spec, os.path.basename(new), top, repo or os.getcwd()))
         cwd = top
-        print('OLD = %s in %s (NEW is outside that repository: matched by file name)' % (spec, top))
+        print('OLD = %s in %s (NEW is not that file: matched by file name)' % (spec, top))
     r = git(cwd, 'show', spec)
     if r.returncode:
         sys.exit('git show %s (in %s) failed: %s' % (spec, cwd, r.stderr.strip()))
@@ -170,6 +174,8 @@ def main():
     ap.add_argument('--repo', help='the git repository OLD is a revision of (default: the one holding NEW, else the '
                     "current folder's); a scratch copy outside it is matched by file name")
     a = ap.parse_args()
+    if a.repo and not os.path.isdir(a.repo):
+        ap.error('--repo %s is not a folder' % a.repo)
     O, N = loads(load(a.old, a.new, a.repo)), loads(load(a.new, a.new))
     sch = O.head == 'kicad_sch'
     boxes = [tuple(map(float, b.split(','))) for b in a.expect]

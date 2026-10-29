@@ -483,15 +483,19 @@ class Board:
         d = duplicate_uuids(self.tree)
         if d:
             out.append('%d duplicated uuids, e.g. %s' % (len(d), d[:3]))
-        # KiCad's own rule (DRC duplicate_footprints): board-only footprints (logos, graphics) are never duplicates.
-        # Placeholder references (REF**, G***: never annotated) are left to DRC, which still reports them when the
-        # footprint is not board-only; they do not make the file unwritable.
-        refs: Dict[str, int] = {}
+        # KiCad's DRC rule (duplicate_footprints): in file order, a footprint whose reference (any case) was already
+        # seen is a duplicate unless it is board-only itself - so a plain LOGO1 after a board-only LOGO1 is one, the
+        # reverse is not. Placeholder references (REF**, G***: never annotated) are left to DRC, which still reports
+        # them when not board-only; they do not make the file unwritable.
+        seen, dups = set(), set()
         for f in self.footprints():
             r = f.ref
-            if r and '*' not in r and not f.board_only:
-                refs[r] = refs.get(r, 0) + 1
-        dup = sorted(r for r, n in refs.items() if n > 1)
+            if not r or '*' in r:
+                continue
+            if r.upper() in seen and not f.board_only:
+                dups.add(r)
+            seen.add(r.upper())
+        dup = sorted(dups)
         if dup:
             out.append('duplicate footprint references: %s' % dup[:10])
         layers = set(self.layer_names())

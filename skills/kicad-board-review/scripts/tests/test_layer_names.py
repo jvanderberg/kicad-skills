@@ -9,6 +9,12 @@ import json, os, shutil, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, 'tests'))
 from test_pack_checks import PY, build, run  # noqa: E402
+try:                                    # under pytest a missing KiCad is a SKIP, not a silent PASS
+    import pytest
+    Skip = pytest.skip.Exception
+except ImportError:
+    class Skip(Exception):
+        pass
 
 KICAD_PYTHON = next((c for c in (os.environ.get('KICAD_PYTHON', ''),
                                  '/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3')
@@ -52,6 +58,10 @@ def test_config_may_name_a_layer_by_the_boards_own_name():
     cfg['islands'][0]['layer'] = 'Top Layer'
     json.dump(cfg, open(os.path.join(d, 'review_config.json'), 'w'))
     run(d, 'islands.py', 'planes.py', 'emc.py', 'report.py')
+    reg = lambda L: subprocess.run([PY, os.path.join(HERE, 'region.py'), d, L, '0', '0', '40', '30'], capture_output=True, text=True)
+    assert reg('Top Layer').stdout == reg('F.Cu').stdout and 'TRK  USB_DP' in reg('Top Layer').stdout
+    r = reg('Nope')                                     # nothing listed would read as "free space": an error instead
+    assert r.returncode and 'no copper layer Nope' in r.stderr and 'F.Cu (Top Layer)' in r.stderr, r.stderr
     isl = json.load(open(os.path.join(d, 'islands.json')))
     assert isl['islands'][0]['status'].startswith('ok'), isl
     assert 'F.Cu (Top Layer)' in open(os.path.join(d, 'board_overview.md')).read()
@@ -60,7 +70,7 @@ def test_config_may_name_a_layer_by_the_boards_own_name():
 
 def test_boarddump_of_a_board_with_user_layer_names():
     if not KICAD_PYTHON:
-        print('  (skipped: no KiCad python)'); return
+        raise Skip('no KiCad python')
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), 'kicad-pcb-workflow', 'scripts'))
     from kicad_sexpr import Board, dumps, stackup
     b = Board.new(4)
@@ -95,4 +105,7 @@ def test_boarddump_of_a_board_with_user_layer_names():
 if __name__ == '__main__':
     for t in (test_old_dump_with_user_names_warns_instead_of_crashing, test_config_may_name_a_layer_by_the_boards_own_name,
               test_boarddump_of_a_board_with_user_layer_names):
-        t(); print('PASS', t.__name__)
+        try:
+            t(); print('PASS', t.__name__)
+        except Skip as e:
+            print('SKIP', t.__name__, e)

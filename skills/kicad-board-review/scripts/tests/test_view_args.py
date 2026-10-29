@@ -24,6 +24,8 @@ def test_usage_and_errors():
     out = os.path.join(d, 'top.png')
     r = view(bj, 'Top Layer', '0', '0', '40', '30', out, '5', '--nets', 'VDD')
     assert r.returncode == 0 and os.path.getsize(out) > 10000, r.stderr
+    r = view(bj, 'F.Cu', '-5', '-5', '40', '30', out, '--nets', 'VDD', '5')       # negative window, grid after --nets
+    assert r.returncode == 0, r.stderr
 
 
 if __name__ == '__main__':

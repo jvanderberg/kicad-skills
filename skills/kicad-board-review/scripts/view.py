@@ -8,7 +8,7 @@ ap.add_argument('board_json'); ap.add_argument('layer', help='F.Cu, In1.Cu, ... 
 for k in ('x0', 'y0', 'x1', 'y1'): ap.add_argument(k, type=float)
 ap.add_argument('out', help='PNG to write'); ap.add_argument('grid_mm', type=float, nargs='?', default=2.0)
 ap.add_argument('--nets', help='comma-separated: colour only these, grey the rest')
-a = ap.parse_args()
+a = ap.parse_intermixed_args()      # options anywhere, as before: ... out.png --nets VDD 5
 import numpy as np
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt

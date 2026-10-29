@@ -1,8 +1,11 @@
 # List pads, zone outlines, tracks and vias inside a box on one layer, with exact coordinates.
-#   python region.py PACK LAYER x0 y0 x1 y1
+#   python region.py PACK LAYER x0 y0 x1 y1        (LAYER: F.Cu, In1.Cu, ... or the board's own name for it)
 # Use before placing or routing anything: find free space from real numbers, not from eyeballing a render.
 from common import *
-L = sys.argv[2]; x0, y0, x1, y1 = map(float, sys.argv[3:7]); W = box(x0, y0, x1, y1)
+if len(sys.argv) != 7: sys.exit('usage: python region.py PACK LAYER x0 y0 x1 y1')
+L = layer_key(sys.argv[2]); x0, y0, x1, y1 = map(float, sys.argv[3:7]); W = box(x0, y0, x1, y1)
+# an unknown layer would list nothing, which reads as "this area is free"
+if L not in LAYERS: sys.exit('no copper layer %s in this pack (layers: %s)' % (sys.argv[2], ', '.join(map(layer_label, LAYERS))))
 for f in B['footprints']:
     for p in f['pads']:
         if L in p['layers']:

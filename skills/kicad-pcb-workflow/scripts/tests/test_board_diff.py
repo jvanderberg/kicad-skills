@@ -6,6 +6,13 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 from kicad_sexpr import Board
 
+try:                                    # under pytest a missing KiCad is a SKIP, not a silent PASS
+    import pytest
+    Skip = pytest.skip.Exception
+except ImportError:
+    class Skip(Exception):
+        pass
+
 FPLIB = next((d for d in ('/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints', '/usr/share/kicad/footprints')
               if os.path.isdir(d)), None)
 
@@ -16,7 +23,7 @@ def git(cwd, *a):
 
 def test_field_change_below_repo_root():
     if not FPLIB:
-        print('  (skipped: no KiCad footprint library)'); return
+        raise Skip('no KiCad footprint library')
     root = tempfile.mkdtemp(); hw = os.path.join(root, 'hardware'); os.makedirs(hw)
     b = Board.new(copper_layers=2)
     f = b.add_footprint(os.path.join(FPLIB, 'Resistor_SMD.pretty', 'R_0402_1005Metric.kicad_mod'), 'Resistor_SMD:R_0402_1005Metric',
@@ -42,7 +49,7 @@ def test_field_change_below_repo_root():
 
 def test_head_against_a_scratch_copy_outside_the_repo():
     if not FPLIB:
-        print('  (skipped: no KiCad footprint library)'); return
+        raise Skip('no KiCad footprint library')
     root = tempfile.mkdtemp(); hw = os.path.join(root, 'hardware'); os.makedirs(hw)
     b = Board.new(copper_layers=2)
     b.add_footprint(os.path.join(FPLIB, 'Resistor_SMD.pretty', 'R_0402_1005Metric.kicad_mod'), 'Resistor_SMD:R_0402_1005Metric',
@@ -71,12 +78,46 @@ def test_head_against_a_scratch_copy_outside_the_repo():
     assert r.returncode == 0 and 'OLD = HEAD:hardware/x.kicad_pcb' in r.stdout, (r.stdout, r.stderr)
 
 
+
+def test_scratch_copy_untracked_inside_a_repo_or_in_another_one():
+    """the copy is not at its own path in HEAD: inside the project (an ignored scratch folder), in some other
+    repository, or with a non-ASCII name (git quotes those in ls-tree without -z); a missing --repo is a usage error"""
+    if not FPLIB:
+        raise Skip('no KiCad footprint library')
+    root = tempfile.mkdtemp(); hw = os.path.join(root, 'hw'); os.makedirs(hw)
+    b = Board.new(copper_layers=2)
+    b.add_footprint(os.path.join(FPLIB, 'Resistor_SMD.pretty', 'R_0402_1005Metric.kicad_mod'), 'Resistor_SMD:R_0402_1005Metric',
+                    'R7', '330', (100, 100))
+    for name in ('x.kicad_pcb', 'platé.kicad_pcb'):
+        b.save(os.path.join(hw, name))
+    open(os.path.join(root, '.gitignore'), 'w').write('.scratch/\n')
+    git(root, 'init', '-q'); git(root, 'add', '.'); git(root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    other = tempfile.mkdtemp(); git(other, 'init', '-q')                  # a repository with no commits at all
+    run = lambda cwd, *a: subprocess.run([sys.executable, os.path.join(HERE, 'board_diff.py'), *a], capture_output=True,
+                                         text=True, cwd=cwd)
+    for folder, name, cwd, extra in ((os.path.join(root, '.scratch', 'proj', 'hw'), 'x.kicad_pcb', root, ()),
+                                     (os.path.join(root, '.scratch', 'proj', 'hw'), 'x.kicad_pcb', tempfile.gettempdir(), ('--repo', root)),
+                                     (os.path.join(other, 'proj'), 'x.kicad_pcb', root, ()),
+                                     (os.path.join(other, 'proj'), 'x.kicad_pcb', tempfile.gettempdir(), ('--repo', root)),
+                                     (os.path.join(tempfile.mkdtemp(), 'proj'), 'platé.kicad_pcb', tempfile.gettempdir(), ('--repo', root))):
+        os.makedirs(folder, exist_ok=True)
+        new = os.path.join(folder, name); shutil.copy(os.path.join(hw, name), new)
+        b2 = Board.load(new); b2.footprint('R7').set_field('Value', '100'); b2.save(new)
+        r = run(cwd, 'HEAD', new, '--expect-refs', 'R7', *extra)
+        assert r.returncode == 0 and 'OLD = HEAD:hw/%s in ' % name in r.stdout, (folder, cwd, extra, r.stdout, r.stderr)
+        assert "field Value '330' -> '100'" in r.stdout, r.stdout
+    r = run(root, 'HEAD:hw/x.kicad_pcb', os.path.join(hw, 'x.kicad_pcb'), '--repo', os.path.join(root, 'nope'))
+    assert r.returncode == 2 and 'is not a folder' in r.stderr and 'Traceback' not in r.stderr, r.stderr
+
+
 if __name__ == '__main__':
     fails = 0
     for k, fn in sorted(globals().items()):
         if k.startswith('test_'):
             try:
                 fn(); print('PASS', k)
+            except Skip as e:
+                print('SKIP', k, e)
             except Exception as e:
                 fails += 1; print('FAIL', k, repr(e)[:2000])
     sys.exit(1 if fails else 0)
