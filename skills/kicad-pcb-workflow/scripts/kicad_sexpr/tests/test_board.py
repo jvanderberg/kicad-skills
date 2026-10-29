@@ -5,7 +5,7 @@ import os
 import subprocess
 
 from helpers import KICAD_PYTHON, Skip, drc, footprints_dir, resave, tmpdir
-from kicad_sexpr import Board, Node, Project, board_net_name, dumps, load, stackup
+from kicad_sexpr import Board, Node, Project, Schematic, Sym, board_net_name, dumps, load, stackup
 
 FP = footprints_dir
 
@@ -117,6 +117,27 @@ def test_validate_catches_duplicates_and_bad_layers():
     probs = b.validate()
     assert any('duplicate footprint references' in x for x in probs)
     assert any('unknown layer In1.Cu' in x for x in probs)
+
+
+def test_validate_follows_kicads_duplicate_rule_for_logos():
+    """Two logos (G***, as bitmap2component and EasyEDA imports write them) and two board-only graphics sharing a
+    reference are not duplicates: save() writes the board, and KiCad's parity check agrees for the board-only ones."""
+    b = Board.new(2)
+    for i, (ref, attr) in enumerate([('G***', ()), ('G***', ()), ('LOGO1', ('board_only', 'exclude_from_bom')),
+                                     ('LOGO1', ('board_only', 'exclude_from_bom'))]):
+        f = b.add_footprint(_r0402(), 'Resistor_SMD:R_0402_1005Metric', ref, 'x', (10 + 5 * i, 10))
+        f.node.need('attr').extend(Sym(a) for a in attr)
+        assert f.board_only == bool(attr)
+    assert b.validate() == []
+    d = tmpdir('logos')
+    p = os.path.join(d, 'logos.kicad_pcb')
+    b.save(p)
+    Schematic.new('logos').save(os.path.join(d, 'logos.kicad_sch'))
+    par = collections.Counter(v['type'] for v in drc(p, refill=False, parity=True)['raw'].get('schematic_parity', []))
+    assert par['duplicate_footprints'] == 1 and par['extra_footprint'] == 2   # only the two plain G*** (DRC's job)
+    for x in (40, 45):                                  # the same reference, not board-only: a duplicate
+        b.add_footprint(_r0402(), 'Resistor_SMD:R_0402_1005Metric', 'LOGO2', 'x', (x, 10))
+    assert any("duplicate footprint references: ['LOGO2']" in x for x in b.validate())
 
 
 # -------------------------------------------------------------------- placement vs pcbnew

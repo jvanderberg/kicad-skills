@@ -203,9 +203,10 @@ comparison: a minutes-long run restarted after every fix is abandoned, and nothi
 
 ## 4. Copy back, then report
 
-- Diff against the last commit: `python3 ${CLAUDE_SKILL_DIR}/scripts/board_diff.py HEAD:<repo path of the board>
-  <scratch board> --expect x0,y0,x1,y1 ... --expect-refs ... --expect-nets ...` (plain `HEAD` when the scratch copy
-  sits at the board's own path in the repository), and the same for the schematic. Every attribute is compared (fields
+- Diff against the last commit: `python3 ${CLAUDE_SKILL_DIR}/scripts/board_diff.py HEAD <scratch board> --repo
+  <project folder> --expect x0,y0,x1,y1 ... --expect-refs ... --expect-nets ...` (it finds the board of that file name
+  in HEAD of the project's repository and prints which file it used; give `HEAD:<repo path of the board>` when two
+  boards share the name), and the same for the schematic. Every attribute is compared (fields
   such as Value and LCSC, pad nets, DNP, models, settings), not only geometry. Everything outside what you meant to
   change is listed as UNEXPECTED; each one must be explained or reverted before copying back.
 - Check KiCad is still closed and the originals' shasums still match (the user may have edited meanwhile). Copy the

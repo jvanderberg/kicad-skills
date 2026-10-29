@@ -27,7 +27,9 @@ def load_board(path):
 b = load_board(src)
 mm = pcbnew.ToMM
 cu = [l for l in b.GetEnabledLayers().CuStack()]
-LN = {l: b.GetLayerName(l) for l in cu}
+# layers by their canonical name (F.Cu, In1.Cu, ...): the name the stackup block, the .kicad_pcb items and the plans
+# that router.py writes back all use. A user name ("Top Layer", as EasyEDA imports set) goes in layer_names, for display.
+LN = {l: pcbnew.BOARD.GetStandardLayerName(l) for l in cu}
 
 def poly_set(ps):
     out = []
@@ -55,7 +57,7 @@ if m:
                           er=float(er.group(1)) if er else None))
 stack = [s for s in stack if s['type'] in ('copper', 'core', 'prepreg') or s['name'].startswith('dielectric')]
 
-D = dict(source=os.path.abspath(src), layers=[LN[l] for l in cu], stackup=stack, footprints=[], tracks=[], vias=[], zones=[], netclass={},
+D = dict(source=os.path.abspath(src), layers=[LN[l] for l in cu], layer_names={LN[l]: b.GetLayerName(l) for l in cu}, stackup=stack, footprints=[], tracks=[], vias=[], zones=[], netclass={},
          pad_poly=dict(error_mm=0.005, error_side='outside'))
 bb = b.GetBoardEdgesBoundingBox(); D['edge_bbox'] = [mm(bb.GetX()), mm(bb.GetY()), mm(bb.GetRight()), mm(bb.GetBottom())]
 eps = pcbnew.SHAPE_POLY_SET(); b.GetBoardPolygonOutlines(eps, True); D['edge'] = poly_set(eps)
@@ -79,10 +81,10 @@ for t in b.GetTracks():
                               drill=mm(t.GetDrillValue()), type=int(t.GetViaType()), type_name=_VT.get(t.GetViaType(), 'unknown')))
     elif t.GetClass() == 'PCB_ARC':
         D['tracks'].append(dict(a=(mm(t.GetStart().x), mm(t.GetStart().y)), m=(mm(t.GetMid().x), mm(t.GetMid().y)), b=(mm(t.GetEnd().x), mm(t.GetEnd().y)),
-                                w=mm(t.GetWidth()), layer=b.GetLayerName(t.GetLayer()), net=t.GetNetname(), arc=True))
+                                w=mm(t.GetWidth()), layer=pcbnew.BOARD.GetStandardLayerName(t.GetLayer()), net=t.GetNetname(), arc=True))
     else:
         D['tracks'].append(dict(a=(mm(t.GetStart().x), mm(t.GetStart().y)), b=(mm(t.GetEnd().x), mm(t.GetEnd().y)), w=mm(t.GetWidth()),
-                                layer=b.GetLayerName(t.GetLayer()), net=t.GetNetname()))
+                                layer=pcbnew.BOARD.GetStandardLayerName(t.GetLayer()), net=t.GetNetname()))
 for z in b.Zones():
     zd = dict(net=z.GetNetname(), name=z.GetZoneName(), prio=z.GetAssignedPriority(), keepout=z.GetIsRuleArea(), layers=[], outline=poly_set(z.Outline()),
               min_w=mm(z.GetMinThickness()), clearance=mm(z.GetLocalClearance() or 0), filled={})

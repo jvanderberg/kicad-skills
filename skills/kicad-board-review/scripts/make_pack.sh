@@ -6,6 +6,8 @@
 # and write the reports. Every stage either writes its output or stops the script (set -e; the scripts exit non-zero).
 # Override tool paths with KICAD_CLI, KICAD_PYTHON and PY (a python with numpy, scipy, shapely>=2, matplotlib).
 set -euo pipefail
+# a stage that fails stops the pack: say which one, so a half-written pack is never read as a finished one
+trap 'echo "!! make_pack.sh: stage failed (exit $?, line $LINENO): $BASH_COMMAND - the pack is INCOMPLETE" >&2' ERR
 # the project's board: the one named after its .kicad_pro, else the only .kicad_pcb; never "the first one ls prints"
 pick_board() {
   local d="$1" pros n

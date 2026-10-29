@@ -40,12 +40,23 @@ def _stack():
             z += s['thickness_mm'] or 0.035
         else:
             z += s['thickness_mm']
-    if not out:   # no stackup in the file: assume 1.6 mm, 1 oz everywhere
+    missing = [L for L in LAYERS if L not in out]
+    if missing:   # no stackup in the file, or one that does not name these layers: assume 1.6 mm, 1 oz everywhere
+        if out:
+            WARN.append('stackup does not name copper layer(s) %s (stackup has %s; a board.json from an older boarddump.py '
+                        'used user layer names: re-run make_pack.sh): assumed 1.6 mm, 1 oz, evenly spaced' % (missing, list(out)))
         n = len(LAYERS)
         out = {L: dict(z=1.6 * i / max(n - 1, 1), t=0.035) for i, L in enumerate(LAYERS)}
     er = [s['er'] for s in st if s.get('er')]
     return out, (sum(er) / len(er) if er else 4.5)
 STACK, ER = _stack()
+LAYER_NAMES = B.get('layer_names') or {}     # canonical -> the board's own name, when it renames a layer
+def layer_key(name):
+    """a layer named in review_config.json, canonical (F.Cu) or the board's own name (Top Layer) -> its canonical name"""
+    return name if name in LAYERS else next((c for c, u in LAYER_NAMES.items() if u == name), name)
+def layer_label(L):
+    u = LAYER_NAMES.get(L)
+    return '%s (%s)' % (L, u) if u and u != L else L
 def neighbours(L):
     """copper layers adjacent to L in the stackup, nearest first, with the dielectric height (mm)"""
     zs = sorted(LAYERS, key=lambda l: STACK[l]['z'])

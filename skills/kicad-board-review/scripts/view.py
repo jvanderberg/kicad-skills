@@ -2,18 +2,23 @@
 #   python view.py board.json LAYER x0 y0 x1 y1 out.png [grid_mm] [--nets NET1,NET2]
 # Use it to LOOK at what you changed: a clean DRC does not tell you a trace cuts a plane or a pour has a sliver.
 # Ground is light grey, so cuts in it stand out. Then open the PNG with the Read tool and actually inspect it.
-import sys, json, hashlib, math
+import argparse, sys, json, hashlib, math
+ap = argparse.ArgumentParser(description='Render one copper layer of board.json in a window, nets coloured and labelled.')
+ap.add_argument('board_json'); ap.add_argument('layer', help='F.Cu, In1.Cu, ... (or the board\'s own name for it)')
+for k in ('x0', 'y0', 'x1', 'y1'): ap.add_argument(k, type=float)
+ap.add_argument('out', help='PNG to write'); ap.add_argument('grid_mm', type=float, nargs='?', default=2.0)
+ap.add_argument('--nets', help='comma-separated: colour only these, grey the rest')
+a = ap.parse_args()
 import numpy as np
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as MP
 from shapely.geometry import Polygon, box
-args = [a for a in sys.argv[1:] if not a.startswith('--')]
-only = None
-if '--nets' in sys.argv: only = set(sys.argv[sys.argv.index('--nets') + 1].split(',')); args = [a for a in args if a != sys.argv[sys.argv.index('--nets') + 1]]
-bj, L, x0, y0, x1, y1, out = args[0], args[1], *map(float, args[2:6]), args[6]
-gstep = float(args[7]) if len(args) > 7 else 2.0
+bj, L, x0, y0, x1, y1, out, gstep = a.board_json, a.layer, a.x0, a.y0, a.x1, a.y1, a.out, a.grid_mm
+only = set(a.nets.split(',')) if a.nets else None
 B = json.load(open(bj)); W = box(x0, y0, x1, y1)
+L = L if L in B['layers'] else next((c for c, u in (B.get('layer_names') or {}).items() if u == L), L)
+if L not in B['layers']: ap.error('no copper layer %s in %s (layers: %s)' % (a.layer, bj, ', '.join(B['layers'])))
 def col(net):
     if only is not None and net not in only: return (0.93, 0.93, 0.93)
     if 'GND' in net: return (0.75, 0.75, 0.75)

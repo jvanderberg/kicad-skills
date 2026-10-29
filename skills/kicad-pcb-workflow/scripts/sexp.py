@@ -73,8 +73,14 @@ def check(path):
     dup = [u for u, k in uu.items() if k > 1]
     if dup: probs.append('%d duplicated uuids (copy-pasted blocks need fresh uuids), e.g. %s' % (len(dup), dup[:3]))
     if path.endswith('.kicad_pcb'):
-        refs = collections.Counter(re.findall(r'\(property "Reference" "([^"]+)"', t))
-        d2 = [r for r, k in refs.items() if k > 1 and not r.startswith('REF**')]
+        # as Board.validate(): board-only footprints (logos) are never duplicates (KiCad's DRC rule), and placeholder
+        # references (REF**, G***) are left to DRC
+        refs = collections.Counter()
+        for _, b in blocks(t, 'footprint'):
+            r = re.search(r'\(property "Reference" "([^"]+)"', b)
+            if r and '*' not in r.group(1) and not re.search(r'\(attr\b[^)]*\bboard_only\b', b):
+                refs[r.group(1)] += 1
+        d2 = [r for r, k in refs.items() if k > 1]
         if d2: probs.append('duplicate footprint references: %s' % d2[:10])
     return probs
 

@@ -28,7 +28,7 @@ holes = [(v['x'], v['y'], v['net'], 'via %.2f/%.2f' % (v['size'], v['drill'])) f
 holes += [(p['x'], p['y'], p['net'], 'plated hole %s.%s' % (f['ref'], p['num'])) for f in B['footprints'] for p in f['pads'] if p['th']]
 for k, isl in enumerate(ISL):
     name = isl.get('name') or 'island %d' % (k + 1)
-    net, L = isl.get('net'), isl.get('layer', LAYERS[0])
+    net, L = isl.get('net'), layer_key(isl.get('layer', LAYERS[0]))
     row = dict(name=name, net=net, layer=L, pads=isl.get('pads', []), allowed_vias=int(isl.get('allowed_vias', 0)))
     rows.append(row)
     missing, pgs = [], []
