@@ -26,7 +26,7 @@ def coverage_lines(*covs):
 x0, y0, x1, y1 = B['edge_bbox']
 o = ['# Board overview', '', '- Source: `%s`' % B.get('source', '?'),
      '- Outline %.1f x %.1f mm, bbox (%.2f, %.2f)-(%.2f, %.2f). KiCad coordinates: mm, y grows downward.' % (x1 - x0, y1 - y0, x0, y0, x1, y1),
-     '- Copper layers (top to bottom): %s' % ', '.join('%s %.0f um at z=%.3f mm' % (L, STACK[L]['t'] * 1e3, STACK[L]['z']) for L in LAYERS),
+     '- Copper layers (top to bottom): %s' % ', '.join('%s %.0f um at z=%.3f mm' % (layer_label(L), STACK[L]['t'] * 1e3, STACK[L]['z']) for L in LAYERS),
      '- Reference layer per layer (nearest copper, dielectric height): %s' % '; '.join('%s -> %s' % (L, ', '.join('%s %.2f mm' % nh for nh in neighbours(L))) for L in LAYERS),
      '- %d footprints (%d on the back), %d track segments, %d vias.' % (len(B['footprints']), sum(f['side'] == 'B' for f in B['footprints']), len(B['tracks']), len(B['vias'])),
      '- Check with the fab what the copper really is: a file saying 35 um inside often ships as 0.5 oz (17.5 um).', '']

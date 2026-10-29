@@ -106,8 +106,15 @@ class SchSymbol:
         return str(self.node.get('lib_id'))
 
     @property
+    def lib_key(self) -> str:
+        """The name of its symbol in lib_symbols: ``lib_name`` when the instance has one (KiCad embeds a symbol that
+        differs from its library copy as "Name_1" and points the instance at it), else ``lib_id``."""
+        n = self.node.get('lib_name')
+        return str(n) if n is not None else self.lib_id
+
+    @property
     def lib(self) -> Node:
-        return self.sch.lib_symbol(self.lib_id)
+        return self.sch.lib_symbol(self.lib_key)
 
     @property
     def at(self) -> Point:
@@ -324,9 +331,11 @@ class Schematic:
         dup = sorted('%s unit %d' % k for k, n in refs.items() if n > 1)
         if dup:
             out.append('duplicate references: %s' % dup[:10])
+        idx = self._lib_index()
         for s in self.symbols():
-            if s.lib_id not in self._lib_index():
-                out.append('%s uses %s, which is not in lib_symbols' % (s.ref, s.lib_id))
+            if s.lib_key not in idx:
+                named = s.lib_id if s.lib_key == s.lib_id else '%s (lib_name %s)' % (s.lib_id, s.lib_key)
+                out.append('%s uses %s, which is not in lib_symbols' % (s.ref, named))
         return out
 
     def _guess_project(self) -> str:

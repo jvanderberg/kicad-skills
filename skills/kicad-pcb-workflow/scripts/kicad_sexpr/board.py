@@ -331,6 +331,12 @@ class Footprint:
     def side(self) -> str:
         return 'B' if str(self.node.get('layer')) == 'B.Cu' else 'F'
 
+    @property
+    def board_only(self) -> bool:
+        """``(attr ... board_only)``: not on the schematic (logos, graphics)."""
+        a = self.node.find('attr')
+        return a is not None and any(str(x) == 'board_only' for x in a[1:])
+
     def field(self, name: str) -> Optional[Node]:
         for p in self.node.nodes('property'):
             if p[1] == name:
@@ -477,12 +483,19 @@ class Board:
         d = duplicate_uuids(self.tree)
         if d:
             out.append('%d duplicated uuids, e.g. %s' % (len(d), d[:3]))
-        refs: Dict[str, int] = {}
+        # KiCad's DRC rule (duplicate_footprints): in file order, a footprint whose reference (any case) was already
+        # seen is a duplicate unless it is board-only itself - so a plain LOGO1 after a board-only LOGO1 is one, the
+        # reverse is not. Placeholder references (REF**, G***: never annotated) are left to DRC, which still reports
+        # them when not board-only; they do not make the file unwritable.
+        seen, dups = set(), set()
         for f in self.footprints():
             r = f.ref
-            if r and not r.startswith('REF**'):
-                refs[r] = refs.get(r, 0) + 1
-        dup = sorted(r for r, n in refs.items() if n > 1)
+            if not r or '*' in r:
+                continue
+            if r.upper() in seen and not f.board_only:
+                dups.add(r)
+            seen.add(r.upper())
+        dup = sorted(dups)
         if dup:
             out.append('duplicate footprint references: %s' % dup[:10])
         layers = set(self.layer_names())

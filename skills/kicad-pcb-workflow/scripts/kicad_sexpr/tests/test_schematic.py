@@ -160,6 +160,42 @@ def test_validate_rejects_duplicates():
     assert any('duplicated uuids' in p for p in s2.validate())
 
 
+def test_lib_name_instance_resolves_to_its_own_embedded_symbol():
+    """KiCad embeds a placed symbol that differs from its library copy under a new name and points the instance at
+    it with (lib_name "R_1"); lib_id stays "Device:R". validate(), save() and pins() must use that copy - KiCad's
+    netlist confirms the pins are where pins() says (the variant's pins are moved, so lib_id's would miss)."""
+    libs = _libs()
+    s = Schematic.new('ln')
+    s.embed_symbol('Device:R', libs['Device'])
+    var = s.lib_symbol('Device:R').deepcopy()
+    var[1] = 'R_1'
+    for sub in var.nodes('symbol'):
+        sub[1] = 'R_1' + str(sub[1])[len('R'):]
+        for pin in sub.nodes('pin'):
+            a = pin.need('at')
+            a[1] = a.number(1) + 2.54                    # every pin one grid step right of the library's
+    ls = s.tree.need('lib_symbols')
+    ls.append(var)
+    u = s.add_symbol('Device:R', 'R1', '1k', (50.8, 50.8))
+    u.node.insert(1, Node('lib_name', 'R_1'))
+    assert u.lib_key == 'R_1' and u.lib is var
+    assert s.validate() == []
+    pins = u.pins()
+    assert abs(pins['1'][0] - (50.8 + 2.54)) < 1e-6
+    for num, pt in pins.items():
+        s.label('P' + num, pt)
+    d = tmpdir('libname')
+    p = os.path.join(d, 'ln.kicad_sch')
+    s.save(p)
+    s2 = Schematic.load(p)
+    assert s2.validate() == [] and s2.symbol('R1').pins() == pins
+    nets = netlist(p)
+    assert sorted(v for k, v in nets.items() if k.endswith('P1'))[0] == ['R1.1']
+    assert sorted(v for k, v in nets.items() if k.endswith('P2'))[0] == ['R1.2']
+    ls.remove(var)                                       # the variant missing: named in the message, not lib_id alone
+    assert any('R1 uses Device:R (lib_name R_1)' in m for m in s.validate())
+
+
 def test_loaded_real_schematic_round_trips_through_api():
     """Load -> touch nothing -> save is byte-identical for a sheet KiCad saved (here: re-saved by kicad-cli)."""
     libs = _libs()
