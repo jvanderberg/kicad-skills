@@ -41,7 +41,7 @@ Source: https://jlcpcb.com/capabilities/pcb-capabilities
 | Min track/space, 1 oz | 0.10 / 0.10 mm | 0.09 / 0.09 mm |
 | Min track/space, 2 oz | 0.16 / 0.16 mm | 0.15 / 0.15 mm |
 | Min via drill / diameter | 0.15 / 0.25 mm | 0.15 / 0.25 mm |
-| Preferred min via drill | 0.2 mm | 0.2 mm |
+| Smallest via at no extra cost | 0.3 mm drill / 0.45 mm via | 0.3 mm drill / 0.45 mm via |
 | PTH annular ring, 1 oz | 0.25 mm recommended, 0.18 mm min | 0.20 mm recommended, 0.15 mm min |
 | Outer copper options | 1 / 2 / 2.5 / 3.5 / 4.5 oz | 1 / 2 oz |
 
@@ -55,6 +55,15 @@ Source: https://jlcpcb.com/capabilities/pcb-capabilities
 
 Design to comfortable values, not the minimums: 0.15 mm track/space and 0.3 mm drill / 0.6 mm via are easy to meet
 on any layer count and leave room for the fab's tolerance.
+
+**Via drill sets the price tier: keep every drill at 0.3 mm or more.** The quote page prices the smallest via hole in
+tiers, and the capabilities table's 0.15-0.2 mm figures are not the standard price. On the live quote (2026-10-30), 5
+pcs of a 4-layer 44 x 30 mm lead-free HASL board cost $13.10 in the 0.3 mm tier; selecting the "0.2mm/(0.3/0.35mm)"
+min via hole tier raised it to $49.78. Selecting that tier also switched on high-spec options (material upgrade,
+deburring, a $16.63 4-wire Kelvin test) that stayed on after switching back to 0.3 mm: check every option on the quote
+before ordering. The 0.3 mm tier allows a 0.4 / 0.45 mm via diameter, so **0.45 / 0.3 mm is the small via** (0.6 / 0.3
+the comfortable one). The board's smallest drill decides the tier, pad drills included: KiCad's `*_ThermalVias`
+footprints use 0.2 mm drills (kicad-pcb-workflow `references/layout-rules.md`, "Paste over a pad with holes").
 
 ## Assembly (PCBA)
 

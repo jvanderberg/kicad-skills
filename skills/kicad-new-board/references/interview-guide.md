@@ -1,7 +1,8 @@
 # Interview guide
 
 Questions for each level of the funnel, the default to offer when the user has no strong view, and why the answer
-matters. Ask only what is not already known; group three to five questions per message; summarise before moving on.
+matters. Ask only what is not already known; one level per message, one to three questions (the first message is
+level 1 only); summarise before moving on.
 
 Contents: 1 Purpose - 2 Usage and environment - 3 Functional blocks - 4 Power - 5 Physical - 6 Manufacturing -
 7 Stackup - 8 Component selection - Example opening
@@ -160,8 +161,11 @@ user will rework it; not NRND/EOL; a pin-compatible second source for anything c
 
 ## Example opening
 
-> Happy to help plan this. A few questions to start - say "default" to any of them and I'll use what's in brackets:
+> Happy to help plan this. A few questions about the purpose first - say "default" to any of them and I'll use what's
+> in brackets:
 > 1. What will the board do, in a sentence or two?
 > 2. How many will you build, and is it a learning project or a tool that just has to work? [5 boards, a tool]
-> 3. Where will it live? [indoors, 0-40 C, bare board on standoffs]
-> 4. How is it powered? [USB-C, 5 V]
+> 3. Any budget or deadline I should design around? [none; cheapest that works]
+
+Environment, power and the rest come in the following exchanges, one level at a time. When the request already
+answers question 1 ("a USB-C to UART adapter with 1.8/3.3/5 V I/O"), say so in one line and ask only 2 and 3.

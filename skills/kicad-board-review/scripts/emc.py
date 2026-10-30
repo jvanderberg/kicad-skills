@@ -246,9 +246,9 @@ def pair_geometry(a_, b_):
                              'calculator for this stackup' % (gmin, e['pour_gap_at'], gmed, near, zd, zc, z0))
         out.append(e)
     return out
-for pr in CFG.get('diff_pairs', []):
-    a_, b_ = (pr.get('nets') if isinstance(pr, dict) else pr)[:2]
-    target = pr.get('target_ohm') if isinstance(pr, dict) else None
+for pr in DIFF_PAIRS:
+    a_, b_ = pr['nets']
+    target = pr['target_ohm']
     la = sum(seg_len(t) for t in B['tracks'] if t['net'] == a_); lb = sum(seg_len(t) for t in B['tracks'] if t['net'] == b_)
     geo_ = pair_geometry(a_, b_)
     for g_ in geo_:

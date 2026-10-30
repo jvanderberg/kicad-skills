@@ -20,7 +20,8 @@
 - PASTE ON HOLE: a solder-paste aperture (a pad's own paste, or a paste-only window pad, after its paste margin) over a
   drilled hole - a via or any plated or unplated pad drill. Reflow pulls the paste down the barrel: voids under an
   exposed pad, a starved joint, solder balls on the far side. Library footprints do this too (thermal-via variants
-  with one paste window per quadrant over the vias). Fix: paste windows that avoid every hole, or order the vias
+  with one paste window per quadrant over the vias). Fix: paste windows that avoid every hole (paste_clear.py derives
+  such a footprint from a library one), or order the vias
   filled and capped (via-in-pad process) and say so with --vias-filled (all vias) or --vias-filled U1 U3 (vias in
   those parts' pads). For every exposed pad with holes the paste coverage (paste area / copper area, typically 40-60 %)
   is printed as a NOTE, so a re-drawn window pattern is checked in the same run;
@@ -201,7 +202,7 @@ def paste_on_holes(b, fps, filled):
                     continue
                 if ring_dist((x, y), rings) < r:
                     probs.append('PASTE ON HOLE %s paste (%s.Paste) covers the %s at (%.2f, %.2f), drill %.2f mm: reflow pulls the '
-                                 'paste down the barrel (voids, starved joint, balls on the far side); split the paste into windows '
+                                 'paste down the barrel (voids, starved joint, balls on the far side); split the paste into windows (paste_clear.py) '
                                  'that avoid every hole, or order the vias filled and capped (--vias-filled %s)' % (
                                      ref, side, what, x, y, 2 * r, ref))
             # coverage of each exposed pad that has holes in it: paste area over copper area

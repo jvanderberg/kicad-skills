@@ -86,7 +86,7 @@ So:
 ## Reading the datasheet (download it; do not work from memory)
 
 - **Save every IC's datasheet into the project at selection time** (`docs/datasheets/`, the MPN in the file name)
-  with `scripts/datasheet.py fetch <url> docs/datasheets/<mpn>.pdf` (R5: gather the references early). Later phases -
+  with `scripts/datasheet.py fetch <url> docs/datasheets/<mpn>.pdf --mpn <mpn>` (R5: gather the references early). Later phases -
   the adversarial review above all - can only check a pin, a limit or a layout rule against a datasheet they can
   open; a link in a field is not the document. `bom_check.py` reports every BOM IC with no local file.
   `fetch` keeps the file only if it really is a PDF. Manufacturer "symlink" URLs and distributor links can return an
@@ -94,7 +94,9 @@ So:
   page, October 2026); a refusal (HTTP 403, bot protection) exits 2 with the next step - open the URL in a browser
   (the user's, or browser automation) and save the PDF, or take it from the manufacturer's product page; a 404 page
   for a discontinued part is itself a lifecycle warning (TI's `https://www.ti.com/lit/ds/symlink/<part>.pdf` returned
-  one, October 2026). Find sections and figures with `datasheet.py find ds.pdf "Layout Example"
+  one, October 2026). A real PDF can be the wrong one: LCSC's viewer served an ISO certificate for two Sunlord
+  inductors (C98350, C98361, October 2026). With `--mpn`, a PDF that never names the part, or that reads like a
+  certificate, is kept but exits 3 with a WARNING: open it before relying on it. Find sections and figures with `datasheet.py find ds.pdf "Layout Example"
   "Figure 12"` (names the page, no per-page grepping) and render them with `datasheet.py page ds.pdf N out.png`; look
   at them. When you save figure pages into the project, name which page holds which figure.
 - **Record the lifecycle status** from the manufacturer's product page next to the datasheet (`part_gate.py` reads TI's).

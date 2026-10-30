@@ -20,7 +20,10 @@ and flips footprints the way pcbnew does, checked item by item against pcbnew in
   unplaced parts are staged in a grid to the right of the outline;
 - --outline WxH draws Edge.Cuts (rounded corners with --corner-r);
 - --labels JSON {"REF": ["TEXT", dx, dy] or ["TEXT", dx, dy, rot]} puts a function label next to a footprint on
-  F.SilkS and, mirrored, on B.SilkS (solder pads and connectors: say what each one is, see layout-rules.md);
+  F.SilkS and, mirrored, on B.SilkS (solder pads and connectors: say what each one is, see layout-rules.md); a label
+  per pad (a header's pins): {"J3": {"pads": {"1": "GND", "2": "TX"}, "dx": 0, "dy": 2.35}} puts each text at its
+  pad's centre + (dx, dy), so the labels follow the part; optional "rot", "size" (mm, default 1.0) and "sides" ("F",
+  "B" or "FB", the default);
 - --refs: where references go (silk = KiCad default; fab = only on F.Fab for a dense assembled board; hidden);
 - writes a minimal .kicad_pro next to OUT if there is none (KiCad fills in its defaults; board_setup.py edits it);
 - keeps ids stable: every footprint (and item in it) keeps the uuid it had in --previous (default: OUT, if it
@@ -200,12 +203,26 @@ def main():
             fp = b.footprint(ref)
         except KeyError:
             sys.exit('--labels: no footprint %s' % ref)
-        text, dx, dy = spec[0], spec[1], spec[2]
-        rot = spec[3] if len(spec) > 3 else 0
-        fp.set_field('Reference', ref, hide=True)
-        x, y = fp.at[0] + dx, fp.at[1] + dy
-        b.gr_text(text, (x, y), 'F.SilkS', size=1.0, thickness=0.15, angle=rot)
-        b.gr_text(text, (x, y), 'B.SilkS', size=1.0, thickness=0.15, angle=rot)    # mirrored: B.* layer
+        if isinstance(spec, dict):                                    # one label per pad
+            extra = sorted(set(spec) - {'pads', 'dx', 'dy', 'rot', 'size', 'sides'})
+            if extra or not isinstance(spec.get('pads'), dict) or set(spec.get('sides', 'FB')) - set('FB'):
+                sys.exit('--labels %s: expected {"pads": {"1": "GND", ...}, "dx": 0, "dy": 2.35} (optional "rot", "size", '
+                         '"sides": "F" / "B" / "FB")%s' % (ref, '; unknown keys: ' + ', '.join(extra) if extra else ''))
+            texts = []
+            for num, text in spec['pads'].items():
+                try:
+                    x, y = fp.pad_position(num)
+                except KeyError:
+                    sys.exit('--labels %s: no pad %s' % (ref, num))
+                texts.append((text, x + spec.get('dx', 0), y + spec.get('dy', 0)))
+            rot, size, sides = spec.get('rot', 0), spec.get('size', 1.0), spec.get('sides', 'FB')
+        else:
+            fp.set_field('Reference', ref, hide=True)
+            texts = [(spec[0], fp.at[0] + spec[1], fp.at[1] + spec[2])]
+            rot, size, sides = spec[3] if len(spec) > 3 else 0, 1.0, 'FB'
+        for text, x, y in texts:
+            for side in sides:
+                b.gr_text(text, (x, y), side + '.SilkS', size=size, thickness=0.15, angle=rot)   # B.*: mirrored
     if a.outline:
         b.outline_rect(ox, oy, w, h, corner_radius=a.corner_r, width=0.1)
     b.save(a.out)

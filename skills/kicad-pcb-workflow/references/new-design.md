@@ -15,6 +15,7 @@ so a generator describes the design and never formats KiCad text itself:
 | Draw the schematic as wired blocks; geometry checks; locate shorts | `schgen.py` (library) | python3 |
 | Footprint facts: courtyard, pad count / body vs package, pins vs pads | `fpcheck.py` | python3 |
 | Add missing courtyards to imported footprints | `add_courtyard.py` | python3 |
+| Thermal-via footprint with paste windows clear of the drills (and 0.3 mm drills) | `paste_clear.py` | python3 |
 | Board from the netlist: footprints, symbol links, nets, fields, assembly attributes (DNP, BOM, position file), outline, placement, pad labels | `new_board.py` | python3 |
 | JLC stackup block, design rules, net classes | `board_setup.py` | python3 |
 | Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely; re-runs itself there) |
@@ -38,12 +39,15 @@ A generated project is only reproducible with the generator revision and KiCad v
 At the start, and whenever you deliberately move to a newer kicad-skills:
 1. `scripts/preflight.py --for all` - every tool the scripts need.
 2. Copy `assets/kskills.py` to the project's `tools/` and import it first in every generator: it puts kicad-skills'
-   scripts on `sys.path` (from `KICAD_SKILLS`, default `~/git/kicad-skills`) and stops the build if the checkout is not
-   the pinned commit, has uncommitted changes under `skills/`, or KiCad's version differs.
-3. `scripts/skills_rev.py pin <project>` writes `kicad-skills.lock` (commit and KiCad major.minor); commit it. It
-   refuses a dirty checkout or a commit on no remote branch: a project pinned to an unpublished commit cannot be
-   rebuilt by anyone else. To move to a newer revision: check it out, regenerate, review the diff (`board_diff.py`,
-   `git diff`), then re-pin in the same commit.
+   scripts on `sys.path` (from `KICAD_SKILLS`, default `~/git/kicad-skills`, else the newest Claude Code plugin install
+   under `~/.claude/plugins/cache/`) and stops the build if the scripts are not the pinned ones, or KiCad's version
+   differs.
+3. `scripts/skills_rev.py pin <project>` writes `kicad-skills.lock` (commit, a hash of the files under `skills/`, and
+   KiCad major.minor); commit it. It refuses a dirty checkout or a commit on no remote branch: a project pinned to an
+   unpublished commit cannot be rebuilt by anyone else. Installed as a plugin (no `.git`), run the plugin's own
+   `skills_rev.py`: it pins the plugin version from `.claude-plugin/plugin.json` and the file hash, and `check` fails
+   when a plugin update changed any file, whatever its version number. To move to a newer revision: check it out
+   (or update the plugin), regenerate, review the diff (`board_diff.py`, `git diff`), then re-pin in the same commit.
 4. Building an older project: `git -C ~/git/kicad-skills worktree add ~/git/kicad-skills-<rev> <rev>` and
    `KICAD_SKILLS=~/git/kicad-skills-<rev>`; your main checkout stays where it is.
 
@@ -80,7 +84,9 @@ The default an agent reaches for - every pin gets a net label - produces a sheet
 - **Flow left to right**: inputs on the left, outputs on the right; supplies at the top, ground at the bottom.
 - **Ladder layout for shunt parts**: the rail runs along the top, decoupling and divider parts hang below it with their
   ground symbols, and signal wires run below the lowest ground symbol - never through a shunt part's span. Most drawing
-  faults on generated sheets are a shunt part's pin landing on a signal wire that passes under the rail.
+  faults on generated sheets are a shunt part's pin landing on a signal wire that passes under the rail. Draw the rail
+  as one wire and declare the shunt pins on it as taps (`s.tap(c1.p(1), c2.p(1), ...)`): `collisions()` then reports
+  only the pins that land on a wire by accident.
 - Minimise crossings; junction dots only at real T-joins (`schgen` adds them where three or more ends meet).
 - Values and references beside the part, not on its body or on wires.
 

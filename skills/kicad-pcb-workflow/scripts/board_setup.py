@@ -10,8 +10,11 @@ Why: kicad-cli cannot create or set up a board, and pcbnew's python does not exp
 (GetStackupDescriptor() returns an opaque object in KiCad 10.0.1). This writes:
 - the board's (setup (stackup ...)) block from the table below (replacing an existing one), and the board thickness;
 - .kicad_pro design rules: comfortable values for JLC's capabilities, not their minimums (--rules jlc), or untouched;
-- .kicad_pro net classes: Default (0.2 mm track, 0.15 mm clearance, 0.6/0.3 mm via) plus any --class, and net
-  assignments by exact name (--assign) or wildcard pattern (--pattern, KiCad's netclass_patterns).
+- .kicad_pro net classes: Default (0.2 mm track, 0.15 mm clearance, 0.6/0.3 mm via) plus any --class (keys track,
+  clearance, via, drill), and net assignments by exact name (--assign) or wildcard pattern (--pattern, KiCad's
+  netclass_patterns). A class clearance applies between that class's nets everywhere, IC pins included: a Power
+  class at 0.2 mm makes DRC flag a 0.5 mm-pitch IC (VSSOP-8: 0.15 mm between pads) wherever two of its pins are
+  power-class nets. Keep class clearances at the Default unless the voltage needs more, and widen tracks instead.
 The board's copper layer count must match the stackup (make the board with new_board.py or KiCad first).
 
 Numbers: 4-layer stackups from kicad-new-board/references/jlcpcb-stackups.md (jlcpcb.com/impedance, checked Oct 2026);
@@ -46,8 +49,8 @@ STACKUPS = {
 JLC_RULES = {
     'min_clearance': 0.15,                 # JLC min 0.09-0.10 mm (1 oz); 0.15 is the comfortable value
     'min_track_width': 0.15,
-    'min_through_hole_diameter': 0.2,      # JLC "preferred min via drill"
-    'min_via_diameter': 0.35,              # 0.2 drill + 0.15 ("via pad 0.1, preferably 0.15 mm larger than the drill")
+    'min_through_hole_diameter': 0.3,      # JLC's price tier: a 0.2 mm drill anywhere (via or pad) costs ~4x (stackups.md)
+    'min_via_diameter': 0.45,              # 0.3 drill + 0.15 ("via pad 0.1, preferably 0.15 mm larger than the drill")
     'min_via_annular_width': 0.075,
     'min_copper_edge_clearance': 0.3,      # JLC 0.2 mm for routed edges (0.4 for V-cut): margin added
     'min_hole_to_hole': 0.25,              # KiCad default; not in the JLC table we checked - verify
@@ -91,13 +94,22 @@ def apply_stackup(board, name, finish):
     return board
 
 
+CLASS_KEYS = {'track': 'track_width', 'clearance': 'clearance', 'via': 'via_diameter', 'drill': 'via_drill'}
+
+
 def parse_class(spec):
+    """'Power:track=0.8,clearance=0.2' -> ('Power', {...}); SystemExit naming the valid keys on anything else"""
     name, _, kv = spec.partition(':')
-    keys = {'track': 'track_width', 'clearance': 'clearance', 'via': 'via_diameter', 'drill': 'via_drill'}
     c = dict(DEFAULT_CLASS)
     for item in filter(None, kv.split(',')):
-        k, v = item.split('=')
-        c[keys[k.strip()]] = float(v)
+        k, _, v = item.partition('=')
+        if k.strip() not in CLASS_KEYS:
+            sys.exit('--class %s: unknown key "%s"; the keys are %s (mm), e.g. --class %s:track=0.8,clearance=0.2,via=0.6,'
+                     'drill=0.3' % (spec, k.strip(), ', '.join(CLASS_KEYS), name or 'Power'))
+        try:
+            c[CLASS_KEYS[k.strip()]] = float(v)
+        except ValueError:
+            sys.exit('--class %s: "%s" needs a number in mm (%s=0.5)' % (spec, item, k.strip()))
     return name, c
 
 
@@ -110,7 +122,7 @@ def apply_project(project, rules, classes, assigns, patterns):
         ds.setdefault('rules', {}).update(JLC_RULES)
         ds['track_widths'] = [0.0, 0.2, 0.3, 0.5, 0.8, 1.2, 2.0]
         ds['via_dimensions'] = [{'diameter': 0.0, 'drill': 0.0}, {'diameter': 0.6, 'drill': 0.3},
-                                {'diameter': 0.8, 'drill': 0.4}, {'diameter': 0.45, 'drill': 0.2}]
+                                {'diameter': 0.8, 'drill': 0.4}, {'diameter': 0.45, 'drill': 0.3}]
     ns = pro.setdefault('net_settings', {})
     old = {c['name']: c for c in ns.get('classes') or []}
     want = dict([('Default', dict(DEFAULT_CLASS))] + classes)

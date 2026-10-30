@@ -681,3 +681,30 @@ of JLC-assembled parts: JLC's footprint is the verified building block there.
 
 Test runs: wf `python3 -m pytest -q kicad_sexpr/tests tests`: 71 passed, 2 skipped (was 69 / 2; new:
 `test_fpcheck_packages.py` x2). rev 20 passed, 2 skipped; ps 12 passed, 1 skipped; psu 4 passed (unchanged).
+
+# Field report: a 4-layer USB-C to UART adapter, end to end with the 0.1.0 plugin
+
+Source: a board designed from interview to review pack with the plugin installed from the marketplace (0.1.0, KiCad
+10.0.1, macOS); the project's generators, route plan, check runs and review pack were the evidence. Each item was
+reproduced against main before it was changed.
+
+| Item | What changed (files) | How it was verified |
+|---|---|---|
+| "Preferred min via drill 0.2 mm" cost money: on JLC's live quote (2026-10-30) the 0.2 mm via tier raised a 5-pc 4-layer 44 x 30 mm order from $13.10 to $49.78 and left high-spec options switched on | nb jlcpcb-stackups.md (0.45 / 0.3 mm is the small via, the tier and the sticky options described); wf `board_setup.py` jlc rules (min drill 0.3, min via 0.45; via list 0.45 / 0.3), routing.md example; rev checklist fab capabilities | `tests/test_board_setup.py`. Price figures are the user's quote, not re-checked here |
+| `fpcheck.py --package SOT-23-5` gave 23 leads | Already fixed on main by the previous round's parser; the reported strings (SOT-23-5, SOT-23-6, SOT-223-3/-4) added to its test | `tests/test_fpcheck_packages.py` |
+| KiCad's `_ThermalVias` footprints fail PASTE ON HOLE (and use 0.2 mm drills) | wf `paste_clear.py` (new): derives a footprint whose paste-only windows are cut clear of every drill (largest rectangle beside each hole, memoised search), optional `--drill 0.3`, coverage printed; layout-rules.md, checks.md, new-design.md, `board_lint.py` message, README | `tests/test_paste_clear.py` (synthetic + KiCad's QFN-24 footprint). Run over all 479 `*ThermalVias*` footprints in KiCad 10.0.1: 460 derived clean; 19 carry paste on the copper pad itself or round windows, and are listed as PROBLEM (exit 1), not changed |
+| Pinning did not work for a plugin install (no `.git`) | wf `skills_rev.py`: a plugin install is pinned by its `plugin.json` version and a sha256 of `skills/` (git pins record the tree too); `check` compares files, not the version number (0.1.0 changed between releases). `assets/kskills.py` falls back to the newest plugin install; new-design.md s0. Also `show` lost the first character of the first dirty path (`git()` stripped porcelain's leading space) | `tests/test_skills_rev.py` (plugin pin, check, an edit that kept the version, a commit-pinned lock) |
+| `emc.py` crashed on `{"pair": [...]}` in `diff_pairs` | rev `common.py` validates `diff_pairs` once (`DIFF_PAIRS`) and exits naming both accepted forms; `emc.py` uses it; the example config shows the dict form with `target_ohm` | `tests/test_pack_checks.py` |
+| `r.track(..., ('U4', '2', 1))` raised TypeError | wf `router.py`: `net(ref, num, i)`, so track endpoints take the pad index like `P()` | `tests/test_router_checks.py` |
+| Stitching vias inside mounting hardware | wf `router.py`: every via, and F.Cu / B.Cu track, of another net is checked against board_lint's hardware radius (same hole rule, `hardware_r=` / `hardware_nets=`, CLI `--hardware-r` / `--hardware-net`), so `via_field()` skips those spots | `tests/test_router_checks.py`; the project's own route plan still runs with 0 violations, 0 rejected |
+| No way to declare an intended T-tap in schgen | wf `schgen.Sch.tap(*points)`: declared taps are not collisions, a tap touching no wire is; new-design.md ladder layout | `tests/test_schgen_taps.py` (junction written at the tap) |
+| `board_setup.py --class Power:track_width=0.5` gave KeyError | wf `board_setup.py`: unknown key or bad number names the keys; docstring notes that a class clearance applies between that class's pins on a fine-pitch IC | `tests/test_board_setup.py` |
+| `new_board.py --labels`: one label per footprint | wf `new_board.py`: `{"J3": {"pads": {"1": "GND", ...}, "dy": 2.35}}` places a label per pad (optional rot, size, sides); layout-rules.md | `tests/test_new_board_labels.py` (KiCad header footprints; skipped without them) |
+| No lib-table builder in kicad_sexpr | wf `kicad_sexpr.add_library()` / `library_names()` (`lib_table.py`): creates, appends, updates by name, writes nothing when unchanged; README, file-format.md | `kicad_sexpr/tests/test_lib_table.py` (KiCad's own layout byte for byte) |
+| `datasheet.py fetch` saved an ISO certificate as two inductors' datasheet | ps `datasheet.py fetch --mpn`: the saved PDF must name the part (a series prefix is a note) and must not read like a certificate; otherwise kept, WARNING, exit 3; ps `SKILL.md` | `tests/test_datasheet.py` (generated text PDFs; needs poppler). The project's 7 real datasheets pass |
+| The first interview reply became a 10-question checklist | nb `SKILL.md`: one level per message, one to three questions, first message level 1 only, what the request answered confirmed rather than asked, the field example; interview-guide.md example opening is level 1 only | Text |
+
+Test runs: wf `python3 -m pytest -q kicad_sexpr/tests tests`: 81 passed, 2 skipped (was 71 / 2; new: paste_clear x2,
+board_setup x2, schgen taps x2, new_board labels, lib_table x2, router x2, skills_rev plugin). rev 21 passed, 2 skipped
+(was 20 / 2; new: the diff_pairs config error). ps 13 passed, 1 skipped (was 12 / 1; new: the datasheet content check).
+psu 4 passed (unchanged).

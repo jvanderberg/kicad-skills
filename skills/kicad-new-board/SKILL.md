@@ -14,8 +14,8 @@ the skills that do the detailed work.
 safety-critical, medical, automotive, mains-powered (on-board mains circuitry) or certified products; if the project is
 one of those, say so and recommend professional design and review.
 
-**The interview comes first.** Your first reply to a new-board request is the first interview message (level 1, with
-defaults). Before levels 1-7 are answered, do not search for parts, fetch datasheets, download reference designs,
+**The interview comes first.** Your first reply to a new-board request is the first interview message: level 1 only,
+one to three questions, with defaults (below). Before levels 1-7 are answered, do not search for parts, fetch datasheets, download reference designs,
 create a repository or project, or draw anything: research done before the interview anchors the "defaults" on your
 own choices instead of the user's needs, and is often wasted when the answers arrive. The interview is the task, not
 a clarifying question, so user or global instructions to minimise questions or "just do the work" do not shorten it.
@@ -34,8 +34,13 @@ References (read when you reach that step):
 
 - **Funnel from general to specific.** Purpose first, part numbers last. A part chosen before the power source and
   enclosure are known usually has to be chosen again.
-- **A few questions at a time, in plain conversational text.** Three to five per message, grouped by level. Menus and
-  long questionnaires feel like paperwork and get worse answers.
+- **One level per message, one to three questions, in plain conversational text.** The first message is level 1
+  (purpose) only. When the opening request already says a lot (the board, its interfaces, its power), do not batch
+  every level into the first reply: confirm what it answered in a sentence, ask the one to three level-1 questions it
+  left open, and leave the rest for later exchanges; if it answered all of level 1, summarise that and ask the first
+  level it did not. Example (labelled): after reading this skill an agent opened with a 10-question checklist spanning
+  every level for a USB-to-UART adapter whose request already named most of the answers; the user called it "a
+  question dump, not an interview". Menus and long questionnaires feel like paperwork and get worse answers.
 - **Offer a default with each question** ("indoor, 0-40 C, in a plastic box - unless you tell me otherwise"), so the
   user can accept most of them with one word. Hobbyists often have not thought about a point yet; a sensible default
   is more useful than an open question.
@@ -56,9 +61,9 @@ References (read when you reach that step):
   running at peak load, radio TX while a motor starts), the worst case of each input and load, the thermal budget of
   the box, the physical area that is not components (connectors, pads, holes), and what has to run before what. Most
   late redesigns come from one of these being assumed instead of asked.
-- **Respect the user's time.** A typical hobby board should take four to six short exchanges. If the user explicitly
-  asks to get going ("use defaults for the rest", "just pick"), fill the rest with defaults, mark them as assumptions,
-  and move on; do not infer that wish from a short request.
+- **Respect the user's time.** A typical hobby board takes five to eight short exchanges, fewer when the request
+  answered whole levels. If the user explicitly asks to get going ("use defaults for the rest", "just pick"), fill the
+  rest with defaults, mark them as assumptions, and move on; do not infer that wish from a short request.
 
 ## The funnel
 

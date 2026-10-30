@@ -99,7 +99,8 @@ raw newlines in strings, duplicate uuids).
 ## Libraries
 
 - Project libraries go in the project `fp-lib-table` / `sym-lib-table` with `${KIPRJMOD}` paths so the project opens
-  on any machine. Copy parts that live only in a user's global or PCM libraries into project libraries under the same
+  on any machine; add them with `kicad_sexpr.add_library(table_path, nickname, uri)` (creates the table, updates an
+  entry of the same name, writes nothing when it is already there). Copy parts that live only in a user's global or PCM libraries into project libraries under the same
   nickname (no references change).
 - A footprint's library nickname must be in the footprint id (`MyProject:Name`); a missing or wrong nickname
   (`EasyEDA:` from an import) shows as `footprint_link_issues`.

@@ -29,7 +29,7 @@ STACK = [dict(name='F.Cu', type='copper', thickness_mm=0.035, er=None), dict(nam
          dict(name='B.Cu', type='copper', thickness_mm=0.035, er=None)]
 
 
-def build(d, merged=False, islands=True):
+def build(d, merged=False, islands=True, diff_pairs=None):
     u1 = [pad('1', 'VDD', 10, 10), pad('2', 'GND', 10, 11), pad('3', 'USB_DP', 10, 12), pad('4', 'USB_DN', 10, 13),
           pad('5', 'EN', 10, 14), pad('6', 'GND', 12, 14), pad('7', 'GND', 12, 13), pad('8', 'VCORE', 12, 10)]
     fps = [dict(ref='U1', value='MCU', fp='QFN', lib='', x=11, y=12, rot=0, side='F', pads=u1),
@@ -62,7 +62,7 @@ def build(d, merged=False, islands=True):
             comps[f['ref']]['pins'][p['num']] = [p['net'], fn.get(k, ''), pt.get(k, 'passive')]
             nets.setdefault(p['net'], []).append([f['ref'], p['num'], fn.get(k, ''), pt.get(k, 'passive')])
     cfg = dict(ground_nets=['GND'], net_classes=[{'match': '^USB_', 'class': 'usb'}, {'match': '^NOPE_', 'class': 'spi'}],
-               fast_classes=['usb'], diff_pairs=[{'nets': ['USB_DP', 'USB_DN'], 'target_ohm': 90}])
+               fast_classes=['usb'], diff_pairs=diff_pairs or [{'nets': ['USB_DP', 'USB_DN'], 'target_ohm': 90}])
     if islands:
         cfg['islands'] = [dict(name='power ground', net='GND', layer='F.Cu', pads=['U1:2', 'C1:2'], allowed_vias=1)]
     for n, v in (('board.json', board), ('netlist.json', dict(components=comps, nets=nets)), ('review_config.json', cfg)):
@@ -117,6 +117,17 @@ def test_diff_pair_coplanar_and_coverage_warnings():
     assert any('reach a connector fell through to "slow"' in x and 'EXT_SIG' in x for x in w), w
     md = open(os.path.join(d, 'emc.md')).read()
     assert 'Same-net isolation' in md and 'Decoupling: nearest capacitor' in md and 'coplanar' in md, md[-3000:]
+
+
+def test_diff_pair_entry_with_unknown_keys_is_a_config_error():
+    """{"pair": [...]} instead of {"nets": [...]}: a message naming the accepted forms, not a TypeError"""
+    d = tempfile.mkdtemp(); build(d, diff_pairs=[{'pair': ['USB_DP', 'USB_DN'], 'target_ohm': 90}])
+    r = subprocess.run([PY, os.path.join(HERE, 'emc.py'), d], capture_output=True, text=True)
+    assert r.returncode != 0 and 'Traceback' not in r.stderr, r.stderr[-2000:]
+    assert 'diff_pairs entry 1' in r.stderr and '{"nets": ["NET_P", "NET_N"], "target_ohm": 90}' in r.stderr and 'pair' in r.stderr, r.stderr
+    d = tempfile.mkdtemp(); build(d, diff_pairs=[['USB_DP', 'USB_DN']])                  # the short form still works
+    run(d, 'emc.py')
+    assert json.load(open(os.path.join(d, 'emc.json')))['diff_pairs'][0]['target_ohm'] is None
 
 
 def test_pour_check_weak_and_isolated_pieces():

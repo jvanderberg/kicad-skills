@@ -7,7 +7,7 @@ hand. Pure Python 3.9+, no dependencies, MIT like the rest of the repo.
   `.kicad_sym`, `.kicad_mod`, `fp-lib-table` / `sym-lib-table`. Nothing is modelled as a fixed class, so no token is
   ever unknown or dropped. The writer is a port of KiCad's own formatter: a file KiCad saved comes back
   **byte-identical** after `dumps(loads(text))`, and every other file comes back token-identical.
-- **Typed builders on top** (`schematic.py`, `board.py`, `symbol_lib.py`, `project.py`) for the items generators
+- **Typed builders on top** (`schematic.py`, `board.py`, `symbol_lib.py`, `project.py`, `lib_table.py`) for the items generators
   make all the time. Each builder returns the node it inserted, so anything a builder does not cover can still be set
   on that node, or added with `add(Node(...))`.
 - **The format rules live here and nowhere else**: quoting and escaping (`"`, `\`, newline, CR) happen only in the
@@ -24,7 +24,7 @@ KiCadFiles / the IPC API.
 
 ```python
 import sys; sys.path.insert(0, '<kicad-skills>/skills/kicad-pcb-workflow/scripts')
-from kicad_sexpr import Board, Project, Schematic, SymbolLibrary, stackup, Node, load, save
+from kicad_sexpr import Board, Project, Schematic, SymbolLibrary, add_library, stackup, Node, load, save
 ```
 
 ### A schematic block (from `examples/quickstart.py`)
@@ -70,6 +70,8 @@ b.save('demo.kicad_pcb')
 
 pro = Project.new('demo.kicad_pro')               # or Project.load(): net classes, assignments, design rules
 pro.netclass('Power', clearance=0.2, track_width=0.8); pro.assign('VBUS', 'Power'); pro.save()
+
+add_library('fp-lib-table', 'demo', '${KIPRJMOD}/demo.pretty')       # project library tables (sym-lib-table alike)
 ```
 
 `python3 examples/quickstart.py OUT_DIR` writes the complete demo project; the test suite checks that it has ERC 0,

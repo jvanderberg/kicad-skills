@@ -29,7 +29,7 @@ Route block by block, each from its brief, and check each block against its data
 #                     $PY scripts/router.py apply proj.kicad_pcb pack/board.json plan.py
 def build(r):
     r.track('F.Cu', 0.15, ('U1', '12'), (120.0, 80.0), (121.0, 81.0), ('J2', '3'))   # net taken from the pads
-    r.via((140.0, 81.0), r.net('U1', '12'), 0.45, 0.2)                                  # checked before it is accepted
+    r.via((140.0, 81.0), r.net('U1', '12'), 0.45, 0.3)          # checked before it is accepted; 0.3 mm: JLC's base price
     r.via_near('C5', '2')                     # closest legal spot beside a pad, with a short link track
     r.rect('GND', 'In1.Cu', 100.3, 100.3, 149.7, 139.7, name='GND_PLANE')
     r.keepout('F.Cu', [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], name='AGND_U3')     # no pour over an analog island

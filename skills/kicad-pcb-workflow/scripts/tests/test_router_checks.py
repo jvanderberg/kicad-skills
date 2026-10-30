@@ -97,6 +97,37 @@ def test_track_clearance_never_looser_than_drc():
         assert r.violations == 1, (outside, r.log)
 
 
+def test_repeated_pad_number_by_index():
+    """a SOT-223's tab is a second pad "2": ('U4', '2', 1) names it in a track, as r.P('U4', '2', 1) does"""
+    b = board()
+    b['footprints'].append(dict(ref='U4', pads=[pad('1', 'VIN', 15, 20, 0.7, 1.5), pad('2', 'VOUT', 17.3, 20, 0.7, 1.5),
+                                                pad('3', 'GND', 19.6, 20, 0.7, 1.5), pad('2', 'VOUT', 17.3, 14, 3.3, 1.5)]))
+    r = router.Router(b, clearance=0.15)
+    end = r.track('F.Cu', 1.0, ('U4', '2', 1), (17.3, 11.0))
+    assert r.tracks[-1]['net'] == 'VOUT' and r.tracks[-1]['a'] == (17.3, 14.0) and end == (17.3, 11.0), r.tracks
+    assert r.net('U4', '2', 1) == 'VOUT' and r.P('U4', '2', 1) == (17.3, 14.0)
+
+
+def test_vias_and_tracks_keep_out_of_mounting_hardware():
+    """a GND stitching field around an M3 hole (net-less NPTH, 3.2 mm drill): no via inside drill + 0.5 mm of it, as
+    board_lint.py's UNDER HARDWARE would have it; hardware_nets / hardware_r follow board_lint's options"""
+    def with_hole():
+        b = board()
+        b['footprints'].append(dict(ref='H1', fp='MountingHole_3.2mm_M3', pads=[dict(num='', net='', x=20, y=20, layers=[],
+                                    th=False, drill=3.2, poly=[[rect(18.4, 18.4, 21.6, 21.6), []]])]))
+        return b
+    r = router.Router(with_hole(), clearance=0.15)
+    assert r.hardware and r.hardware[0][3] == 3.7, r.hardware
+    r.via_field('GND', 14, 14, 26, 26, pitch=1.0)
+    assert r.vias and all(math.dist(v['at'], (20, 20)) - v['size'] / 2 >= 3.7 for v in r.vias), r.vias
+    assert r.via((20, 23.8), 'GND') is False and 'mounting hole H1' in r.log[-1], r.log[-1]
+    r.track('B.Cu', 0.2, (14, 23), (26, 23), net='SIG')                  # 3 mm from the centre on B.Cu: a violation
+    r.track('In1.Cu', 0.2, (14, 22), (26, 22), net='SIG')                # inner layer: the hardware does not touch it
+    assert r.violations == 1 and 'mounting hole H1' in r.log[-1], r.log
+    assert router.Router(with_hole(), clearance=0.15, hardware_nets=['GND']).via((20, 23.8), 'GND')
+    assert router.Router(with_hole(), clearance=0.15, hardware_r={'H1': 2.5}).via((20, 23.8), 'GND')
+
+
 if router is None:
     for _k in [k for k in list(globals()) if k.startswith('test_') and k != 'test_under_analysis_python']:
         del globals()[_k]
