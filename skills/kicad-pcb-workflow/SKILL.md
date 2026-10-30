@@ -30,9 +30,10 @@ Scripts are in `${CLAUDE_SKILL_DIR}/scripts/`. Detailed references (read the one
 **One place owns each file format and each fiddly rule.** `scripts/kicad_sexpr` owns KiCad's file syntax (quoting,
 escaping, uuids, headers, `{slash}` net names, KiCad's own formatting). The higher-level writers sit on top of it and
 own the design rules: `schgen`/`symgen` for schematics and symbols, `new_board.py` and `board_setup.py` for boards and
-projects, `router.py` for copper and hole spacing, `add_courtyard.py` for footprints. They build every item through
-the layer's builders and format no KiCad text themselves (the `.kicad_dru` rules language, which is not KiCad
-s-expression data, is the one thing still written as text). A project generator describes the design; if it needs a
+projects, `libtable.py` (`kicad_sexpr.LibTable`) for library tables, `router.py` for copper and hole spacing,
+`add_courtyard.py` for footprints. They build every item through the layer's builders and format no KiCad text
+themselves (the `.kicad_dru` rules language, which is not KiCad s-expression data, is the one thing still written as
+text). A project generator describes the design; if it needs a
 feature the writers lack, add it to the writer or the layer, never as a format string in the project.
 
 **Generated files are deterministic.** The layer gives every item a stable uuid: the one it already had in the file
@@ -254,3 +255,7 @@ comparison: a minutes-long run restarted after every fix is abandoned, and nothi
   (R12, `references/new-design.md` s4).
 - Writing a number into a doc or a report from memory. Measure it from the current files (R29).
 - A route-plan helper with a net name typed in. Nets come from the pads (R17, `references/routing.md`).
+- Editing `sym-lib-table` / `fp-lib-table` by hand or through the generic tree, or writing your own symbol-drawing
+  code. Libraries are registered with `libtable.py add` / `symgen.save_library()`, symbols are redrawn with
+  `symgen.ic()` / `fet()` (`references/new-design.md` s2). When a writer lacks something, say so and add it to the
+  writer.

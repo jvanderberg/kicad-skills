@@ -164,7 +164,9 @@ had to ask why they were changing.
 ## Importing into KiCad
 
 **A part JLCPCB will assemble gets JLC's own footprint.** `jlcimport-cli import <C-number> -p <project_dir> --lib-name
-JLCImport --kicad-version 10` adds its EasyEDA symbol, footprint and 3D model to project libraries. JLCPCB places
+JLCImport --kicad-version 10` adds its EasyEDA symbol, footprint and 3D model to project libraries and registers
+`JLCImport` in the project's sym-lib-table and fp-lib-table (do not add it again or under a second nickname; any other
+project library goes in with kicad-pcb-workflow's `libtable.py add` or `symgen.save_library()`). JLCPCB places
 every part with that footprint, at the position and rotation in the CPL file, so a board drawn with it gets the
 rotation and polarity JLC expects. A KiCad library footprint has to be bridged to JLC's, and that bridge is where
 placements go wrong: polarity named differently (A/C pins, `_AK` footprints, "+"/"-" marks on LEDs), pads numbered in

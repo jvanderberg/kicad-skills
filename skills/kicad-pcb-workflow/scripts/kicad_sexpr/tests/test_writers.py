@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 from helpers import KICAD_PYTHON, Skip, cli, drc, erc, footprints_dir, netlist, symbols_dir, tmpdir
-from kicad_sexpr import Board, Node, Project, load, save
+from kicad_sexpr import Board, Project, load, save
 
 SCRIPTS = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, SCRIPTS)
@@ -34,13 +34,12 @@ def _schematic(d):
                              bottom=[('GND', ['2'], symgen.PI)], desc='test "LDO"'),
             'NFET': symgen.fet(SymLib('Device', S + '/Device.kicad_sym').get('Q_NMOS'), 'NFET', D=['3'], G=['1'],
                                S=['2'], desc='SOT-23')}
-    lib = os.path.join(d, 'w.kicad_sym')
-    symgen.library(syms, 'w_test').save(lib)
-    save(Node('sym_lib_table', Node('version', 7),
-              Node('lib', Node('name', 'W'), Node('type', 'KiCad'), Node('uri', '${KIPRJMOD}/w.kicad_sym'),
-                   Node('options', ''), Node('descr', ''))), os.path.join(d, 'sym-lib-table'))
     if not os.path.exists(os.path.join(d, 'w.kicad_pro')):
         Project.new(os.path.join(d, 'w.kicad_pro')).save()     # kicad-cli reads the project's sym-lib-table
+    lib = os.path.join(d, 'w.kicad_sym')
+    table = symgen.save_library(syms, lib, 'W', generator='w_test')   # writes w.kicad_sym, registers W
+    assert open(table).read() == ('(sym_lib_table\n\t(version 7)\n\t(lib (name "W") (type "KiCad") '
+                                  '(uri "${KIPRJMOD}/w.kicad_sym") (options "") (descr ""))\n)\n')
     s = Sch('w', paper='A4', title='writers "test"', rev='1', date='2026-10-24')
     s.lib('Device', S + '/Device.kicad_sym')
     s.lib('power', S + '/power.kicad_sym')

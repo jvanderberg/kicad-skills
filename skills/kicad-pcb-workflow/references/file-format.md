@@ -99,9 +99,19 @@ raw newlines in strings, duplicate uuids).
 ## Libraries
 
 - Project libraries go in the project `fp-lib-table` / `sym-lib-table` with `${KIPRJMOD}` paths so the project opens
-  on any machine; add them with `kicad_sexpr.add_library(table_path, nickname, uri)` (creates the table, updates an
-  entry of the same name, writes nothing when it is already there). Copy parts that live only in a user's global or PCM libraries into project libraries under the same
+  on any machine. Copy parts that live only in a user's global or PCM libraries into project libraries under the same
   nickname (no references change).
+- **Register a library with the tool, never by editing the table**: `scripts/libtable.py add PROJECT_DIR sym|fp
+  NICKNAME PATH` (and `remove`) from the shell, `kicad_sexpr.LibTable` from a script, `symgen.save_library()` for
+  redrawn symbols. PROJECT_DIR is the folder with the `.kicad_pro`: KiCad reads no table anywhere else. They write the
+  `${KIPRJMOD}` form, leave the table unchanged when the entry is already there (a generator can run again), refuse a
+  library outside the project or one that does not exist, refuse to re-point a nickname or to give one file a second
+  nickname (its references split between the two), and refuse a `"` in any field (KiCad 10's table parser has no
+  escapes: one `"` and it drops the whole table, every project library with it). `libtable.py list PROJECT_DIR
+  [--global]` shows what each nickname resolves to the way KiCad reads it (later rows win, disabled rows hide) and
+  flags MISSING files. jlcimport-cli registers its own library (`--lib-name`) in both tables; leave that entry
+  alone. KiCad reads the project's tables when it opens the project: change them with the project closed
+  (`libtable.py add` refuses while an editor holds it) and tell the user to reopen it.
 - A footprint's library nickname must be in the footprint id (`MyProject:Name`); a missing or wrong nickname
   (`EasyEDA:` from an import) shows as `footprint_link_issues`.
 - `kicad-cli sym upgrade` re-sorts symbols alphabetically - a large but harmless diff.

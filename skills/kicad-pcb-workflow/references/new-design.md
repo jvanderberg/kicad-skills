@@ -12,6 +12,7 @@ so a generator describes the design and never formats KiCad text itself:
 |---|---|---|
 | Intended connectivity, checked against KiCad's netlist | `netspec.py` | python3 |
 | Redraw symbols readably, pins numbered for the footprint | `symgen.py` (library) | python3 |
+| Register a project library in sym-lib-table / fp-lib-table; list what nicknames resolve to | `libtable.py`, `symgen.save_library()`, `kicad_sexpr.LibTable` | python3 |
 | Draw the schematic as wired blocks; geometry checks; locate shorts | `schgen.py` (library) | python3 |
 | Footprint facts: courtyard, pad count / body vs package, pins vs pads | `fpcheck.py` | python3 |
 | Add missing courtyards to imported footprints | `add_courtyard.py` | python3 |
@@ -65,6 +66,13 @@ it. Pin numbers are the footprint's pad numbers, so pick the footprints now (`fp
 
 ## 2. Symbols
 
+- **Redraw with `symgen`, not with your own drawing code.** A project's symbol script is a list of `symgen.ic()` /
+  `symgen.fet()` calls (names, numbers, types, sides from the datasheet pin table) and one
+  `symgen.save_library(symbols, 'hw/<project>.kicad_sym', '<Project>')`, which writes the library and registers it
+  in the project's sym-lib-table as `${KIPRJMOD}/...`. No rectangles, pins, s-expression text or table edits in the
+  project script: if `symgen` lacks a layout the part needs, add it to `symgen`. Put the redrawn symbols in their own
+  project library, not in `JLCImport.kicad_sym` (jlcimport-cli edits that file as text, and re-importing a part with
+  overwrite replaces the symbol of the same name); jlcimport-cli has already registered `JLCImport` in both tables.
 - A redrawn symbol keeps the data of the one it replaces: `symgen.ic(..., inherit=SymLib('JLCImport',
   'JLCImport.kicad_sym').libsym('JLCImport:<name>'))` takes over its Datasheet, Footprint, Description, LCSC,
   manufacturer and MPN wherever the call does not give them.

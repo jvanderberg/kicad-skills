@@ -7,9 +7,9 @@ hand. Pure Python 3.9+, no dependencies, MIT like the rest of the repo.
   `.kicad_sym`, `.kicad_mod`, `fp-lib-table` / `sym-lib-table`. Nothing is modelled as a fixed class, so no token is
   ever unknown or dropped. The writer is a port of KiCad's own formatter: a file KiCad saved comes back
   **byte-identical** after `dumps(loads(text))`, and every other file comes back token-identical.
-- **Typed builders on top** (`schematic.py`, `board.py`, `symbol_lib.py`, `project.py`, `lib_table.py`) for the items generators
-  make all the time. Each builder returns the node it inserted, so anything a builder does not cover can still be set
-  on that node, or added with `add(Node(...))`.
+- **Typed builders on top** (`schematic.py`, `board.py`, `symbol_lib.py`, `project.py`, `lib_table.py`) for the
+  items generators make all the time. Each builder returns the node it inserted, so anything a builder does not cover
+  can still be set on that node, or added with `add(Node(...))`.
 - **The format rules live here and nowhere else**: quoting and escaping (`"`, `\`, newline, CR) happen only in the
   writer, KiCad 10 version headers, stable uuids that are unique within the document (checked again before every
   save; see "Stable ids"), `{slash}` in board net names that come from a netlist (`board_net_name()`), and the layouts KiCad 10
@@ -24,7 +24,7 @@ KiCadFiles / the IPC API.
 
 ```python
 import sys; sys.path.insert(0, '<kicad-skills>/skills/kicad-pcb-workflow/scripts')
-from kicad_sexpr import Board, Project, Schematic, SymbolLibrary, add_library, stackup, Node, load, save
+from kicad_sexpr import Board, LibTable, Project, resolve_libraries, Schematic, SymbolLibrary, stackup, Node, load, save
 ```
 
 ### A schematic block (from `examples/quickstart.py`)
@@ -70,8 +70,6 @@ b.save('demo.kicad_pcb')
 
 pro = Project.new('demo.kicad_pro')               # or Project.load(): net classes, assignments, design rules
 pro.netclass('Power', clearance=0.2, track_width=0.8); pro.assign('VBUS', 'Power'); pro.save()
-
-add_library('fp-lib-table', 'demo', '${KIPRJMOD}/demo.pretty')       # project library tables (sym-lib-table alike)
 ```
 
 `python3 examples/quickstart.py OUT_DIR` writes the complete demo project; the test suite checks that it has ERC 0,
@@ -95,6 +93,25 @@ b.save()                                          # untouched parts of a KiCad-s
 
 Anything is reachable through the tree: `node.find('layer')`, `node.need('at').number(1)`, `node.walk('pad')`,
 `node.set('width', 0.2)`, `node.remove_all('filled_polygon')`, `Node('anything', ...)` + `board.add(node)`.
+
+### Library tables
+
+```python
+t = LibTable.for_project('hw', 'sym')             # hw/sym-lib-table, loaded or new
+t.add('Proj', 'proj.kicad_sym', descr='project symbols')   # relative to hw/ -> ${KIPRJMOD}/proj.kicad_sym
+t.save()                                          # KiCad 10's layout: one (lib ...) row per line
+resolve_libraries('hw', 'fp')                     # {nickname: path} as KiCad sees the project
+```
+
+`add()` returns False when the nickname already names that file (however it is spelled: absolute, `$(KIPRJMOD)`,
+trailing slash) and only updates a description or options given for it. It refuses a library outside the project
+(copy it in), a file that does not exist or is the wrong kind, a path variable other than `${KIPRJMOD}` and KiCad's
+install folders (`KICADn_SYMBOL_DIR`, `_FOOTPRINT_DIR`, `_3DMODEL_DIR`, `_TEMPLATE_DIR`), a nickname that already
+names another file (`replace=True` re-points it and keeps the row's other settings), a second nickname for the same
+file, and a `"`, backslash or control character in any field: KiCad 10's table parser reads strings literally, so
+one `"` makes it drop the whole table. Resolution follows KiCad's LIBRARY_MANAGER: global table, then the project's;
+a later row for a nickname replaces an earlier one, a disabled row hides it, a `Table` row expands in place
+(`walk()` lists the rows in that order). `symgen.save_library()` and `libtable.py` are built on this.
 
 ### Net names
 
@@ -128,6 +145,7 @@ Files you load keep every id they have; only new items get keys. The writers (`s
 | `.kicad_sym` | every item | library symbol (properties, units, pins, rectangle, polyline), flattening of derived symbols, pin list, library with a named generator |
 | `.kicad_pcb` | every item | header + layer table + setup for N copper layers, stackup, footprints (place / flip / fields / pad nets / pad positions), segment, arc, via (through, blind, micro), copper zone, keepout rule area, gr_line / gr_arc / gr_circle / gr_rect / gr_poly / gr_text, rounded-rectangle outline |
 | `.kicad_mod` | every item | `new_footprint()` skeleton, `fp_rect` / `fp_line` (courtyards, silk, fab); pads as plain `Node`s |
+| `sym-lib-table` / `fp-lib-table` | every item | rows (add / re-point / remove, `${KIPRJMOD}` uris, duplicate checks), resolution with variables and `Table` rows, KiCad 10's one-row-per-line layout |
 | `.kicad_pro` (JSON) | everything (dict) | net classes, assignments (KiCad 10's list form, several classes per net), patterns, design rules, track / via presets |
 
 Items with no builder are still kept exactly and can be created with `Node(...)`: dimensions, images, groups,
