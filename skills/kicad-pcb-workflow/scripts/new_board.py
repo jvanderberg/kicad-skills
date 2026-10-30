@@ -10,7 +10,9 @@ KiCad has no command-line "update PCB from schematic". This does what that does 
 and flips footprints the way pcbnew does, checked item by item against pcbnew in kicad_sexpr's tests):
 - loads each footprint from the project's fp-lib-table (${KIPRJMOD}) or KiCad's global table / library directory;
 - sets reference, value, the symbol link (sheet path + symbol uuid, so schematic parity works) and every pad's net,
-  escaping "/" as {slash} in auto-generated net names (kicad_sexpr.board_net_name);
+  escaping "/" as {slash} in auto-generated net names (kicad_sexpr.board_net_name), with the pin's name and electrical
+  type as (pinfunction ...) and (pintype ...), as KiCad's update does (JLCImport's placement solver pairs a polarised
+  part's pads by those pin names; without them it assumes KiCad's pad-1 convention and warns on every diode and LED);
 - adds every other schematic field (LCSC, MPN, ...) as a hidden footprint property (an existing library property of
   the same name gets the value);
 - carries the schematic's assembly attributes to the footprint: DNP -> dnp, not in BOM -> exclude_from_bom, not in
@@ -126,7 +128,9 @@ def main():
             offboard.append(ref)
             continue
         comps.append(dict(ref=ref, value=c.findtext('value') or '', fp=fp, path=path, fields=f, flags=flags))
-    pins = {(n.get('ref'), n.get('pin')): board_net_name(net.get('name'))
+    # (net, pin name, pin type) per pad, as KiCad's update writes them: (pinfunction ...) only for a named pin, verbatim
+    # from the netlist (KiCad's own suffixes such as "Pin_1_1" included), and (pintype ...) for every pin
+    pins = {(n.get('ref'), n.get('pin')): (board_net_name(net.get('name')), n.get('pinfunction'), n.get('pintype'))
             for net in root.find('nets') for n in net.findall('node')}
 
     previous = a.previous if a.previous is not None else (a.out if os.path.exists(a.out) else 'none')
@@ -162,9 +166,9 @@ def main():
         nfields += len(c['fields'])
         pad_nums = {str(p[1]) for p in fp.pads()}
         for num in sorted(pad_nums):
-            n = pins.get((c['ref'], num))
+            n, pinfunction, pintype = pins.get((c['ref'], num), (None, None, None))
             if n:
-                fp.set_pad_net(num, n)
+                fp.set_pad_net(num, n, pinfunction=pinfunction, pintype=pintype)
                 nets.add(n)
         if a.refs != 'silk':
             fp.set_field('Reference', c['ref'], hide=True)
