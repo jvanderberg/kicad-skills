@@ -152,7 +152,9 @@ a4 = []
 for r, c in sorted(comps.items(), key=lambda kv: natkey(kv[0])):
     if not r.startswith('R') or len(c['pins']) != 2: continue
     ns = [v[0] for v in c['pins'].values()]
-    if not any(any(x[0] in leds for x in nets[n]) for n in ns): continue
+    # in series: the resistor shares a node with an LED that is not a rail or ground (every LED's cathode sits on GND,
+    # so "an LED on one of its nets" listed a feedback divider and a bleed resistor as LED resistors)
+    if not any(kind(n) == 'signal' and any(x[0] in leds for x in nets[n]) for n in ns): continue
     m = re.match(r'([\d.]+)\s*([kKmM]?)', c['value'] or '')
     rail = [n for n in ns if volts(n)]
     if not m or not rail: continue

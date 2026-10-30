@@ -136,7 +136,10 @@ A board that is fine in steady state can trip, latch or lose a part in the first
   theta_JC from the datasheet) with its limit and with any function that folds back before it (a charger's thermal
   regulation cuts charge current at about 110 C); compare the board with its laminate limit; and compare the corner's
   duration with the board's time constant before calling a short peak a failure. h is the largest uncertainty: give the
-  user the range, not one number, and say what the enclosure adds.
+  user the range, not one number, and say what the enclosure adds. Take h from the enclosure, not the default: the
+  default 5 / 7 / 10 W/m^2K per face is a closed box; a bare board in still room air is about 9 / 12 / 16
+  (`"h_W_m2K": "bare"`). On a bare board the closed-box range turned a 56-68 C board into a 76 C one with a false
+  "over 85 C" part.
 - **Spacing and airflow.** Hot parts not stacked next to each other, not under a tall part that blocks airflow, and
   away from the cell, electrolytics and precision references.
 

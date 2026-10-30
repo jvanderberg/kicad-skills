@@ -53,9 +53,12 @@ resistor (a reset-state decision per line).
 
 Declare in the config what only the design intent knows: `"islands"` (each single-point or quiet ground and each
 pour that must meet its net only at named points: net, layer, its pads, allowed joins - format in `islands.py`; with
-none, same-net isolation is NOT CHECKED), `"diff_pairs"` with `target_ohm`, `"decoupling"` limits. Every pattern and
-named object in the config must match something: one that matches nothing is a warning in the coverage, and a net that
-reaches a connector and falls through to "slow" is listed by name. The scripts run under the analysis venv and
+none, same-net isolation is NOT CHECKED), `"diff_pairs"` with `target_ohm`, `"decoupling"` limits, and
+`thermal.h_W_m2K` from the enclosure - `"enclosed"` (5 / 7 / 10 W/m^2K per face, the default) or `"bare"` (9 / 12 / 16,
+a bare board in still room air). Ask if the requirements do not say: on a bare USB-UART board the closed-box default
+read a 76 C board average and a part over 85 C, against 56-68 C and nothing over a limit with the bare-board range.
+Every pattern and named object in the config must match something: one that matches nothing is a warning in the
+coverage, and a net that reaches a connector and falls through to "slow" is listed by name. The scripts run under the analysis venv and
 `boarddump.py` under KiCad's python; each re-runs itself under the right one (`interp.py`).
 
 Give the config a `"thermal"` section (format in `scripts/heat.py`; example in `assets/review_config.example.json`): the

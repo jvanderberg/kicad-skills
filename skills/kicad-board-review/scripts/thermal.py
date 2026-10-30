@@ -29,12 +29,14 @@ AMB = TC.get('ambient_C')
 if AMB is None:
     AMB = 25.0
     if CFG.get('thermal'): TW.append('thermal.ambient_C not set: temperatures below are rises over a PLACEHOLDER 25 C; set the air temperature around the board (inside the enclosure) at the design corner')
-HS = TC.get('h_W_m2K') or heat.DEFAULTS['h_W_m2K']
-HS = HS if isinstance(HS, dict) else {'nominal': float(HS)}
+H_CFG = (CFG.get('thermal') or {}).get('h_W_m2K')           # TC has the defaults merged in: read the config itself
+HS = heat.film(H_CFG)
 H_NOM = 'nominal' if 'nominal' in HS else sorted(HS, key=lambda k: HS[k])[len(HS) // 2]
-if 'h_W_m2K' not in (CFG.get('thermal') or {}):
-    TW.append('h (film coefficient) not configured: default %s W/m^2K (still air in a closed box, convection plus radiation, each face) - '
-              'an ASSUMPTION and the largest uncertainty in every temperature here' % ', '.join('%s %g' % kv for kv in HS.items()))
+if H_CFG is None:
+    TW.append('h (film coefficient) not configured: default %s W/m^2K assumes the board is INSIDE A CLOSED BOX (still air, '
+              'convection plus radiation, each face) - an ASSUMPTION and the largest uncertainty in every temperature here. A bare '
+              'board in still room air is about %s ("h_W_m2K": "bare"); a closed box is "enclosed"' % (
+                  ', '.join('%s %g' % kv for kv in HS.items()), ' / '.join('%g' % v for v in heat.H_PRESETS['bare'].values())))
 HB = float(TC.get('h_bottom_ratio', 1.0))
 HOT = float(TC.get('hot_part_W', heat.DEFAULTS['hot_part_W']))
 PITCH = a.pitch or float(TC.get('pitch_mm', 0.3))
@@ -414,11 +416,15 @@ for ref in refs_hot:
         pcs = list(g.geoms) if hasattr(g, 'geoms') else [g]
         pp = unary_union([unary_union(polys(p['poly'])) for p in f['pads'] if p['net'] == net and L in p['layers'] and p['poly']])
         piece = max(pcs, key=lambda q: q.intersection(pp).area)
-        if piece.intersection(zf).area < 1.0: continue
-        vs = [hh for hh in HOLES if hh['net'] == net and piece.buffer(0.05).contains(Point(hh['x'], hh['y'])) and len(hh['landed']) > 1]
+        # the pour itself, not the tracks of the same piece: a track from the tab to a header pin 12 mm away made that
+        # pin's plated hole count as "one via" under a regulator tab that had none
+        pour = piece.intersection(zf)
+        if pour.area < 1.0: continue
+        vs = [hh for hh in HOLES if hh['net'] == net and len(hh['landed']) > 1 and piece.buffer(0.05).contains(Point(hh['x'], hh['y']))
+              and pour.distance(Point(hh['x'], hh['y'])) <= hh['d'] / 2 + 0.5]
         gv = sum(via_g_to(hh, li)[0] for hh in vs)
-        gfr = K_FR4 * piece.area * 1e-6 / (GAPS[0 if li == 0 else -1] * 1e-3)
-        m_ = shapely.contains_xy(piece, XC, YC) & INSIDE
+        gfr = K_FR4 * pour.area * 1e-6 / (GAPS[0 if li == 0 else -1] * 1e-3)
+        m_ = shapely.contains_xy(pour, XC, YC) & INSIDE
         if not m_.any(): continue
         dT = float(np.nanmean(rl[li][m_]) - np.nanmean(rl[lj][m_]))
         q_fr4 = float(K_FR4 * (PITCH * 1e-3) ** 2 / (GAPS[0 if li == 0 else -1] * 1e-3) * np.nansum(rl[li][m_] - rl[lj][m_]))
@@ -433,12 +439,12 @@ for ref in refs_hot:
                 ov = g2.intersection(piece).area
                 if ov > 0.05 * piece.area: under[n2] = round(ov / piece.area * 100)
         others = [L2 for L2 in LAYERS if L2 != L and not geo(net, L2).is_empty]
-        e = dict(ref=ref, net=net, layer=L, corner=c_w, P_part_W=HT[c_w]['by_ref'].get(ref, 0.0), piece_mm2=round(piece.area, 1), bbox=[round(v, 1) for v in piece.bounds],
-                 vias=len(vs), G_vias_W_K=gv, G_fr4_W_K=gfr, dT_K=dT, Q_down_W=q_fr4 + q_via, Q_vias_W=q_via, under=dict(under), net_on_other_layers=others)
+        e = dict(ref=ref, net=net, layer=L, corner=c_w, P_part_W=HT[c_w]['by_ref'].get(ref, 0.0), piece_mm2=round(pour.area, 1), bbox=[round(v, 1) for v in pour.bounds],
+                 vias=sum(hh['kind'] == 'via' for hh in vs), pad_holes=['%s.%s' % (hh['ref'], hh['pad']) for hh in vs if hh['kind'] == 'pad'], G_vias_W_K=gv, G_fr4_W_K=gfr, dT_K=dT, Q_down_W=q_fr4 + q_via, Q_vias_W=q_via, under=dict(under), net_on_other_layers=others)
         fl = []
         if not vs and others: fl.append('no via joins this pour to its own net\'s copper on %s' % ', '.join(others))
         elif not vs: fl.append('no other layer has %s copper: the pour reaches the layer below only through %.2f mm of FR4' % (net, GAPS[0 if li == 0 else -1]))
-        elif len(vs) < 2: fl.append('one via only')
+        elif len(vs) < 2: fl.append('one via only' if vs[0]['kind'] == 'via' else 'one plated hole only (pad %s.%s)' % (vs[0]['ref'], vs[0]['pad']))
         # the structure is a finding only where the solve shows it matters: a step of a few kelvin is not trapped heat
         if dT >= 3: fl.append('%.0f K between this pour and the layer below (solved, %s, h %s)' % (dT, c_w, H_NOM))
         if fl and dT >= 3: e['flag'] = '; '.join(fl)
@@ -663,13 +669,16 @@ for e in sorted(EPADS, key=lambda e: ({'high': 0, 'medium': 1, 'low': 2, 'ok': 3
              e['recommended'], f1(e['R_K_W']), f1(e.get('step_K'), '%.1f K'), f1(e['dT_vias_K'], '%.1f K'), e['P_max_W'], ('**%s**: ' % e['severity']) if e['severity'] in ('high', 'medium') else '', e.get('flag', 'ok')))
 if not EPADS: m.append('| - | none found | | | | | | | | | |')
 m += ['', '## Pours under hot parts (stitching for heat)', '',
-      'For every part at or above %.2f W at some corner, each pour (zone fill) its pads sit on: the same-net vias that join it '
-      'to another layer, the FR4 under it, and from the solve at the part\'s worst corner (h %s) the temperature step from the pour '
+      'For every part at or above %.2f W at some corner, each pour (zone fill) its pads sit on: the same-net vias on the pour '
+      'that join it to another layer (plated pad holes of the net counted with them and named; tracks leaving the pour are not '
+      'part of it), the FR4 under it, and from the solve at the part\'s worst corner (h %s) the temperature step from the pour '
       'to the layer below and the heat that crosses it (through vias / in total). A pour that only FR4 drains, with a step of '
       'many kelvin, is where stitching vias - to a plane of the same net - lower the part\'s temperature.' % (HOT, H_NOM), '',
       '| Part | Net | Layer | Corner | Pour mm^2 | Vias | G vias / G FR4 (W/K) | Step to layer below (K) | Heat down: vias / total (W) | Under it (next layer) | Finding |', '|---|---|---|---|---|---|---|---|---|---|---|']
 for e in sorted(POURS, key=lambda e: ({'high': 0, 'medium': 1, 'ok': 2}[e['severity']], -e['dT_K'])):
-    m.append('| %s | %s | %s | %s | %.1f | %d | %.3f / %.3f | %.1f | %.2f / %.2f | %s | %s%s |' % (e['ref'], e['net'], e['layer'], e['corner'], e['piece_mm2'], e['vias'], e['G_vias_W_K'], e['G_fr4_W_K'],
+    m.append('| %s | %s | %s | %s | %.1f | %s | %.3f / %.3f | %.1f | %.2f / %.2f | %s | %s%s |' % (e['ref'], e['net'], e['layer'], e['corner'], e['piece_mm2'],
+             '%d%s' % (e['vias'], ' + pad hole%s %s' % ('s' if len(e['pad_holes']) > 1 else '', ', '.join(
+                 k + (' x%d' % n if n > 1 else '') for k, n in collections.Counter(e['pad_holes']).items())) if e['pad_holes'] else ''), e['G_vias_W_K'], e['G_fr4_W_K'],
              e['dT_K'], e['Q_vias_W'], e['Q_down_W'], ', '.join('%s %d%%' % kv for kv in e['under'].items()) or '-', ('**%s**: ' % e['severity']) if e['severity'] != 'ok' else '', e.get('flag') or ('ok' + ('; ' + e['note'] if e.get('note') else ''))))
 if not POURS: m.append('| - | no pour under a part at or above the hot threshold | | | | | | | | | |')
 m += ['', '## Ground stitching', '']

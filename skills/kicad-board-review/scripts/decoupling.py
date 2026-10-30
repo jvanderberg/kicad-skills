@@ -1,6 +1,7 @@
 # Decoupling distance per IC power pin, by the copper path rather than by eye. Writes PACK/decoupling.json.
 #   python decoupling.py PACK
-# For every IC pin on a supply net (pin type power_in/power_out, a supply pin name, or a net classed power) that has a
+# For every IC supply pin (pin type power_in/power_out, a supply pin name, or an untyped / passive pin on a net classed
+# power - not a logic input strapped to a rail, such as EN or DIR tied to VIN) that has a
 # capacitor to ground: the nearest same-net capacitor by path along the net's own copper - tracks (T-joins split),
 # vias (the barrel span between the layers they join) and pours/planes (a straight line across the filled piece) -
 # with the length on tracks, across planes and through vias, an inductance estimate (tracks: microstrip Z0 x
@@ -128,7 +129,8 @@ for ref, c in sorted(NL['components'].items(), key=lambda kv: natkey(kv[0])):
     for pin, (net, pf, pt) in sorted(c['pins'].items(), key=lambda kv: natkey(kv[0])):
         if not net or net in GND or net.startswith('unconnected-'): continue
         fn = fnname(pf, pin)
-        supply = pt.split('+')[0] in ('power_in', 'power_out') or bool(SUPPLY_FN.match(fn)) or cls(net) == 'power'
+        logic = pt.split('+')[0] in ('input', 'output', 'bidirectional', 'tri_state', 'open_collector', 'open_emitter')
+        supply = pt.split('+')[0] in ('power_in', 'power_out') or bool(SUPPLY_FN.match(fn)) or (cls(net) == 'power' and not logic)
         if not supply: continue
         caps = TOPO.caps_to_ground(net) if TOPO else []
         caps = [r for r in caps if r in FP]

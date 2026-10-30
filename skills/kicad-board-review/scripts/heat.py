@@ -7,8 +7,17 @@
 # that corner. Nothing is dropped for being unknown (R16).
 #
 # "thermal": {
-#   "ambient_C": 50,                                   air around the board (inside the enclosure)
-#   "h_W_m2K": {"low": 5, "nominal": 7, "high": 10},  effective film coefficient, convection + radiation, each face
+#   "ambient_C": 50,                                   air around the board (inside the enclosure, if there is one)
+#   "h_W_m2K": "enclosed" | "bare" | {"low": 5, "nominal": 7, "high": 10},
+#                                                      effective film coefficient, convection + radiation, each face:
+#                                                      "enclosed" = 5 / 7 / 10, still air inside a closed box (its walls
+#                                                      sit near the board's temperature, so radiation removes little);
+#                                                      "bare" = 9 / 12 / 16, a bare board in still room air (radiation
+#                                                      to the room adds about 6-7 W/m^2K at 50-70 C, emissivity 0.9).
+#                                                      Which one applies is a question about the enclosure, not a default:
+#                                                      on a bare USB-UART board the closed-box range read 76 C average and
+#                                                      a part "over 85 C"; the bare-board range gave 56-68 C and no part
+#                                                      over a limit.
 #   "list_threshold_W": 0.05, "hot_part_W": 0.25,
 #   "corners": {"<name>": {"title": "...", "currents": {"I_bat": 6.6 | {"run": "<power run>"} |
 #                                                        {"path_budget": "pb.json", "source": "empty", "R_corner": "typ"}}}},
@@ -33,7 +42,22 @@ import json, os, re
 CANDIDATE_PREFIXES = ('U', 'IC', 'Q', 'M', 'L', 'F', 'FB', 'D', 'LED', 'T', 'K', 'PS', 'VR', 'RT')
 KINDS = ('i2r', 'converter', 'linear', 'fixed', 'copper', 'path', 'negligible', 'unknown')
 ALPHA_CU = 0.00393
-DEFAULTS = dict(ambient_C=None, h_W_m2K={'low': 5.0, 'nominal': 7.0, 'high': 10.0}, list_threshold_W=0.05, hot_part_W=0.25)
+H_PRESETS = {'enclosed': {'low': 5.0, 'nominal': 7.0, 'high': 10.0},       # still air inside a closed box
+             'bare': {'low': 9.0, 'nominal': 12.0, 'high': 16.0}}         # a bare board in still room air
+DEFAULTS = dict(ambient_C=None, h_W_m2K=dict(H_PRESETS['enclosed']), list_threshold_W=0.05, hot_part_W=0.25)
+
+
+def film(h):
+    """review_config thermal.h_W_m2K -> {name: W/m^2K}: a preset name ("enclosed", "bare"), one number, or a dict;
+    None -> the enclosed preset (the caller says it was assumed)"""
+    if h is None:
+        return dict(H_PRESETS['enclosed'])
+    if isinstance(h, str):
+        if h not in H_PRESETS:
+            raise SystemExit('thermal.h_W_m2K "%s": use "enclosed" (%s), "bare" (%s), a number or {"low": .., "nominal": .., "high": ..}' % (
+                h, ' / '.join('%g' % v for v in H_PRESETS['enclosed'].values()), ' / '.join('%g' % v for v in H_PRESETS['bare'].values())))
+        return dict(H_PRESETS[h])
+    return dict(h) if isinstance(h, dict) else {'nominal': float(h)}
 
 
 def prefix(ref):
@@ -268,9 +292,11 @@ def starter(cand):
     """the thermal section a starter review_config.json gets: every candidate UNKNOWN, no invented numbers"""
     return dict(_comment='STARTER: every part that can dissipate real heat, found from the netlist, is UNKNOWN until you give its '
                          'loss per corner (kinds: i2r, converter, linear, fixed, copper, negligible with a reason). Set ambient_C to the '
-                         'air around the board (inside the enclosure) and define the corners (worst discharge, typical, charging while '
-                         'running, ...). See kicad-board-review/scripts/heat.py.',
-                ambient_C=None, h_W_m2K=dict(DEFAULTS['h_W_m2K']), corners={},
+                         'air around the board (inside the enclosure, if any) and define the corners (worst discharge, typical, charging '
+                         'while running, ...). Set h_W_m2K from the enclosure - ask if the requirements do not say: "enclosed" (5 / 7 / '
+                         '10, a closed box) or "bare" (9 / 12 / 16, a bare board in still room air); left null, the closed-box range is '
+                         'assumed and the coverage says so. See kicad-board-review/scripts/heat.py.',
+                ambient_C=None, h_W_m2K=None, corners={},
                 sources=[dict(ref=r, kind='unknown', why=w) for r, w in sorted(cand.items())],
                 # junction estimates need the datasheet's thermal table: one entry per IC / transistor, to fill in (or
                 # delete for a part whose loss turns out negligible)

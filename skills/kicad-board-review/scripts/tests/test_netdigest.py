@@ -30,5 +30,33 @@ def test_control_lines_without_pull_need_a_reset_decision():
     assert '/DATA' not in sec, sec                                # a data line, not a control line
 
 
+LEDS = """<?xml version="1.0" encoding="UTF-8"?>
+<export version="E"><components>
+<comp ref="D1"><value>LED_Green</value><footprint>LED_0603</footprint></comp>
+<comp ref="R1"><value>1k</value><footprint>R_0402</footprint></comp>
+<comp ref="R2"><value>330</value><footprint>R_0402</footprint></comp>
+<comp ref="R3"><value>100k</value><footprint>R_0402</footprint></comp>
+<comp ref="U1"><value>BUCK</value><footprint>SOT-23-5</footprint></comp>
+</components><nets>
+<net code="1" name="+3V3"><node ref="R1" pin="1" pintype="passive"/><node ref="R3" pin="1" pintype="passive"/><node ref="U1" pin="1" pinfunction="VIN" pintype="power_in"/></net>
+<net code="2" name="Net-(D1-A)"><node ref="R1" pin="2" pintype="passive"/><node ref="D1" pin="2" pintype="passive"/></net>
+<net code="3" name="GND"><node ref="D1" pin="1" pintype="passive"/><node ref="R2" pin="2" pintype="passive"/><node ref="U1" pin="2" pinfunction="GND" pintype="power_in"/></net>
+<net code="4" name="+1V8"><node ref="R2" pin="1" pintype="passive"/><node ref="U1" pin="3" pinfunction="VOUT" pintype="power_out"/></net>
+<net code="5" name="Net-(U1-FB)"><node ref="R3" pin="2" pintype="passive"/><node ref="U1" pin="4" pinfunction="FB" pintype="input"/></net>
+</nets></export>"""
+
+
+def test_led_resistors_are_the_ones_in_series_with_an_led():
+    """a bleed resistor to GND and a feedback divider on a rail that also feeds an LED are not LED resistors"""
+    d = tempfile.mkdtemp()
+    open(os.path.join(d, 'net.xml'), 'w').write(LEDS)
+    r = subprocess.run([sys.executable, os.path.join(HERE, 'netdigest.py'), d, 't'], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    md = open(os.path.join(d, 'netlist.md')).read()
+    sec = md[md.index('### LED series resistor power'):]
+    assert 'R1 1k on +3V3' in sec and 'R2 ' not in sec and 'R3 ' not in sec, sec
+
+
 if __name__ == '__main__':
     test_control_lines_without_pull_need_a_reset_decision(); print('PASS')
+    test_led_resistors_are_the_ones_in_series_with_an_led(); print('PASS')
