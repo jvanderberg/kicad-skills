@@ -306,7 +306,10 @@ For every IC and every non-trivial discrete:
 - **Addresses and straps** from the address table, and **register semantics** (signed vs unsigned, LSB size).
 - **Pin functions** confirmed in the SDK header or reference design, not from memory.
 - **Land pattern** from the datasheet, compared against the footprint used (imported footprints are often off: pad
-  positions, missing courtyards, 3D model offsets).
+  positions, missing courtyards, 3D model offsets). A JLC-assembled part on a KiCad library footprint that is not an
+  exact match for JLC's (anything but chip passives and geometry-checked matches) is a finding: JLC places by its own
+  footprint, so rotation and polarity need checking in JLC's placement preview, or the part moved to JLC's footprint
+  (pcb-part-selection "Importing into KiCad").
 Download PDFs and read them (`pdftotext -layout`; render figures with `pdftoppm`); `pcb-part-selection/scripts/datasheet.py
 fetch` follows a distributor's viewer page to its PDF. The project should hold every IC's datasheet (`docs/datasheets/`,
 `bom_check.py` lists those missing): a pinout that cannot be checked against a local datasheet is reported unverified,

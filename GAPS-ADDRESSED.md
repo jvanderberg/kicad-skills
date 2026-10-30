@@ -662,3 +662,28 @@ Where this differs from the review:
 - **Bus order** (C9): rule only; a checker would need the pin-to-side geometry of both packages at schematic time.
 - **Windows**: `kicad_locks.py` uses `ps` and `lsof` (or `/proc`); where neither exists it reports UNSURE rather than
   guessing.
+
+# JLC's own footprints for JLC-assembled parts; courtyards by rule of thumb
+
+Source: JLCImport's production-export work (jvanderberg/kicad_jlcimport PR #121) and its geometry-checked footprint
+matcher (PR #122). JLCPCB places every part with its own EasyEDA footprint at the CPL position and rotation. On test
+boards with the same ~900 JLC parts, JLC's footprints (imported with JLCImport) solved 958 of 962 placements at high
+confidence, with 4 warnings and no polarity guesses; KiCad library footprints solved 274 of 852, with 266 warnings and
+112 polarity guesses. Every placement bug found came from bridging a KiCad footprint to JLC's (polarity naming, mirror
+numbering, the pad-1 convention). R14's "standard, verified building blocks first" no longer applies to the footprints
+of JLC-assembled parts: JLC's footprint is the verified building block there.
+
+| Item | What changed (files) | How it was verified |
+|---|---|---|
+| Footprint default for JLC-assembled parts | ps `SKILL.md` "Importing into KiCad" (JLC's footprint by default, why, when a KiCad one is fine, the matcher as of PR #122, drafts checklist kept); wf new-design.md s5, wf `SKILL.md` s1; nb `SKILL.md` step 6; rev checklist "Land pattern" | Text. `jlcimport-cli import --help` (1.6.7): no footprint-choice option; PR #122 runs the matcher only where a dialog can offer it |
+| Most EasyEDA footprints have no courtyard | wf `add_courtyard.py`: clearance per class (small 0.15, default 0.25, wide 0.5, bga 1.0 mm), body from F.Fab outline, else the EasyEDA package name (`L..-W..`, `BD..`, chip codes), else silk; a project folder means every `${KIPRJMOD}` library; `--class`, `--margin` | A fresh `jlcimport-cli import` of 16 parts (0201, 0402 x2, 0603 C and LED, SOT-23 x2, LQFN-56, DSBGA-6, 5050 LED, 8 mm inductor, crystal, canned cap, USB-C, 1x3 header, ESP32-S3 module): none had F.CrtYd; classes as expected; rendered with `kicad-cli fp export svg` and inspected. The 0402 gets 1.74 x 0.84 mm (KiCad's R_0402: 1.86 x 0.94); the old silk-based box was 2.40 x 1.50. `tests/test_add_courtyard.py` |
+| Clearance figures | IPC-7351B courtyard excess, level B, as KiCad's footprint generator encodes it (`src/kilibs/config/ipc_configs/`, commit 36d1ed2): 0.25 (gull-wing, J-lead, flat no-lead, chips >= 0603), 0.15 (chips < 0603), 0.5 (table 3-20: electrolytics, crystals), 1.0 (IPC-7352 BGA). KLC F5.3 (klc repo commit 6e8cbad): 0.25 default, 0.15 under 1.5 mm, 0.5 connectors / canned capacitors / crystals, 1.0 BGA and WLCSP; generator config `courtyard_offset` the same | Read from both repositories, October 2026 (the KLC site and the IPC standards were not reachable / not open) |
+| DRC ignores a missing courtyard by default | wf `board_setup.py --rules jlc` sets `missing_courtyard` to error; checks.md DRC row, layout-rules.md | Without the setting, kicad-cli DRC on a board with a courtyard-less EasyEDA footprint reports no `missing_courtyard`; with it, one per footprint; KiCad's own logo footprints carry `allow_missing_courtyard` and are not reported. `tests/test_add_courtyard.py` (DRC before and after `add_courtyard.py`) |
+| `fpcheck.py` read "SOT-23-3" as 23 leads and pin-1 dots as the F.Fab body | wf `fpcheck.py`: family numbers (SOT, SOD, TO, SC, DO) are not lead counts; EasyEDA package names parsed (lead count, `L x W` body); filled F.Fab marks ignored | `tests/test_add_courtyard.py`; the imported AO3400A against "SOT-23-3" passes |
+
+Test runs: wf `python3 -m pytest -q kicad_sexpr/tests tests`: 74 passed, 2 skipped (was 69 / 2; new:
+`test_add_courtyard.py` x5). rev 20 passed, 2 skipped; ps 12 passed, 1 skipped; psu 4 passed (unchanged).
+
+Left open: the class comes from the EasyEDA package name and the pads, so a part whose name says nothing (a module, a
+switch) gets the default 0.25 mm and its silk as body; the script prints the class, the body source and the reason
+per footprint, and `--class` / `--margin` override it. Courtyards are rectangles, not contoured outlines.

@@ -161,23 +161,36 @@ had to ask why they were changing.
 
 ## Importing into KiCad
 
-**Prefer standard, verified building blocks over imported ones.** Use KiCad's library footprint whenever the package is
-a standard one (chip passives, SOT/SOD, SOIC/TSSOP/MSOP, standard QFN/SON/DFN variants, common connectors, fuses): it
-follows one convention, has a courtyard and fab layer, and is maintained. Keep an imported footprint only for a
-genuinely part-specific package, and check every imported or suggested one against its source:
+**A part JLCPCB will assemble gets JLC's own footprint.** `jlcimport-cli import <C-number> -p <project_dir> --lib-name
+JLCImport --kicad-version 10` adds its EasyEDA symbol, footprint and 3D model to project libraries. JLCPCB places
+every part with that footprint, at the position and rotation in the CPL file, so a board drawn with it gets the
+rotation and polarity JLC expects. A KiCad library footprint has to be bridged to JLC's, and that bridge is where
+placements go wrong: polarity named differently (A/C pins, `_AK` footprints, "+"/"-" marks on LEDs), pads numbered in
+mirror image (resistor arrays such as C25724 and C48442), KiCad's pad-1 convention against JLC's. On test boards with
+the same ~900 JLC parts (JLCImport's production-export work, jvanderberg/kicad_jlcimport PR #121, October 2026), JLC's
+footprints solved 958 of 962 placements at high confidence, with 4 warnings and no polarity guesses; KiCad library
+footprints solved 274 of 852, with 266 warnings and 112 polarity guesses.
+
+A KiCad library footprint is fine where it is an exact geometric match for JLC's: chip passives (0402/0603/0805 R and
+C), and any footprint JLCImport's matcher suggests. On a board JLCPCB does not assemble, KiCad's library is the better
+default (one convention, courtyards and fab outlines). Check every footprint you assign:
 `kicad-pcb-workflow/scripts/fpcheck.py FOOTPRINT --package "<LCSC package>" --symbol LIB:NAME` (courtyard, pad count,
 body size, symbol pins vs pads), plus the datasheet land-pattern figure for pad sizes and pitch.
 
-`jlcimport-cli import <C-number> -p <project_dir> --lib-name JLCImport --kicad-version 10` adds the symbol, footprint
-and 3D model to project libraries. Its CLI had no option to use a KiCad library footprint instead (v1.6.7): assign the
-library footprint in the schematic, and treat any automatic footprint match as a suggestion to check - on one board the
-matcher proposed a wrong pin count or body size for most of the parts it was asked about. Treat imported parts as drafts:
+JLCImport's matcher (jvanderberg/kicad_jlcimport PR #122, October 2026) suggests a KiCad footprint only when JLC's
+pads fit it within 0.05 mm (same pad numbers, no mirrored numbering, polarity checked) and otherwise keeps JLC's;
+v1.6.7 and earlier match by name only, and offered a wrong pad count for 406 of 963 parts, so check what they suggest
+with `fpcheck.py`. The suggestion is offered in the plugin's and TUI's import dialogs; `jlcimport-cli import` always
+writes JLC's footprint (to use a KiCad one, assign it in the schematic). Treat imported parts as drafts:
 - symbols often have off-grid pins and every pin typed "unspecified" (ERC noise) - fix pin types and grid, or redraw
   with kicad-pcb-workflow's `symgen.py`;
-- footprints may lack a courtyard (`add_courtyard.py`), have silk through pads, or differ from the datasheet land
-  pattern - compare pad sizes and positions against the datasheet figure (render with `kicad-cli fp export svg`);
-- check pad numbering against the symbol: a KiCad footprint may merge pins into one pad (e.g. FET source pins 5-8 as
-  pad "5"), so the symbol must use the footprint's numbers;
+- most EasyEDA footprints have no courtyard: add one by rule of thumb with `add_courtyard.py <project_dir>` (every
+  project library; kicad-pcb-workflow `references/new-design.md` s5 has the clearances) rather than redrawing the
+  footprint. Silk may run through pads. Compare the pads with the datasheet land pattern (render with `kicad-cli fp
+  export svg`); fix a real error in place, keeping the origin, rotation and pad numbers JLC places by, rather than
+  swapping in another footprint;
+- a redrawn symbol, or a KiCad footprint, must use the footprint's pad numbers (`fpcheck.py --symbol`): a KiCad
+  footprint may merge pins into one pad (e.g. FET source pins 5-8 as pad "5");
 - 3D models can be offset from the pads or missing (`board_lint.py` lists missing files) - check in a 3D render;
 - set the `LCSC` field on the symbol so the BOM and the stock sweep find it;
 - **keep the imported data when you replace the drawing.** The imported symbol carries the Datasheet link (JLCImport

@@ -9,7 +9,8 @@
 Why: kicad-cli cannot create or set up a board, and pcbnew's python does not expose the board stackup
 (GetStackupDescriptor() returns an opaque object in KiCad 10.0.1). This writes:
 - the board's (setup (stackup ...)) block from the table below (replacing an existing one), and the board thickness;
-- .kicad_pro design rules: comfortable values for JLC's capabilities, not their minimums (--rules jlc), or untouched;
+- .kicad_pro design rules: comfortable values for JLC's capabilities, not their minimums, and DRC reporting a
+  footprint with no courtyard as an error (--rules jlc), or untouched;
 - .kicad_pro net classes: Default (0.2 mm track, 0.15 mm clearance, 0.6/0.3 mm via) plus any --class, and net
   assignments by exact name (--assign) or wildcard pattern (--pattern, KiCad's netclass_patterns).
 The board's copper layer count must match the stackup (make the board with new_board.py or KiCad first).
@@ -53,6 +54,10 @@ JLC_RULES = {
     'min_hole_to_hole': 0.25,              # KiCad default; not in the JLC table we checked - verify
     'min_hole_clearance': 0.25,            # KiCad default
 }
+
+# DRC checks KiCad leaves off by default. A footprint with no courtyard is invisible to the overlap check, so DRC
+# reports it (add one with add_courtyard.py; a logo or graphic says allow_missing_courtyard, as KiCad's own do).
+SEVERITIES = {'missing_courtyard': 'error'}
 
 CLASS_BASE = {'bus_width': 12, 'diff_pair_gap': 0.25, 'diff_pair_via_gap': 0.25, 'diff_pair_width': 0.2,
               'line_style': 0, 'microvia_diameter': 0.3, 'microvia_drill': 0.1, 'pcb_color': 'rgba(0, 0, 0, 0.000)',
@@ -108,6 +113,7 @@ def apply_project(project, rules, classes, assigns, patterns):
     ds = project.design_settings()
     if rules == 'jlc':
         ds.setdefault('rules', {}).update(JLC_RULES)
+        ds.setdefault('rule_severities', {}).update(SEVERITIES)
         ds['track_widths'] = [0.0, 0.2, 0.3, 0.5, 0.8, 1.2, 2.0]
         ds['via_dimensions'] = [{'diameter': 0.0, 'drill': 0.0}, {'diameter': 0.6, 'drill': 0.3},
                                 {'diameter': 0.8, 'drill': 0.4}, {'diameter': 0.45, 'drill': 0.2}]

@@ -11,8 +11,10 @@ the usual install path). Prints one line of facts and a list of PROBLEMs; exit 1
   tolerance against the F.Fab outline; without an F.Fab outline the pad span is printed as a note only);
 - symbol pin numbers with no pad, or numbered pads with no symbol pin (an unconnected pad, or a footprint that merges
   pins into one pad - e.g. several FET source pins as one pad "5" - so the symbol must be renumbered to match).
-Footprint matchers (including jlcimport's) propose wrong pin counts and sizes often enough that every suggestion
-needs this check, and the datasheet's land-pattern figure is still the authority for pad sizes and pitch.
+Name-based footprint matchers propose wrong pin counts and sizes often enough that every suggested KiCad footprint
+needs this check (JLCImport's geometry-checked matcher suggests one only when JLC's pads fit it), and the datasheet's
+land-pattern figure is still the authority for pad sizes and pitch. EasyEDA package names work as --package too
+("SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR": 3 leads, body 2.9 x 1.3).
 """
 import argparse, os, re, sys
 
@@ -52,11 +54,14 @@ def pads(fp):
     return out
 
 
-def layer_bbox(fp, layer):
-    """Bounding box of the points of every fp_line / fp_rect / fp_arc / fp_circle / fp_poly on `layer`, or None."""
+def layer_bbox(fp, layer, outlines=False):
+    """Bounding box of the points of every fp_line / fp_rect / fp_arc / fp_circle / fp_poly on `layer`, or None.
+    outlines: unfilled items only (EasyEDA footprints put filled polarity marks and pin-1 dots on F.Fab)."""
     xs, ys = [], []
     for g in fp.nodes():
         if g.head not in ('fp_line', 'fp_rect', 'fp_arc', 'fp_circle', 'fp_poly') or str(g.get('layer')) != layer:
+            continue
+        if outlines and str(g.get('fill', 'no')) in ('solid', 'yes'):
             continue
         for n in g.walk():
             if n.head in ('start', 'end', 'mid', 'center', 'xy'):
@@ -74,10 +79,16 @@ def symbol_pins(spec):
 
 
 def parse_package(s):
-    """'VQFN-20-EP(3.6x4.6)' -> (20, True, (3.6, 4.6)); missing parts are None"""
-    n = re.search(r'-(\d+)(?:[-(]|$)', s)
-    body = re.search(r'\(([\d.]+)\s*[xX*]\s*([\d.]+)', s)
-    return (int(n.group(1)) if n else None, bool(re.search(r'EP|PAD|HR', s, re.I)),
+    """'VQFN-20-EP(3.6x4.6)' -> (20, True, (3.6, 4.6)); missing parts are None. Also EasyEDA package names
+    ('SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR' -> 3 leads, body L x W). The number of a family name (SOT-23, SOD-123,
+    TO-252, SC-70) is not a lead count: 'SOT-23' alone gives none."""
+    leads = None
+    for m in re.finditer(r'([A-Za-z]*)-(\d+)(?=[-_(]|$)', re.split(r'[_(]', s)[0]):
+        if m.group(1).upper() not in ('SOT', 'SOD', 'TO', 'SC', 'DO'):
+            leads = int(m.group(2))
+            break
+    body = re.search(r'\(([\d.]+)\s*[xX*]\s*([\d.]+)', s) or re.search(r'L(\d+(?:\.\d+)?)-W(\d+(?:\.\d+)?)', s)
+    return (leads, bool(re.search(r'EP|PAD|HR', s, re.I)),
             (float(body.group(1)), float(body.group(2))) if body else None)
 
 
@@ -90,7 +101,9 @@ def main():
     P = pads(fp)
     numbered = sorted({p[0] for p in P if p[0]}, key=lambda s: (len(s), s))
     crt = layer_bbox(fp, 'F.CrtYd')
-    fab = layer_bbox(fp, 'F.Fab')
+    fab = layer_bbox(fp, 'F.Fab', outlines=True)
+    if fab and min(fab[2] - fab[0], fab[3] - fab[1]) <= 0.5:          # a pin-1 mark, not a body outline
+        fab = None
     probs = []
     print('%s: %d pads (%d numbers: %s), courtyard %s, F.Fab body %s' % (
         os.path.basename(path), len(P), len(numbered), ' '.join(numbered[:40]),
@@ -113,7 +126,7 @@ def main():
                     leads, ' + EP' if ep else '', len(numbered), ' (EP excluded: %d)' % count if ep else '',
                     ': the footprint merges pins into shared pads - number the symbol to match' if count < leads else ''))
         if body:
-            if fab and min(fab[2] - fab[0], fab[3] - fab[1]) > 0.5:       # a body outline, not just a pin-1 mark
+            if fab:
                 w, h = fab[2] - fab[0], fab[3] - fab[1]
                 if not any(abs(w - bw) <= 0.2 and abs(h - bh) <= 0.2 for bw, bh in (body, body[::-1])):
                     probs.append('package body %.2f x %.2f mm, footprint F.Fab outline %.2f x %.2f mm' % (body[0], body[1], w, h))

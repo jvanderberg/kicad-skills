@@ -66,8 +66,9 @@ plane), not the free-wire ~1 nH/mm, and compute the before/after of a relocation
   sides. `board_lint.py` checks it (UNDER HARDWARE; `--hardware-r` for the real hardware size).
 - Bring-up test points for every rail and ground (kicad-new-board requirements), labelled, each with a ground pad
   within probe reach.
-- Courtyards on every footprint: imported ones often lack them, and DRC's overlap check cannot see a part without one
-  (`board_lint.py` lists them; `add_courtyard.py` adds them to the library). Fixed pitches for rows of passives with
+- Courtyards on every footprint: most imported EasyEDA ones lack them, and DRC's overlap check cannot see a part
+  without one (DRC's `missing_courtyard` and `board_lint.py` list them; `add_courtyard.py <project_dir>` adds them to
+  the project libraries with IPC/KLC clearances, `new-design.md` s5). Fixed pitches for rows of passives with
   real clearance (e.g. about 2.0 mm for 0805s; 1.75 mm is tight).
 - Budget area for what is not a component: edge connectors and solder pads (pitch x count per edge), mounting-hole
   keepouts, connector overhang and mating clearance. A board size promised before a placement pass is provisional.
