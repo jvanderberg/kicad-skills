@@ -5,16 +5,17 @@
 
 FOOTPRINT may also be LIB.pretty:NAME, or Lib:Name for a KiCad library footprint (found in $KICAD10_FOOTPRINT_DIR or
 the usual install path). Prints one line of facts and a list of PROBLEMs; exit 1 if there are any:
-- no F.CrtYd courtyard (DRC cannot see overlaps with this part: add one with add_courtyard.py);
+- (a note, not a problem) no F.CrtYd courtyard: DRC cannot see overlaps with this part, so space it by rule of thumb
+  (references/layout-rules.md); most EasyEDA footprints have none;
 - pad count / body size differ from the package string (LCSC's "Package" column, e.g. from jlcimport-cli search):
   "-20" in the name is the lead count, "-EP" an exposed pad, "(3.6x4.6)" the body in mm (either orientation, 0.2 mm
   tolerance against the F.Fab outline; without an F.Fab outline the pad span is printed as a note only);
 - symbol pin numbers with no pad, or numbered pads with no symbol pin (an unconnected pad, or a footprint that merges
   pins into one pad - e.g. several FET source pins as one pad "5" - so the symbol must be renumbered to match).
 Name-based footprint matchers propose wrong pin counts and sizes often enough that every suggested KiCad footprint
-needs this check (JLCImport's geometry-checked matcher suggests one only when JLC's pads fit it), and the datasheet's
-land-pattern figure is still the authority for pad sizes and pitch. EasyEDA package names work as --package too
-("SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR": 3 leads, body 2.9 x 1.3).
+needs this check (JLCImport v1.6.7 matches by name; its geometry-checked matcher, PR #122, is unreleased), and the
+datasheet's land-pattern figure is still the authority for pad sizes and pitch. EasyEDA package names work as
+--package too ("SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR": 3 leads, body 2.9 x 1.3).
 """
 import argparse, os, re, sys
 
@@ -81,10 +82,10 @@ def symbol_pins(spec):
 def parse_package(s):
     """'VQFN-20-EP(3.6x4.6)' -> (20, True, (3.6, 4.6)); missing parts are None. Also EasyEDA package names
     ('SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR' -> 3 leads, body L x W). The number of a family name (SOT-23, SOD-123,
-    TO-252, SC-70) is not a lead count: 'SOT-23' alone gives none."""
+    TO-252, SC-70, TSOT-23) is not a lead count: 'SOT-23' alone gives none; 'SOT-23-6L' gives 6."""
     leads = None
-    for m in re.finditer(r'([A-Za-z]*)-(\d+)(?=[-_(]|$)', re.split(r'[_(]', s)[0]):
-        if m.group(1).upper() not in ('SOT', 'SOD', 'TO', 'SC', 'DO'):
+    for m in re.finditer(r'([A-Za-z]*)-(\d+)L?(?=[-_(]|$)', re.split(r'[_(]', s)[0]):
+        if not re.search(r'(SOT|SOD|TO|SC|DO)$', m.group(1).upper()):
             leads = int(m.group(2))
             break
     body = re.search(r'\(([\d.]+)\s*[xX*]\s*([\d.]+)', s) or re.search(r'L(\d+(?:\.\d+)?)-W(\d+(?:\.\d+)?)', s)
@@ -115,7 +116,8 @@ def main():
             q = max(lst, key=lambda p: p[4] * p[5])
             print('  pad %-5s x%-2d %-8s (%7.3f, %7.3f) %5.2f x %-5.2f' % (n or '""', len(lst), q[1], q[2], q[3], q[4], q[5]))
     if not crt:
-        probs.append('no F.CrtYd courtyard: DRC will not report overlaps with this part (add_courtyard.py)')
+        print('note: no F.CrtYd courtyard: DRC will not report overlaps with this part - space it by rule of thumb '
+              '(references/layout-rules.md)')
     if a.package:
         leads, ep, body = parse_package(a.package)
         if leads is not None:

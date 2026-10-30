@@ -14,7 +14,7 @@ so a generator describes the design and never formats KiCad text itself:
 | Redraw symbols readably, pins numbered for the footprint | `symgen.py` (library) | python3 |
 | Draw the schematic as wired blocks; geometry checks; locate shorts | `schgen.py` (library) | python3 |
 | Footprint facts: courtyard, pad count / body vs package, pins vs pads | `fpcheck.py` | python3 |
-| Add missing courtyards to imported footprints (IPC-7351B / KLC clearance per part class) | `add_courtyard.py` | python3 |
+| Add missing courtyards to imported footprints | `add_courtyard.py` | python3 |
 | Board from the netlist: footprints, symbol links, nets, fields, assembly attributes (DNP, BOM, position file), outline, placement, pad labels | `new_board.py` | python3 |
 | JLC stackup block, design rules, net classes | `board_setup.py` | python3 |
 | Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely; re-runs itself there) |
@@ -125,40 +125,14 @@ through bodies, overlapping bodies) must be empty and `find_merges(s, NETS)` mus
 
 - **Parts JLCPCB assembles use JLC's own EasyEDA footprint** (`jlcimport-cli import`, pcb-part-selection "Importing
   into KiCad"): JLC places each part with that footprint at the CPL position and rotation, so rotation and polarity
-  come out right without a bridge between two conventions. A KiCad library footprint is fine where it matches JLC's
-  exactly (chip passives; what JLCImport's geometry-checked matcher suggests) and is the default for a board JLCPCB
-  does not assemble.
+  come out right without a bridge between two conventions. A KiCad library footprint is fine for unpolarised chip
+  resistors and capacitors (symmetric pads) and for a geometry-checked match without a polarity caveat, and is the
+  default for a board JLCPCB does not assemble.
 - Check every assignment, library or imported: `fpcheck.py FOOTPRINT --package "<LCSC package string>" --symbol ...`
   (pad count, body size, numbering; it reads EasyEDA package names such as `SOT-23-3_L2.9-W1.3-...` too). The
   datasheet's land-pattern figure decides pad sizes and pitch.
-- **Courtyards by rule of thumb.** Most EasyEDA footprints have none, and DRC cannot see overlaps without one. Add them
-  to every project library at once, without redrawing anything: `add_courtyard.py <project_dir>` (or a `.pretty`
-  folder or a `.kicad_mod`; `--dry-run` first). It draws a rectangle around the pads and the body (F.Fab outline, else
-  the size in the EasyEDA package name, else the silkscreen), plus a clearance per class:
-
-  | Class | Clearance | Parts | Source |
-  |---|---|---|---|
-  | small | 0.15 mm | body no longer than 1.5 mm: 0402 and smaller chips | IPC-7351B chips < 0603, level B; KLC F5.3 item 5 |
-  | default | 0.25 mm | other SMD parts (gull-wing, J-lead, QFN/DFN, chips 0603 and up); through-hole parts, pads and body | IPC-7351B gull-wing, J-lead and flat no-lead tables (3-2, 3-3, 3-4, 3-15) and chips >= 0603, level B; KLC F5.3 item 5 |
-  | wide | 0.5 mm | connectors, crystals and oscillators, canned capacitors; parts you will rework (`--class wide`) | KLC F5.3 items 7-9; IPC-7351B table 3-20 (electrolytics, crystals), level B |
-  | bga | 1.0 mm | BGA, WLCSP, DSBGA (by package name, or letter-number ball pads) | IPC-7352 ball grid arrays (table 3-11), level B; KLC F5.3 item 10 |
-
-  IPC gives three courtyard excesses per family, least / nominal / most density: 0.1 / 0.25 / 0.5 mm for most SMD
-  families, 0.1 / 0.15 / 0.2 mm for chips under 0603, 0.25 / 0.5 / 1.0 mm for electrolytics and crystals, 0.5 / 1.0 /
-  2.0 mm for BGAs (as KiCad's footprint generator encodes them, gitlab.com/kicad/libraries/kicad-footprint-generator
-  `src/kilibs/config/ipc_configs/`; the standards themselves are not openly published). KiCad's library uses the
-  nominal level with the exceptions of KLC F5.3 (klc.kicad.org/footprint/f5/f5.3, read from its source,
-  gitlab.com/kicad/libraries/klc, October 2026). The courtyard is the part only: leave a connector's mating plug room
-  on top of it. `--margin` sets one number for every footprint given (0.5 mm for a BGA on a dense board is IPC's least
-  density), `--class` one class. Look at the result (`kicad-cli fp export svg`): a body that overhangs its pads in a
-  way neither the package name nor the silk shows (a right-angle connector's shell) needs its F.Fab outline drawn
-  first. EasyEDA silk on chip parts sits outside this courtyard, so tightly packed passives can show silk-overlap DRC
-  warnings: silk, not placement.
-- `board_setup.py --rules jlc` makes DRC report a footprint with no courtyard as an error (`missing_courtyard`, which
-  KiCad ignores by default), and `board_lint.py` (in `check.sh`) lists them as NO COURTYARD. Fix either by running
-  `add_courtyard.py` on the footprint's library, then regenerating the board (`new_board.py` reads the library) or
-  updating the footprints from the library in KiCad. A footprint that should have none (a logo) carries
-  `allow_missing_courtyard`, as KiCad's own logos do.
+- Most EasyEDA footprints have no courtyard, so DRC cannot report them overlapping their neighbours. Leave them as
+  they are and space parts by the rules of thumb in `layout-rules.md` "Placement and mechanical".
 
 ## 6. The board
 

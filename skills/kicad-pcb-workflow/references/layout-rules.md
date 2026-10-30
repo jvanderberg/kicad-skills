@@ -66,10 +66,17 @@ plane), not the free-wire ~1 nH/mm, and compute the before/after of a relocation
   sides. `board_lint.py` checks it (UNDER HARDWARE; `--hardware-r` for the real hardware size).
 - Bring-up test points for every rail and ground (kicad-new-board requirements), labelled, each with a ground pad
   within probe reach.
-- Courtyards on every footprint: most imported EasyEDA ones lack them, and DRC's overlap check cannot see a part
-  without one (DRC's `missing_courtyard` and `board_lint.py` list them; `add_courtyard.py <project_dir>` adds them to
-  the project libraries with IPC/KLC clearances, `new-design.md` s5). Fixed pitches for rows of passives with
-  real clearance (e.g. about 2.0 mm for 0805s; 1.75 mm is tight).
+- Spacing between parts, by rule of thumb. Most EasyEDA footprints have no courtyard, so DRC cannot report them
+  overlapping (`board_lint.py` lists them); check the gaps yourself at placement, edge to edge of pads and bodies.
+  Starting points, from IPC-7351B's nominal courtyard allowance per part (as KiCad's KLC F5.3 applies it) on both
+  neighbours:
+  - about 0.5 mm between ordinary SMD parts (SOT, SOIC, QFN, chips 0603 and up) and around through-hole bodies;
+  - down to about 0.3 mm between 0402 and smaller passives;
+  - about 1 mm around connectors (plus room for the mating plug and fingers), crystals, canned capacitors and parts
+    you expect to rework;
+  - about 2 mm around BGAs.
+  They are not rules: tighten where the layout needs it (a decoupling capacitor at its pin matters more than the gap)
+  and say where you did. Fixed pitches for rows of passives (e.g. about 2.0 mm for 0805s; 1.75 mm is tight).
 - Budget area for what is not a component: edge connectors and solder pads (pitch x count per edge), mounting-hole
   keepouts, connector overhang and mating clearance. A board size promised before a placement pass is provisional.
 

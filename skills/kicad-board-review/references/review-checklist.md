@@ -306,10 +306,10 @@ For every IC and every non-trivial discrete:
 - **Addresses and straps** from the address table, and **register semantics** (signed vs unsigned, LSB size).
 - **Pin functions** confirmed in the SDK header or reference design, not from memory.
 - **Land pattern** from the datasheet, compared against the footprint used (imported footprints are often off: pad
-  positions, missing courtyards, 3D model offsets). A JLC-assembled part on a KiCad library footprint that is not an
-  exact match for JLC's (anything but chip passives and geometry-checked matches) is a finding: JLC places by its own
-  footprint, so rotation and polarity need checking in JLC's placement preview, or the part moved to JLC's footprint
-  (pcb-part-selection "Importing into KiCad").
+  positions, missing courtyards, 3D model offsets). A JLC-assembled part on a KiCad library footprint (other than an
+  unpolarised chip resistor or capacitor, or a geometry-checked match with its polarity confirmed) is a finding: JLC
+  places by its own footprint, so rotation and polarity need checking in JLC's placement preview, or the part moved to
+  JLC's footprint (pcb-part-selection "Importing into KiCad").
 Download PDFs and read them (`pdftotext -layout`; render figures with `pdftoppm`); `pcb-part-selection/scripts/datasheet.py
 fetch` follows a distributor's viewer page to its PDF. The project should hold every IC's datasheet (`docs/datasheets/`,
 `bom_check.py` lists those missing): a pinout that cannot be checked against a local datasheet is reported unverified,
@@ -377,7 +377,8 @@ and the missing file is a finding.
 - Tall parts: 3D clearance between them and nearby parts (fuse holders, terminal blocks, electrolytics, connectors) -
   render in 3D, check model offsets. Run `kicad-pcb-workflow/scripts/board_lint.py` first: a missing 3D model file
   renders as bare pads and looks like an empty spot; it also lists footprints without courtyards (invisible to DRC's
-  overlap check) and silkscreen text on other parts' bodies (DRC does not check silk against bodies).
+  overlap check: check their spacing against kicad-pcb-workflow `layout-rules.md`) and silkscreen text on other parts'
+  bodies (DRC does not check silk against bodies).
 - Mounting holes: keepout around the screw head and washer; no copper or parts under it unless intended. **Output:**
   `board_lint.py` UNDER HARDWARE (other-net tracks, vias and pads within the hardware radius on **both** outer layers;
   pours as notes) with the real washer or standoff size (`--hardware-r`): solder mask is not insulation under a metal

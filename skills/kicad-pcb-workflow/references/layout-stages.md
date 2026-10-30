@@ -56,9 +56,10 @@ discover one is not achievable. Before calling placement done:
   decision (drop the feature, change the part, change the pinout use) for the user - not something to drop quietly at
   routing time.
 - Each block's placement matches its reference figure (hot-loop parts at the pins, quiet-side parts, orientation).
-- `check.sh` courtyard results clean (`board_lint.py` lists footprints with no courtyard: those are invisible to it),
-  checked at placement and again after every placement change, before routing builds on it (R30): an overlap found
-  after routing moves a part and its tracks.
+- `check.sh` courtyard results clean, and the parts with no courtyard (`board_lint.py` lists them: DRC cannot see
+  them) spaced by the rules of thumb in `layout-rules.md` "Placement and mechanical", checked at placement and again
+  after every placement change, before routing builds on it (R30): an overlap found after routing moves a part and
+  its tracks.
 - Every bus or lane group can be routed in order on its layer: compare both ends' pin order (kicad-pcb-workflow
   `references/new-design.md` s4 - this belongs at pin assignment, and placement is the last cheap point to catch it).
 - Every part in the placement is in stock in the assembler's region today (`bom_check.py`; the first line names the

@@ -124,8 +124,8 @@ in one pass instead of discovering them one rebuild at a time. Pattern: `referen
   skill's `region.py` (pads, tracks, zones and vias inside a box, per layer) once a `board.json` dump exists.
 - For a new part: choose and verify it with the **pcb-part-selection** skill first (stock in the project's region from
   `sourcing.json`, package, datasheet). A part JLCPCB assembles uses JLC's own footprint, imported with JLCImport
-  (pcb-part-selection "Importing into KiCad"), with a courtyard from `add_courtyard.py`; check it against the
-  datasheet's land pattern, and lay out from the datasheet's layout example. For a **replacement** part:
+  (pcb-part-selection "Importing into KiCad"); check it against the datasheet's land pattern, and lay out from the
+  datasheet's layout example. For a **replacement** part:
   `derived_check.py deps` first (what was computed from the old part), and if the old part was approved by the user,
   R26 above before any edit.
 - For routing: decide the layer and path, and list what it will cross, pass over, or cut (see layout-rules.md). Look in
@@ -187,9 +187,9 @@ comparison: a minutes-long run restarted after every fix is abandoned, and nothi
    netlist export, all diffed against the baseline. Required: **0 unconnected items**, no new errors, parity clean.
 3. Netlist assertions for what you added: `scripts/netspec.py check <spec> <sheet>` against the intended netlist (SPLIT,
    SHORT, MISSING, UNEXPECTED). ERC passing does not prove a symbol was not silently dropped or two nets were not
-   joined. `check.sh` also runs `board_lint.py` (no courtyard - fix it with `add_courtyard.py` on the library, not by
-   hand, `references/new-design.md` s5; missing 3D models, silk on part bodies, vias on same-net pads, paste over
-   drilled holes, other-net copper under mounting hardware) and writes the unused/strapped-pin table (`nc_audit.py`);
+   joined. `check.sh` also runs `board_lint.py` (no courtyard - space those parts by the rules of thumb in
+   `references/layout-rules.md`; missing 3D models, silk on part bodies, vias on same-net pads, paste over drilled
+   holes, other-net copper under mounting hardware) and writes the unused/strapped-pin table (`nc_audit.py`);
    every pin in it needs a recorded decision before layout.
 4. **Geometry checks DRC cannot do**: does a new track on a plane layer cut that plane (and what return paths cross the
    cut)? Did a via field leave isolated copper or slivers? Did a pour lose connection to a pad? Did a power path neck

@@ -171,24 +171,25 @@ the same ~900 JLC parts (JLCImport's production-export work, jvanderberg/kicad_j
 footprints solved 958 of 962 placements at high confidence, with 4 warnings and no polarity guesses; KiCad library
 footprints solved 274 of 852, with 266 warnings and 112 polarity guesses.
 
-A KiCad library footprint is fine where it is an exact geometric match for JLC's: chip passives (0402/0603/0805 R and
-C), and any footprint JLCImport's matcher suggests. On a board JLCPCB does not assemble, KiCad's library is the better
-default (one convention, courtyards and fab outlines). Check every footprint you assign:
+A KiCad library footprint is fine for unpolarised chip resistors and capacitors (0402/0603/0805: two symmetric pads,
+so rotation and polarity cannot come out wrong, although the pads differ slightly from JLC's), and for a footprint
+JLCImport's geometry-checked matcher suggests without a polarity caveat. On a board JLCPCB does not assemble, KiCad's
+library is the better default (one convention, courtyards and fab outlines). Check every footprint you assign:
 `kicad-pcb-workflow/scripts/fpcheck.py FOOTPRINT --package "<LCSC package>" --symbol LIB:NAME` (courtyard, pad count,
 body size, symbol pins vs pads), plus the datasheet land-pattern figure for pad sizes and pitch.
 
-JLCImport's matcher (jvanderberg/kicad_jlcimport PR #122, October 2026) suggests a KiCad footprint only when JLC's
-pads fit it within 0.05 mm (same pad numbers, no mirrored numbering, polarity checked) and otherwise keeps JLC's;
-v1.6.7 and earlier match by name only, and offered a wrong pad count for 406 of 963 parts, so check what they suggest
-with `fpcheck.py`. The suggestion is offered in the plugin's and TUI's import dialogs; `jlcimport-cli import` always
+JLCImport's geometry-checked matcher (jvanderberg/kicad_jlcimport PR #122, not yet released in October 2026)
+suggests a KiCad footprint only when JLC's pad centres fit it within 0.05 mm RMS with the same pad numbers and no
+mirrored numbering, and otherwise keeps JLC's; it reports a polarised part's polarity as same, reversed or unknown,
+and only "same" is safe. v1.6.7 matches by name only and offered a wrong pad count for 406 of 963 parts, so check
+what it suggests with `fpcheck.py`. The suggestion is offered in the plugin's and TUI's import dialogs; `jlcimport-cli import` always
 writes JLC's footprint (to use a KiCad one, assign it in the schematic). Treat imported parts as drafts:
 - symbols often have off-grid pins and every pin typed "unspecified" (ERC noise) - fix pin types and grid, or redraw
   with kicad-pcb-workflow's `symgen.py`;
-- most EasyEDA footprints have no courtyard: add one by rule of thumb with `add_courtyard.py <project_dir>` (every
-  project library; kicad-pcb-workflow `references/new-design.md` s5 has the clearances) rather than redrawing the
-  footprint. Silk may run through pads. Compare the pads with the datasheet land pattern (render with `kicad-cli fp
-  export svg`); fix a real error in place, keeping the origin, rotation and pad numbers JLC places by, rather than
-  swapping in another footprint;
+- most EasyEDA footprints have no courtyard: leave them, and space the parts by rule of thumb at placement
+  (kicad-pcb-workflow `references/layout-rules.md`). Silk may run through pads. Compare the pads with the datasheet
+  land pattern (render with `kicad-cli fp export svg`); fix a real error in place, keeping the origin, rotation and
+  pad numbers JLC places by, rather than swapping in another footprint;
 - a redrawn symbol, or a KiCad footprint, must use the footprint's pad numbers (`fpcheck.py --symbol`): a KiCad
   footprint may merge pins into one pad (e.g. FET source pins 5-8 as pad "5");
 - 3D models can be offset from the pads or missing (`board_lint.py` lists missing files) - check in a 3D render;
