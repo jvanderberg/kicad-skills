@@ -136,6 +136,49 @@ def test_synthetic_thermal():
     assert os.path.exists(os.path.join(d, 'maps', 'thermal_full.png'))
 
 
+def test_pour_vias_are_vias_on_the_pour():
+    """a track from U1's tab pour to a +5V header pin far away: the pin's plated hole is not a via under the tab (it was
+    counted as "one via"); a +5V via on the pour is"""
+    d = tempfile.mkdtemp()
+    build(d)
+    B = json.load(open(os.path.join(d, 'board.json')))
+    B['footprints'].append(fp('J2', '5V OUT', 'PinHeader_1x01', 20, 42, [pad('1', '+5V', 20, 42, 1.7, 1.7, ('F.Cu', 'B.Cu'), th=True, drill=1.0)]))
+    B['tracks'].append(dict(a=[20, 23.5], b=[20, 42], w=0.5, layer='F.Cu', net='+5V'))
+    json.dump(B, open(os.path.join(d, 'board.json'), 'w'))
+    run(d, 'planes.py', 'thermal.py')
+    pu = [p for p in json.load(open(os.path.join(d, 'thermal.json')))['pours'] if p['ref'] == 'U1' and p['net'] == '+5V'][0]
+    assert pu['vias'] == 0 and pu['pad_holes'] == [] and 'no via joins this pour' in pu['flag'], pu
+    assert pu['piece_mm2'] <= 60.0 + 1e-6, pu                                   # the 10 x 6 mm pour, not the track
+    B['vias'].append(via(16.0, 19.0, '+5V'))
+    json.dump(B, open(os.path.join(d, 'board.json'), 'w'))
+    run(d, 'planes.py', 'thermal.py')
+    pu = [p for p in json.load(open(os.path.join(d, 'thermal.json')))['pours'] if p['ref'] == 'U1' and p['net'] == '+5V'][0]
+    assert pu['vias'] == 1 and 'one via only' in (pu.get('flag') or pu.get('note') or ''), pu
+
+
+def test_film_coefficient_follows_the_enclosure():
+    sys.path.insert(0, HERE)
+    import heat
+    assert heat.film('bare') == {'low': 9.0, 'nominal': 12.0, 'high': 16.0} and heat.film(None) == heat.film('enclosed')
+    assert heat.film(11) == {'nominal': 11.0}
+    assert heat.starter({'U1': 'IC'})['h_W_m2K'] is None                    # the starter asks, it does not assume
+    d = tempfile.mkdtemp()
+    build(d)
+    cfg = json.load(open(os.path.join(d, 'review_config.json')))
+    cfg['thermal'].pop('h_W_m2K')
+    json.dump(cfg, open(os.path.join(d, 'review_config.json'), 'w'))
+    run(d, 'planes.py', 'thermal.py')
+    T = json.load(open(os.path.join(d, 'thermal.json')))
+    assert any('CLOSED BOX' in w and '"bare"' in w for w in T['coverage']['warnings']), T['coverage']['warnings']
+    cfg['thermal']['h_W_m2K'] = 'bare'
+    json.dump(cfg, open(os.path.join(d, 'review_config.json'), 'w'))
+    run(d, 'planes.py', 'thermal.py')
+    T2 = json.load(open(os.path.join(d, 'thermal.json')))
+    assert T2['h_W_m2K'] == heat.H_PRESETS['bare'] and not any('CLOSED BOX' in w for w in T2['coverage']['warnings'])
+    hot = lambda T: max(b['avg_solver'] for b in T['board'] if b['h'] == 'nominal')
+    assert hot(T2) < hot(T), (hot(T2), hot(T))                                  # bare board in room air runs cooler
+
+
 def test_no_thermal_config_is_loud():
     d = tempfile.mkdtemp()
     build(d)

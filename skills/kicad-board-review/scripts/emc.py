@@ -246,9 +246,9 @@ def pair_geometry(a_, b_):
                              'calculator for this stackup' % (gmin, e['pour_gap_at'], gmed, near, zd, zc, z0))
         out.append(e)
     return out
-for pr in CFG.get('diff_pairs', []):
-    a_, b_ = (pr.get('nets') if isinstance(pr, dict) else pr)[:2]
-    target = pr.get('target_ohm') if isinstance(pr, dict) else None
+for pr in DIFF_PAIRS:
+    a_, b_ = pr['nets']
+    target = pr['target_ohm']
     la = sum(seg_len(t) for t in B['tracks'] if t['net'] == a_); lb = sum(seg_len(t) for t in B['tracks'] if t['net'] == b_)
     geo_ = pair_geometry(a_, b_)
     for g_ in geo_:
@@ -295,14 +295,25 @@ if '--no-solve' not in sys.argv:
         layer = cpad['layers'][0] if cpad['layers'] else 'F.Cu'
         st['gnd_return'] = path_check(st['gnd_net'], st['ic'], n['cap'], n['cap_gnd_pad'], layer)
         st['supply_side'] = path_check(st['in_net'], st['ic'], n['cap'], n['cap_pad'], layer)
-        flags = []
+        flags, real = [], False
         for side, d in (('ground return', st['gnd_return']), ('supply side', st['supply_side'])):
-            if d.get('error') or d.get('suspect'): flags.append('%s not solved (%s)' % (side, d.get('error') or 'grid artefact'))
-            elif d['busiest_via_share'] > 0.5:
-                bv = d['busiest_via']
-                flags.append('%s: %.0f %% through one via%s at %s (path %.1f mOhm)' % (side, 100 * d['busiest_via_share'],
-                             ' (%g/%g mm)' % (bv['size'], bv['drill']) if bv and bv['size'] else '', bv['at'] if bv else '?', d['r_mohm']))
+            if d.get('error') or d.get('suspect'):
+                flags.append('%s not solved (%s)' % (side, d.get('error') or 'grid artefact')); continue
+            bv = d['busiest_via']
+            one = ('%.0f %% through one via%s at %s' % (100 * d['busiest_via_share'], ' (%g/%g mm)' % (bv['size'], bv['drill'])
+                   if bv and bv['size'] else '', bv['at'] if bv else '?')) if d['busiest_via_share'] > 0.5 else ''
+            if d['via_share'] > 0.5:
+                # the capacitor's pad and the IC's pin are not joined on their own layer (or only by a long detour): the
+                # loop closes through an inner layer, however close the parts sit (a pin strap under the IC once split
+                # the top ground between the input capacitor and the GND pin of a buck; 79 % went through vias)
+                flags.append('%s: %.0f %% of the current leaves %s through vias%s - %s and %s.%s are not joined directly on that '
+                             'layer, so the loop closes through an inner layer (path %.1f mOhm)' % (
+                                 side, 100 * d['via_share'], layer, ' (%s)' % one if one else '', n['cap'], st['ic'],
+                                 'GND pin' if side == 'ground return' else 'supply pin', d['r_mohm'])); real = True
+            elif one:
+                flags.append('%s: %s (path %.1f mOhm)' % (side, one, d['r_mohm'])); real = True
         st['electrical_flags'] = flags
+        if real: st['status'] = 'FLAG: see flags (geometry ok)'          # "not solved" alone is coverage, not a finding
         if flags: WARN.append('hot loop %s %s (cap %s): %s' % (st['ic'], st['loop'], n['cap'], '; '.join(flags)))
 
 coverage = dict(warnings=WARN, classes={c: dict(count=len(v), nets=v[:40]) for c, v in classification_coverage().items()},
@@ -316,5 +327,5 @@ json.dump(dict(coverage=coverage, reference=refout, crosstalk=xt, layer_changes=
                           k='coupling k = 1/(1+(D/h)^2), D centre spacing, h height over the reference; saturated backward crosstalk ~ k/4')),
           open(PACK + 'emc.json', 'w'), indent=1)
 print('emc ok: ref', len(refout), 'xt', len(xt), 'vias', len(vchg), 'edge', len(edge), 'loops', len(loops), 'fast', len(inv),
-      '| switch nodes', len(sw), '(derived %d)' % (len(TOPO.switch_nodes) if TOPO else 0), '| hot loops checked', sum(s_['status'] == 'ok' for s_ in loop_status), 'of', len(loop_status))
+      '| switch nodes', len(sw), '(derived %d)' % (len(TOPO.switch_nodes) if TOPO else 0), '| hot loops checked', sum(s_['status'] == 'ok' or s_['status'].startswith('FLAG') for s_ in loop_status), 'of', len(loop_status))
 for w in WARN: print('  !!', w)

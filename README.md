@@ -32,7 +32,7 @@ All tools also work without Claude.
 | Tool | What it does |
 |---|---|
 | `kicad-pcb-workflow/scripts/preflight.py` | Every tool the scripts need (KiCad and its python, the analysis venv, poppler, rsvg, jlcimport), with install hints; with `--project`, the pinned kicad-skills revision |
-| `kicad-pcb-workflow/scripts/skills_rev.py` | Pin the kicad-skills commit and KiCad version a project builds with (`kicad-skills.lock`) and check it on every build; `assets/kskills.py` is the project-side template |
+| `kicad-pcb-workflow/scripts/skills_rev.py` | Pin the kicad-skills commit (or, for a plugin install, its version and a hash of its files) and KiCad version a project builds with (`kicad-skills.lock`) and check it on every build; `assets/kskills.py` is the project-side template |
 | `kicad-pcb-workflow/scripts/projfiles.py` | One convention for finding a project's own inputs (pin decisions, DRC and field exemptions, review config, reference parts, lock), used by every wrapper |
 | `kicad-pcb-workflow/scripts/check.sh` | DRC (zone refill x2, schematic parity) + ERC on a copy of the project, summarised and diffed against a baseline, known items exempted only by name (`--accept`); runs `board_lint.py`, `nc_audit.py` and `partfields.py`, with the project's own notes and exemptions |
 | `kicad-pcb-workflow/scripts/netspec.py` | Intended netlist vs KiCad's netlist: SPLIT / SHORT / MISSING / UNEXPECTED |
@@ -44,7 +44,7 @@ All tools also work without Claude.
 | `kicad-pcb-workflow/scripts/nc_audit.py` | Every unused pin, every pin the symbol types no_connect, and every input strapped to a rail, as a decision table with datasheet notes and the pin-table row |
 | `kicad-pcb-workflow/scripts/partfields.py` | Every BOM part has a datasheet link and an LCSC/MPN in schematic and board, and every field matches between them (fails the build otherwise); `--online` checks the links |
 | `kicad-pcb-workflow/scripts/refparts.py` | Each IC's datasheet typical application (parts, values, distance from the pin) against the design: names the part that satisfies each entry, or MISSING / WRONG VALUE / FAR |
-| `kicad-pcb-workflow/scripts/fpcheck.py`, `add_courtyard.py` | Footprint vs package string and symbol (pad count, body size, numbering); add missing courtyards |
+| `kicad-pcb-workflow/scripts/fpcheck.py`, `add_courtyard.py`, `paste_clear.py` | Footprint vs package string and symbol (pad count, body size, numbering); add missing courtyards; derive a thermal-via footprint whose paste windows clear every drill (optionally with 0.3 mm drills, JLC's free size on 2 layers) |
 | `kicad-pcb-workflow/scripts/board_diff.py` | Everything that changed between two board (or schematic) versions or vs a git revision, every attribute (fields, pad nets, DNP, models, settings) as well as geometry, with anything outside the expected areas flagged |
 | `kicad-pcb-workflow/scripts/kicad_sexpr/` | The file-format layer: lossless read/write of every KiCad s-expression file in KiCad's own formatting, plus builders for schematics (symbols, wires, labels, sheets), boards (footprints, tracks, vias, zones, keepouts, stackup) and project net classes, with stable uuids (regeneration is byte-identical). Generators and edits use it instead of formatting text; the writers above are built on it |
 | `kicad-pcb-workflow/scripts/sexp.py` | Check s-expression files (balance, raw newlines in strings, duplicate uuids); list/get footprints and symbols |
@@ -78,7 +78,9 @@ All tools also work without Claude.
   `pipx install git+https://github.com/jvanderberg/kicad_jlcimport` (checked October 2026). The scripts use
   `search --region`, which needs v1.6.0 or later; `jlcimport-cli search --help` shows whether you have it. They always
   pass the region from the project's `sourcing.json`: without `--region`, jlcimport-cli uses the region its KiCad
-  plugin last saved, which may not be the warehouse your assembler buys from.
+  plugin last saved, which may not be the warehouse your assembler buys from. The order files and placement check use
+  `jlcimport-cli production`, on JLCImport's main after v1.6.7 (main still reports 1.6.7; `jlcimport-cli --help` lists
+  `production` when you have it); its stock check reads JLCPCB's international library only.
 
 Run `skills/kicad-pcb-workflow/scripts/preflight.py` to check all of these at once.
 

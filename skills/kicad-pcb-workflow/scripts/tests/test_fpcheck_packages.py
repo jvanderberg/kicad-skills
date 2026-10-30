@@ -10,6 +10,7 @@ from kicad_sexpr import Node, Sym, new_footprint, save
 
 def test_lead_counts():
     for s, leads in (('SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR', 3), ('SOT-23', None), ('SOD-123', None), ('SOT-223', None),
+                     ('SOT-23-5', 5), ('SOT-23-6', 6), ('SOT-223-3', 3), ('SOT-223-4', 4),     # LCSC's package column
                      ('SOT-23-6L', 6), ('TSOT-23-6', 6), ('SC-70-5', 5), ('TO-252-2(DPAK)', 2), ('VQFN-20-EP(3.6x4.6)', 20),
                      ('LQFN-56_L7.0-W7.0-P0.4-EP', 56), ('DFN-8L(2x2)', 8), ('HDR-TH_3P-P2.54-V-M-1', None), ('0402', None)):
         assert parse_package(s)[0] == leads, (s, parse_package(s))

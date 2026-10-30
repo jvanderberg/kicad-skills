@@ -26,7 +26,8 @@
   good as their inputs (currents, efficiencies, R_DS(on) at temperature): every row names its basis, and a part with no
   data is UNKNOWN and left out of the temperatures (the coverage says so). The solve conducts heat through each copper
   layer (nets kept apart), FR4 between layers (k 0.3 W/mK by default) and via barrels, and loses it from both faces
-  through one effective film coefficient h (convection plus radiation) to one ambient temperature. Not modelled: the
+  through one effective film coefficient h (convection plus radiation) to one ambient temperature; h comes from the
+  enclosure (`"enclosed"` 5 / 7 / 10 W/m^2K per face, `"bare"` 9 / 12 / 16), and unset it is the closed box. Not modelled: the
   enclosure's air and walls (ambient is the air around the board, so a closed box's own rise must be added to it or
   folded into a lower h), airflow, heat leaving through wires, cells, connectors, screws or a chassis (often large on a
   small board: the model is pessimistic there), the parts' own bodies and their top-side convection (heat enters at the

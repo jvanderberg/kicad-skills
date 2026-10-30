@@ -10,7 +10,9 @@ KiCad has no command-line "update PCB from schematic". This does what that does 
 and flips footprints the way pcbnew does, checked item by item against pcbnew in kicad_sexpr's tests):
 - loads each footprint from the project's fp-lib-table (${KIPRJMOD}) or KiCad's global table / library directory;
 - sets reference, value, the symbol link (sheet path + symbol uuid, so schematic parity works) and every pad's net,
-  escaping "/" as {slash} in auto-generated net names (kicad_sexpr.board_net_name);
+  escaping "/" as {slash} in auto-generated net names (kicad_sexpr.board_net_name), with the pin's name and electrical
+  type as (pinfunction ...) and (pintype ...), as KiCad's update does (JLCImport's placement solver pairs a polarised
+  part's pads by those pin names; without them it assumes KiCad's pad-1 convention and warns on every diode and LED);
 - adds every other schematic field (LCSC, MPN, ...) as a hidden footprint property (an existing library property of
   the same name gets the value);
 - carries the schematic's assembly attributes to the footprint: DNP -> dnp, not in BOM -> exclude_from_bom, not in
@@ -20,7 +22,10 @@ and flips footprints the way pcbnew does, checked item by item against pcbnew in
   unplaced parts are staged in a grid to the right of the outline;
 - --outline WxH draws Edge.Cuts (rounded corners with --corner-r);
 - --labels JSON {"REF": ["TEXT", dx, dy] or ["TEXT", dx, dy, rot]} puts a function label next to a footprint on
-  F.SilkS and, mirrored, on B.SilkS (solder pads and connectors: say what each one is, see layout-rules.md);
+  F.SilkS and, mirrored, on B.SilkS (solder pads and connectors: say what each one is, see layout-rules.md); a label
+  per pad (a header's pins): {"J3": {"pads": {"1": "GND", "2": "TX"}, "dx": 0, "dy": 2.35}} puts each text at its
+  pad's centre + (dx, dy), so the labels follow the part; optional "rot", "size" (mm, default 1.0) and "sides" ("F",
+  "B" or "FB", the default);
 - --refs: where references go (silk = KiCad default; fab = only on F.Fab for a dense assembled board; hidden);
 - writes a minimal .kicad_pro next to OUT if there is none (KiCad fills in its defaults; board_setup.py edits it);
 - keeps ids stable: every footprint (and item in it) keeps the uuid it had in --previous (default: OUT, if it
@@ -123,7 +128,9 @@ def main():
             offboard.append(ref)
             continue
         comps.append(dict(ref=ref, value=c.findtext('value') or '', fp=fp, path=path, fields=f, flags=flags))
-    pins = {(n.get('ref'), n.get('pin')): board_net_name(net.get('name'))
+    # (net, pin name, pin type) per pad, as KiCad's update writes them: (pinfunction ...) only for a named pin, verbatim
+    # from the netlist (KiCad's own suffixes such as "Pin_1_1" included), and (pintype ...) for every pin
+    pins = {(n.get('ref'), n.get('pin')): (board_net_name(net.get('name')), n.get('pinfunction'), n.get('pintype'))
             for net in root.find('nets') for n in net.findall('node')}
 
     previous = a.previous if a.previous is not None else (a.out if os.path.exists(a.out) else 'none')
@@ -159,9 +166,9 @@ def main():
         nfields += len(c['fields'])
         pad_nums = {str(p[1]) for p in fp.pads()}
         for num in sorted(pad_nums):
-            n = pins.get((c['ref'], num))
+            n, pinfunction, pintype = pins.get((c['ref'], num), (None, None, None))
             if n:
-                fp.set_pad_net(num, n)
+                fp.set_pad_net(num, n, pinfunction=pinfunction, pintype=pintype)
                 nets.add(n)
         if a.refs != 'silk':
             fp.set_field('Reference', c['ref'], hide=True)
@@ -172,12 +179,26 @@ def main():
             fp = b.footprint(ref)
         except KeyError:
             sys.exit('--labels: no footprint %s' % ref)
-        text, dx, dy = spec[0], spec[1], spec[2]
-        rot = spec[3] if len(spec) > 3 else 0
-        fp.set_field('Reference', ref, hide=True)
-        x, y = fp.at[0] + dx, fp.at[1] + dy
-        b.gr_text(text, (x, y), 'F.SilkS', size=1.0, thickness=0.15, angle=rot)
-        b.gr_text(text, (x, y), 'B.SilkS', size=1.0, thickness=0.15, angle=rot)    # mirrored: B.* layer
+        if isinstance(spec, dict):                                    # one label per pad
+            extra = sorted(set(spec) - {'pads', 'dx', 'dy', 'rot', 'size', 'sides'})
+            if extra or not isinstance(spec.get('pads'), dict) or set(spec.get('sides', 'FB')) - set('FB'):
+                sys.exit('--labels %s: expected {"pads": {"1": "GND", ...}, "dx": 0, "dy": 2.35} (optional "rot", "size", '
+                         '"sides": "F" / "B" / "FB")%s' % (ref, '; unknown keys: ' + ', '.join(extra) if extra else ''))
+            texts = []
+            for num, text in spec['pads'].items():
+                try:
+                    x, y = fp.pad_position(num)
+                except KeyError:
+                    sys.exit('--labels %s: no pad %s' % (ref, num))
+                texts.append((text, x + spec.get('dx', 0), y + spec.get('dy', 0)))
+            rot, size, sides = spec.get('rot', 0), spec.get('size', 1.0), spec.get('sides', 'FB')
+        else:
+            fp.set_field('Reference', ref, hide=True)
+            texts = [(spec[0], fp.at[0] + spec[1], fp.at[1] + spec[2])]
+            rot, size, sides = spec[3] if len(spec) > 3 else 0, 1.0, 'FB'
+        for text, x, y in texts:
+            for side in sides:
+                b.gr_text(text, (x, y), side + '.SilkS', size=size, thickness=0.15, angle=rot)   # B.*: mirrored
     if a.outline:
         b.outline_rect(ox, oy, w, h, corner_radius=a.corner_r, width=0.1)
     b.save(a.out)

@@ -26,7 +26,12 @@ kicad-board-review skill's checklist has the full reasoning and how to measure e
 - Shunts: datasheet land pattern, Kelvin sense lines from the inner pad ends, on one layer if possible.
 - Paste over a pad with holes in it: paste windows that avoid every drill (or vias ordered filled and capped, by
   decision), and the paste coverage of an exposed pad checked after the change (typically 40-60 %). Library footprints
-  with thermal vias can put paste over them; `board_lint.py` reports PASTE ON HOLE and the coverage.
+  with thermal vias can put paste over them; `board_lint.py` reports PASTE ON HOLE and the coverage. KiCad's own
+  `*_ThermalVias` footprints do as shipped (QFN-24-1EP_4x4mm_P0.5mm_EP2.7x2.7mm_ThermalVias: 1.17 mm windows at
+  +-0.675 mm over the corner drills at +-1.1 mm). Derive a project footprint instead of editing the library one:
+  `paste_clear.py LIB:NAME proj.pretty/NAME_PasteClear.kicad_mod` cuts each paste window clear of every drill and
+  prints the coverage; drop vias first if the part needs fewer (a 15 mA interface IC needs one, not nine). Their 0.2
+  mm drills in 0.5 mm pads are free at JLC on 4+ layers and charged on 2: add `--drill 0.3` for a 2-layer board.
 
 ## Regulators
 
@@ -90,7 +95,8 @@ bodies, which DRC does not check (`board_lint.py` does).
 
 Every connector, solder pad, switch and test point is used by a person who does not have the schematic. Give each one:
 - a **function label** on the silkscreen (on both sides when wires can be soldered from either side; `new_board.py
-  --labels` writes both, mirrored on the bottom);
+  --labels` writes both, mirrored on the bottom), one per pin on a header (`--labels` with `{"J3": {"pads": {"1":
+  "GND", ...}, "dy": 2.35}}` places each at its pad);
 - **polarity and orientation** marks: +/- or pin 1, a keyed footprint where one exists, and one pad-shape convention
   kept across the board (for example square = positive or signal, round = ground), stated in the board's docs;
 - a **consistent order** for pairs and groups (always + then GND, the same order on every connector);

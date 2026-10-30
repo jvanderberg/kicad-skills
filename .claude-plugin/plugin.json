@@ -1,7 +1,7 @@
 {
   "name": "kicad-skills",
   "displayName": "KiCad PCB skills",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Skills and tools for developing, reviewing and sourcing KiCad PCBs with Claude Code: safe scripted edits, an engineering review backed by a DC drop / plane / EMC analysis pack, and LCSC/JLC part selection.",
   "author": {
     "name": "Josh Vanderberg"

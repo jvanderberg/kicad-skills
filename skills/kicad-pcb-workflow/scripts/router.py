@@ -3,6 +3,7 @@
 
   router.py check board.json plan.py                      # run the plan, print every check result, write nothing
   router.py apply BOARD.kicad_pcb board.json plan.py [-o OUT.kicad_pcb] [--append] [--previous OLD.kicad_pcb]
+  (both: [--hardware-r MM | --hardware-r REF=MM ...] [--hardware-net NET ...], as board_lint.py takes them)
 
 plan.py defines build(r), where r is a Router. board.json comes from kicad-board-review/scripts/boarddump.py (run on
 the board as it is before routing). Runs in the analysis venv (needs shapely): kicad_env.sh sets $PY.
@@ -17,6 +18,11 @@ What it does for you (each one was a real DRC failure on a hand-written router):
   and so does "no via on a pad": a via inside or touching a same-net pad passes DRC and the clearance check, and an
   unfilled via there wicks solder out of that joint. Intended via-in-pad (thermal vias in an exposed pad) is named:
   in_pad=('U5', '21') on via() / via_field(); have the fab fill or tent those.
+- Mounting hardware: no via, and no F.Cu / B.Cu track, of another net within the hardware radius of a mounting hole
+  (the screw head, washer or standoff sits there on solder mask alone), by board_lint.py's rule: a footprint whose
+  pads are all holes >= 2 mm (or a MountingHole footprint), radius = drill + 0.5 mm unless hardware_r= gives it
+  (mm, or {'H1': 4, '*': 3.5}); the hole's own net and hardware_nets= (the hardware's potential) are allowed. So a
+  stitching via_field() skips those spots instead of leaving them for board_lint's UNDER HARDWARE.
 - Every new track segment is checked against other-net copper on its layer and the board edge; problems are logged
   as VIOLATION (the coordinates are yours, so it does not move them) and make the CLI exit 1.
 - The check is never looser than DRC: tracks and vias are measured exactly (centre line or centre to the other
@@ -34,6 +40,7 @@ Library:
                                                 # next to the dumped board (min_hole_to_hole, min_copper_edge_clearance)
   r.track('F.Cu', 0.3, ('U2', '1'), (115.0, 121.0), ('C2', '1'))      # pads and (x, y) points, net from the pads
   r.track('B.Cu', 0.2, (1, 2), (3, 2), net='EN')                       # no pad on it: give the net
+  r.track('F.Cu', 1.0, ('U4', '2', 1), (120.0, 90.0))                  # the second pad numbered 2 (a SOT-223 tab)
   r.via((x, y), 'GND')                          # checked; returns False and logs REJECTED if it does not fit
   r.via_field('GND', x0, y0, x1, y1, pitch=1.0, in_pad=('U5', '21'))   # thermal vias in U5's exposed pad, on purpose
   r.via_near('C5', '2')                         # closest legal spot to a pad edge, plus a short link track
@@ -103,7 +110,7 @@ def _polys(pl):
 
 class Router:
     def __init__(self, board_json, clearance=None, hole_to_hole=None, edge_clearance=None, via_gap=0.1,
-                 via_size=0.6, via_drill=0.3, via_pad_gap=0.05):
+                 via_size=0.6, via_drill=0.3, via_pad_gap=0.05, hardware_r=None, hardware_nets=()):
         self.B = json.load(open(board_json)) if isinstance(board_json, str) else board_json
         pro = load_project(self.B)
         rules = pro.get('board', {}).get('design_settings', {}).get('rules', {})
@@ -146,6 +153,16 @@ class Router:
             self._add(v['net'], self.layers, Point(v['x'], v['y']).buffer(v['size'] / 2, 16), Point(v['x'], v['y']), v['size'] / 2)
             self.holes.append((v['x'], v['y'], v['drill'], 'via %s' % v['net']))
             self.old_vias.append(((v['x'], v['y']), v['size']))
+        # mounting holes, as board_lint.py finds them: (ref, x, y, hardware radius, the hole's net)
+        hr = hardware_r if isinstance(hardware_r, dict) else {'*': hardware_r} if hardware_r is not None else {}
+        self.hardware_nets = set(hardware_nets)
+        self.hardware = []
+        for f in self.B['footprints']:
+            big = [p for p in f['pads'] if (p.get('drill') or 0) >= 2.0]
+            if big and ('mountinghole' in f.get('fp', '').lower() or len(big) == len(f['pads'])):
+                p = max(big, key=lambda q: q['drill'])
+                R = hr.get(f['ref'], hr.get('*'))
+                self.hardware.append((f['ref'], p['x'], p['y'], R if R is not None else p['drill'] + 0.5, p['net']))
         self.tracks, self.vias, self.zones, self.keepouts = [], [], [], []
         self.log = []
         self.violations = 0
@@ -190,8 +207,8 @@ class Router:
         p = self.pad(ref, num, i)
         return (_r(p['x']), _r(p['y']))
 
-    def net(self, ref, num):
-        return self.pad(ref, num)['net']
+    def net(self, ref, num, i=0):
+        return self.pad(ref, num, i)['net']
 
     def bounds(self, ref, num, i=0):
         return self.pad(ref, num, i)['geom'].bounds
@@ -225,6 +242,19 @@ class Router:
         if not self.edge.contains(core):
             return True
         return self.edge.boundary.distance(core) - r < self.edge_clearance - 1e-6
+
+    def hardware_problem(self, core, r, net):
+        """None, or the mounting hole whose hardware radius other-net copper (centre `core`, half width r) reaches"""
+        if net in self.hardware_nets:
+            return None
+        for ref, x, y, R, hnet in self.hardware:
+            if hnet and net == hnet:
+                continue
+            d = core.distance(Point(x, y)) - r
+            if d < R - 1e-6:
+                return ('%.2f mm from mounting hole %s at (%.2f, %.2f), inside its hardware radius %.2f mm (the screw head, '
+                        'washer or standoff sits on it; hardware_r= / hardware_nets= if that is wrong)' % (max(d, 0), ref, x, y, R))
+        return None
 
     @staticmethod
     def _pad_keys(in_pad):
@@ -263,6 +293,9 @@ class Router:
         c = Point(pt)
         if self.edge_problem(c, size / 2):
             return 'within %.2f mm of the board edge' % self.edge_clearance
+        why = self.hardware_problem(c, size / 2, net)
+        if why:
+            return why
         for x, y, d, what in self.holes:
             gap = math.dist((x, y), pt) - (d + drill) / 2
             if gap < self.hole_to_hole:
@@ -282,6 +315,10 @@ class Router:
         core = LineString([a, b]) if a != b else Point(a)
         if self.edge_problem(core, w / 2):
             return 'within %.2f mm of the board edge' % self.edge_clearance
+        if layer in ('F.Cu', 'B.Cu'):
+            why = self.hardware_problem(core, w / 2, net)
+            if why:
+                return why
         hit = self._hits(core, w / 2, net, {layer}, clearance)
         if hit:
             return 'clearance %.3f mm to %s copper on %s (min %.2f)' % (hit[0]['gap'], hit[0]['net'], layer, hit[0]['need'])
@@ -289,7 +326,8 @@ class Router:
 
     # -------------------------------------------------------------- primitives
     def track(self, layer, width, *pts, net=None, check=True, clearance=None):
-        """pts: (x, y) points or ('REF', 'PIN') pad references; consecutive points become segments."""
+        """pts: (x, y) points or ('REF', 'PIN') pad references - ('REF', 'PIN', i) for the i-th pad of a repeated
+        number (a SOT-223 tab is a second pad "2"); consecutive points become segments."""
         res = []
         for q in pts:
             if isinstance(q[0], str):
@@ -446,8 +484,15 @@ def main():
     for p in (c, a):
         p.add_argument('--clearance', type=float); p.add_argument('--hole-to-hole', type=float)
         p.add_argument('--edge-clearance', type=float)
+        p.add_argument('--hardware-r', action='append', default=[], help="hardware radius in mm (all holes) or REF=MM, as board_lint.py's")
+        p.add_argument('--hardware-net', action='append', default=[], help="the hardware's potential (e.g. GND): allowed near holes")
     args = ap.parse_args()
-    r = Router(args.board_json, args.clearance, args.hole_to_hole, args.edge_clearance)
+    hr = {}
+    for h in args.hardware_r:
+        k, _, v = h.rpartition('=')
+        hr[k or '*'] = float(v)
+    r = Router(args.board_json, args.clearance, args.hole_to_hole, args.edge_clearance, hardware_r=hr or None,
+               hardware_nets=args.hardware_net)
     _load_plan(args.plan).build(r)
     for line in r.log:
         print('  ' + line)

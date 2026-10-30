@@ -13,6 +13,22 @@ PACK = os.path.abspath(sys.argv[1]) + os.sep if len(sys.argv) > 1 else os.getcwd
 B = json.load(open(os.environ.get('BOARD', PACK + 'board.json')))
 NL = json.load(open(PACK + 'netlist.json')) if os.path.exists(PACK + 'netlist.json') else dict(components={}, nets={})
 CFG = json.load(open(PACK + 'review_config.json')) if os.path.exists(PACK + 'review_config.json') else {}
+
+
+def _diff_pairs(cfg):
+    """review_config "diff_pairs" as [{nets: [a, b], target_ohm}]; anything else is a config error that says the forms"""
+    out = []
+    for i, pr in enumerate(cfg.get('diff_pairs') or []):
+        nets = pr.get('nets') if isinstance(pr, dict) else pr
+        extra = sorted(set(pr) - {'nets', 'target_ohm'}) if isinstance(pr, dict) else []
+        if not (isinstance(nets, list) and len(nets) == 2 and all(isinstance(n, str) for n in nets)) or extra:
+            raise SystemExit('review_config.json diff_pairs entry %d is %s: write ["NET_P", "NET_N"] or {"nets": ["NET_P", '
+                             '"NET_N"], "target_ohm": 90}%s' % (i + 1, json.dumps(pr), ' (unknown keys: %s)' % ', '.join(extra) if extra else ''))
+        out.append(dict(nets=nets, target_ohm=pr.get('target_ohm') if isinstance(pr, dict) else None))
+    return out
+
+
+DIFF_PAIRS = _diff_pairs(CFG)
 LAYERS = B['layers']
 FP = {f['ref']: f for f in B['footprints']}
 NETS = NL['nets']
@@ -159,8 +175,8 @@ for i, r in enumerate(CFG.get('net_classes', [])):
     if not any(rx.search(n) for n in _ALL_NETS if n):
         WARN.append('net_classes rule %d "%s" (class %s) matched 0 nets: the nets it was written for are unclassified '
                     '(renamed? typo? sheet prefix "/"?)' % (i + 1, r['match'], r['class']))
-for pr in CFG.get('diff_pairs', []):
-    pr = pr.get('nets', []) if isinstance(pr, dict) else pr
+for pr in DIFF_PAIRS:
+    pr = pr['nets']
     gone = [n for n in pr if n not in _ALL_NETS]
     if gone: WARN.append('diff_pairs %s: %s not on this board - the pair is not checked' % (' / '.join(pr), ', '.join(gone)))
 if TOPO:

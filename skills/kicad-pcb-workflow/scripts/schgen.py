@@ -10,6 +10,7 @@
   s.wire(u1.p('VIN'), (45.72, 50.8), c1.p(1))           # pins by number or unique name; orthogonal segments only
   s.power('GND', *c1.p(2))                              # power symbols for rails and ground, not labels
   s.label('VBUS', 30.48, 50.8)                          # labels only between blocks
+  s.tap(c2.p(1), c3.p(1))                               # shunt parts hanging off one rail wire, on purpose
   print(s.collisions())                                 # geometric mistakes, before writing
   print(find_merges(s, INTENDED_NETS))                  # where two intended nets touch, with coordinates
   s.write('myproject.kicad_sch')
@@ -135,6 +136,7 @@ class Sch:
         self.uuid = None                  # the sheet's uuid, set by write()
         self.libs, self.used = {}, {}
         self.parts, self.wires, self.labels, self.noconnects, self.texts, self.extra_junctions = [], [], [], [], [], []
+        self.taps = set()                 # points declared as intended T-taps (tap())
         self.pwr_n = 0
         self.accepted = {}                # (ref, field) -> reason a BOM part may be written without that field
         self.field_sources = {}           # ref -> where its Datasheet came from
@@ -185,6 +187,12 @@ class Sch:
                 assert a[0] == b[0] or a[1] == b[1], 'non-orthogonal wire %s -> %s' % (a, b)
                 self.wires.append((a, b))
 
+    def tap(self, *pts):
+        """Declare intended T-taps: pin points that sit on the interior of a wire on purpose, e.g. the shunt parts of a
+        ladder hanging off one rail wire: s.tap(c1.p(1), c2.p(1)). write() joins them with a junction as it does every
+        pin on a wire; collisions() stops reporting them, and reports a declared tap that touches no wire."""
+        self.taps.update((snap(x), snap(y)) for x, y in pts)
+
     def hv(self, a, b):
         """L-shaped wire: horizontal first, then vertical."""
         self.wire(a, (b[0], a[1]), b)
@@ -230,7 +238,10 @@ class Sch:
         """Drawing faults visible from geometry alone, as messages (empty = none found):
         pins on another wire's interior, collinear wires that overlap, wires crossing a part's body rectangle,
         two parts' bodies overlapping. Run before write(); then find_merges() with the intended nets."""
-        out = ['pin %s.%s at %s lies on the interior of a wire (it connects to it)' % x for x in self.pin_on_wire_interior()]
+        out = ['pin %s.%s at %s lies on the interior of a wire (it connects to it; s.tap(point) if intended)' % x
+               for x in self.pin_on_wire_interior() if x[2] not in self.taps]
+        out += ['tap at %s touches no wire' % (pt,) for pt in sorted(self.taps)
+                if not any(pt in (a, b) or _on_interior(pt, a, b) for a, b in self.wires)]
         for i, (a, b) in enumerate(self.wires):
             for c, d in self.wires[i + 1:]:
                 if a[0] == b[0] == c[0] == d[0]:

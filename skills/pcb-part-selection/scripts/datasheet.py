@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fetch a datasheet and find things in it, without grepping page by page.
 
-  datasheet.py fetch URL OUT.pdf                    # refuses anything that is not a PDF (checks the %PDF magic)
+  datasheet.py fetch URL OUT.pdf [--mpn MPN ...]    # refuses anything that is not a PDF (checks the %PDF magic)
   datasheet.py find DS.pdf "Layout Example" ["Figure 36" ...] [--context 1]
   datasheet.py page DS.pdf N OUT.png [--dpi 170] [--label "Figure 12-1 layout example"]
                                                     # render one page; --label records what it shows in INDEX.md
@@ -15,7 +15,12 @@ are ranked (embedded viewers first, links naming the requested part's number nex
 datasheets last) and the first that is a real PDF is saved, with the link it came from printed. Exit 1: not a PDF
 (nothing saved, the candidate links tried are listed). Exit 2: the server refused a script (HTTP 401/403/429/503 or a
 bot-protection page): nothing saved - open the URL in a browser (the user's, or browser automation), save the PDF as
-OUT, or take it from the manufacturer's product page instead.
+OUT, or take it from the manufacturer's product page instead. A real PDF can still be the wrong document: LCSC's viewer
+served an ISO certificate as the datasheet of two Sunlord inductors (C98350, C98361). So the saved PDF's text is
+checked: with --mpn it must name the part (spaces and dashes ignored; naming only the series prefix is a warning: a
+sibling part's datasheet reads the same), and a
+document that reads like a certificate or test report rather than a datasheet is flagged. Exit 3: saved, but it failed
+that check - open it, and find the real datasheet on the manufacturer's site if it is not one.
 find: prints every page whose text contains each phrase (case-insensitive, whitespace-insensitive), with the matching
 line, so you can name the page that holds a figure or section (e.g. "datasheet-p30.png = Figure 36, layout example")
 in the project's reference notes. pdftotext's font warnings are suppressed.
@@ -82,7 +87,39 @@ def pdf_links(html, base, url):
     return out
 
 
-def fetch(url, out, max_follow=4):
+CERT = re.compile(r'certificat|ISO\s*9001|ISO\s*14001|IATF\s*16949|test report|declaration of conformity', re.I)
+SHEET = re.compile(r'electrical characteristics|absolute maximum|specification|dimension|ordering information|features', re.I)
+
+
+def norm(s):
+    return re.sub(r'[^A-Z0-9]', '', s.upper())
+
+
+def content_problems(pdf, mpns=()):
+    """(problems, note): does the saved PDF read like the datasheet of these part numbers?"""
+    if not shutil.which('pdftotext'):
+        return [], 'content not checked (pdftotext not found: install poppler)'
+    txt = subprocess.run(['pdftotext', '-layout', pdf, '-'], capture_output=True, text=True, errors='replace').stdout
+    if not txt.strip():
+        return [], 'content not checked: no text in the PDF (scanned?) - look at it'
+    probs, named, flat = [], [], norm(txt)
+    for m in mpns:
+        n = norm(m)
+        if n in flat:
+            named.append(m)
+            continue
+        # only the series: a sibling's datasheet reads the same (USBLC6-2SC6's names USBLC6, not USBLC6-4SC6)
+        pre = next((n[:k] for k in range(len(n) - 1, max(5, int(0.6 * len(n))) - 1, -1) if n[:k] in flat), None)
+        probs.append('it names only the series %s, not %s: find %s in its ordering / variant table, or it is a sibling '
+                     'part\'s datasheet' % (pre, m, m) if pre else 'it never mentions %s' % m)
+    head = txt[:3000]
+    if CERT.search(head) and not SHEET.search(txt):
+        probs.append('it reads like a certificate or test report ("%s"), not a datasheet' % CERT.search(head).group(0))
+    return probs, 'content checked: %s' % ('; '.join(['%s named' % ', '.join(named)] if named else []) or
+                                           ('no certificate wording' if not mpns else 'see WARNING'))
+
+
+def fetch(url, out, max_follow=4, mpns=()):
     """save url as out only if it is (or the page it returns embeds) a real PDF. exit 1 not a PDF, 2 blocked"""
     data, status, ctype, final = get(url)
     why = blocked(data, status)
@@ -113,6 +150,12 @@ def fetch(url, out, max_follow=4):
         sys.exit(1)
     open(out, 'wb').write(data)
     print('saved %s (%d bytes)' % (out, len(data)))
+    probs, note = content_problems(out, mpns)
+    print(note)
+    if probs:
+        sys.stderr.write('WARNING: %s may not be the datasheet: %s. Open it; if it is not the datasheet, delete it and take '
+                         'the PDF from the manufacturer\'s product page.\n' % (out, '; '.join(probs)))
+        sys.exit(3)
 
 
 def pages(pdf):
@@ -189,13 +232,14 @@ def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest='cmd', required=True)
     f = sub.add_parser('fetch'); f.add_argument('url'); f.add_argument('out')
+    f.add_argument('--mpn', action='append', default=[], help='part number the datasheet must name (repeatable)')
     s = sub.add_parser('find'); s.add_argument('pdf'); s.add_argument('phrases', nargs='+'); s.add_argument('--context', type=int, default=0)
     g = sub.add_parser('page'); g.add_argument('pdf'); g.add_argument('n', type=int); g.add_argument('out'); g.add_argument('--dpi', type=int, default=170)
     g.add_argument('--label', help='what the page shows, recorded in INDEX.md next to the image')
     ix = sub.add_parser('index'); ix.add_argument('dir')
     a = ap.parse_args()
     if a.cmd == 'fetch':
-        fetch(a.url, a.out)
+        fetch(a.url, a.out, mpns=a.mpn)
     elif a.cmd == 'find':
         find(a.pdf, a.phrases, a.context)
     elif a.cmd == 'index':

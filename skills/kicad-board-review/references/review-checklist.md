@@ -136,7 +136,10 @@ A board that is fine in steady state can trip, latch or lose a part in the first
   theta_JC from the datasheet) with its limit and with any function that folds back before it (a charger's thermal
   regulation cuts charge current at about 110 C); compare the board with its laminate limit; and compare the corner's
   duration with the board's time constant before calling a short peak a failure. h is the largest uncertainty: give the
-  user the range, not one number, and say what the enclosure adds.
+  user the range, not one number, and say what the enclosure adds. Take h from the enclosure, not the default: the
+  default 5 / 7 / 10 W/m^2K per face is a closed box; a bare board in still room air is about 9 / 12 / 16
+  (`"h_W_m2K": "bare"`). On a bare board the closed-box range turned a 56-68 C board into a 76 C one with a false
+  "over 85 C" part.
 - **Spacing and airflow.** Hot parts not stacked next to each other, not under a tall part that blocks airflow, and
   away from the cell, electrolytics and precision references.
 
@@ -363,14 +366,17 @@ and the missing file is a finding.
 - **Substitutions since the user's approval** are listed with the user's decision on each (R26): a part, threshold or
   behaviour that changed without one is a finding, whatever the reason for the change.
 - Every polarised or oriented part checked in the assembler's placement preview; fix rotation permanently with
-  `Rotation Offset` / `Position Offset` fields on the symbol rather than per order. A part whose orientation matters
+  `JLCPCB Rotation Offset` / `JLCPCB Position Offset` fields on the symbol rather than per order (JLCImport's
+  `jlcimport-cli production --check-only` reads them, solves every other part's rotation from JLC's own footprint and
+  lists the polarised and loosely fitted parts to look at: pcb-part-selection "Order files"). A part whose orientation matters
   but whose class the assembler treats as non-polar (an inductor or a capacitor with a polarity mark) gets an order
   note as well.
 - **Assembly method per part.** **Output:** the parts in the assembler's BOM and position file against the plan:
   hand-soldered parts out of both, not-fitted parts DNP (the schematic's attributes carried to the board,
   `partfields.py` parity). A hand-soldered header in the position file is placed, and charged, by the assembler.
 - Fabrication outputs (gerbers, BOM, CPL) regenerated after the last change - compare their timestamps with the board's
-  (stale exports are a common release blocker).
+  (stale exports are a common release blocker). `jlcimport-cli production` writes all of them in one run from the
+  board as it is.
 
 ## 9. Mechanical and silkscreen
 
@@ -414,7 +420,9 @@ and the missing file is a finding.
   via diameter and annular ring (via and PTH separately), aspect ratio (0.2 mm drill in 1.6 mm = 8:1, a common limit),
   copper-to-edge clearance, filled/capped via-in-pad cost, solder-mask web between fine-pitch pads (0.4 mm-pitch QFN
   leaves ~0.1 mm of web - at the minimum; check the mask expansion or accept a ganged opening). Tie any cost claim to
-  the fab's current price page.
+  the fab's current price page. At JLCPCB a hole under 0.3 mm is charged unless the board has 4+ layers and the via
+  (or pad) is at least 0.45 mm: 0.45 / 0.2 is free on 4 layers, 0.4 / 0.2 is not, and on 2 layers no 0.2 mm hole is
+  (kicad-new-board `references/jlcpcb-stackups.md`).
 
 ## 10. Firmware-visible consequences
 

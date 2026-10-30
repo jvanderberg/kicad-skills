@@ -1,5 +1,5 @@
 {
-  "_comment": "Example per-board analysis config for a hypothetical board: a 12 V input on J1 (net VIN) through fuse F1 onto +12V, which feeds output connectors J2-J5 and a 5 V buck U2 (output inductor L1); a 3.3 V buck U3 (output inductor L2) feeds the MCU U1 and a radio module U4. Every ref, pad and net here is a placeholder: replace them with your own board's, after reading netlist.md, and delete entries that do not apply. Regexes match KiCad net names exactly as they appear in netlist.md (sheet-local nets look like /Power/NAME); the first matching rule wins. Power runs: the source pad is held at 0 V and each sink draws its amps; negative amps inject current (ground returns). Optional per run: h (grid pitch, mm) and region [x0, y0, x1, y1] (only copper inside the box is solved). rail_voltages gives the voltage of rails whose name does not contain it. thermal: the heat-source table and the thermal solve (format in scripts/heat.py). Corners name the operating points that bound the heat; a current is a number, a name defined in the corner, {\"run\": power run} or {\"path_budget\": a file written by pcb-power-supply path_budget.py --json, \"source\", \"R_corner\"}. Any value can be per corner ({\"full_load\": x}); a corner missing from such a dict is UNKNOWN there. psi_jb / theta_jc and the limits come from each part's datasheet; the numbers below are illustrative, not data.",
+  "_comment": "Example per-board analysis config for a hypothetical board: a 12 V input on J1 (net VIN) through fuse F1 onto +12V, which feeds output connectors J2-J5 and a 5 V buck U2 (output inductor L1); a 3.3 V buck U3 (output inductor L2) feeds the MCU U1 and a radio module U4. Every ref, pad and net here is a placeholder: replace them with your own board's, after reading netlist.md, and delete entries that do not apply. Regexes match KiCad net names exactly as they appear in netlist.md (sheet-local nets look like /Power/NAME); the first matching rule wins. Power runs: the source pad is held at 0 V and each sink draws its amps; negative amps inject current (ground returns). Optional per run: h (grid pitch, mm) and region [x0, y0, x1, y1] (only copper inside the box is solved). rail_voltages gives the voltage of rails whose name does not contain it. diff_pairs: {\"nets\": [P, N], \"target_ohm\": differential impedance} or the short form [P, N] (no target); other keys are an error. thermal: the heat-source table and the thermal solve (format in scripts/heat.py); h_W_m2K follows the enclosure: \"enclosed\" (5 / 7 / 10 W/m^2K per face, a closed box, as this hypothetical board is) or \"bare\" (9 / 12 / 16, a bare board in still room air) - ask the user which. Corners name the operating points that bound the heat; a current is a number, a name defined in the corner, {\"run\": power run} or {\"path_budget\": a file written by pcb-power-supply path_budget.py --json, \"source\", \"R_corner\"}. Any value can be per corner ({\"full_load\": x}); a corner missing from such a dict is UNKNOWN there. psi_jb / theta_jc and the limits come from each part's datasheet; the numbers below are illustrative, not data.",
   "ground_nets": ["GND"],
   "net_classes": [
     {"match": "^(USB_D[+-]|/?USB_)", "class": "usb"},
@@ -12,7 +12,7 @@
     {"match": "^(\\+|VIN|VBUS|VSYS)|3V3|5V|12V", "class": "power"}
   ],
   "fast_classes": ["usb", "qspi", "spi", "clock", "switch", "swd"],
-  "diff_pairs": [["USB_D+", "USB_D-"]],
+  "diff_pairs": [{"nets": ["USB_D+", "USB_D-"], "target_ohm": 90}],
   "rail_voltages": {"VIN": 12},
   "hot_loops": [
     {"ic": "U2", "in_net": "+12V", "gnd_net": "GND", "label": "5 V buck input"},
@@ -30,7 +30,7 @@
      "source": ["L2:2"], "sinks": [["U1:1", 0.15], ["U4:2", 0.5]]}
   ],
   "thermal": {
-    "ambient_C": 45, "h_W_m2K": {"low": 5, "nominal": 7, "high": 10}, "board_T_max_C": 105,
+    "ambient_C": 45, "h_W_m2K": "enclosed", "board_T_max_C": 105,
     "corners": {
       "full_load": {"title": "12 V in, all outputs at their rated current", "currents": {"I_in": 10.6, "I_L1": 0.6, "I_L2": 0.65}},
       "idle": {"title": "12 V in, outputs off, MCU and radio idle", "currents": {"I_in": 0.1, "I_L1": 0.05, "I_L2": 0.06}}
