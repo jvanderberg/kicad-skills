@@ -10,6 +10,7 @@ Why: kicad-cli cannot create or set up a board, and pcbnew's python does not exp
 (GetStackupDescriptor() returns an opaque object in KiCad 10.0.1). This writes:
 - the board's (setup (stackup ...)) block from the table below (replacing an existing one), and the board thickness;
 - .kicad_pro design rules: comfortable values for JLC's capabilities, not their minimums (--rules jlc), or untouched;
+  the via minimums are JLC's no-extra-charge vias for the layer count (0.45 / 0.2 mm on 4+ layers, 0.45 / 0.3 on 2);
 - .kicad_pro net classes: Default (0.2 mm track, 0.15 mm clearance, 0.6/0.3 mm via) plus any --class (keys track,
   clearance, via, drill), and net assignments by exact name (--assign) or wildcard pattern (--pattern, KiCad's
   netclass_patterns). A class clearance applies between that class's nets everywhere, IC pins included: a Power
@@ -49,13 +50,32 @@ STACKUPS = {
 JLC_RULES = {
     'min_clearance': 0.15,                 # JLC min 0.09-0.10 mm (1 oz); 0.15 is the comfortable value
     'min_track_width': 0.15,
-    'min_through_hole_diameter': 0.3,      # JLC's price tier: a 0.2 mm drill anywhere (via or pad) costs ~4x (stackups.md)
-    'min_via_diameter': 0.45,              # 0.3 drill + 0.15 ("via pad 0.1, preferably 0.15 mm larger than the drill")
+    'min_through_hole_diameter': 0.2,      # multilayer; 1-2 layers: 0.3 (jlc_rules)
+    'min_via_diameter': 0.45,              # JLC charges a hole < 0.3 mm unless the via is >= 0.45 mm on 4+ layers
     'min_via_annular_width': 0.075,
     'min_copper_edge_clearance': 0.3,      # JLC 0.2 mm for routed edges (0.4 for V-cut): margin added
     'min_hole_to_hole': 0.25,              # KiCad default; not in the JLC table we checked - verify
     'min_hole_clearance': 0.25,            # KiCad default
 }
+
+
+
+def jlc_rules(layers):
+    """JLC_RULES for a board of this many copper layers. JLC's quote page (checked 2026-10-30): "Additional charges
+    will apply when the via hole < 0.3mm and the via diameter <= 0.4mm ... For multi-layer boards, if the via diameter
+    >= 0.45mm, the 0.2mm hole is also without an extra charge." So 0.45 / 0.2 is free on 4+ layers, and on 1-2 layers
+    every hole under 0.3 mm is charged."""
+    r = dict(JLC_RULES)
+    if layers <= 2:
+        r.update(min_through_hole_diameter=0.3, min_via_diameter=0.45)
+    return r
+
+
+def via_sizes(layers):
+    """the via size list (diameter, drill) offered in KiCad: the small one is JLC's free small via for the layer count"""
+    small = {'diameter': 0.45, 'drill': 0.2 if layers > 2 else 0.3}
+    return [{'diameter': 0.0, 'drill': 0.0}, {'diameter': 0.6, 'drill': 0.3}, {'diameter': 0.8, 'drill': 0.4}, small]
+
 
 CLASS_BASE = {'bus_width': 12, 'diff_pair_gap': 0.25, 'diff_pair_via_gap': 0.25, 'diff_pair_width': 0.2,
               'line_style': 0, 'microvia_diameter': 0.3, 'microvia_drill': 0.1, 'pcb_color': 'rgba(0, 0, 0, 0.000)',
@@ -113,16 +133,15 @@ def parse_class(spec):
     return name, c
 
 
-def apply_project(project, rules, classes, assigns, patterns):
-    """project: a kicad_sexpr Project. Rules, net classes (Default first, the user's other classes kept),
-    assignments and patterns."""
+def apply_project(project, rules, classes, assigns, patterns, layers=2):
+    """project: a kicad_sexpr Project. Rules (for a board of `layers` copper layers; unknown: 2, the stricter), net
+    classes (Default first, the user's other classes kept), assignments and patterns."""
     pro = project.data
     ds = project.design_settings()
     if rules == 'jlc':
-        ds.setdefault('rules', {}).update(JLC_RULES)
+        ds.setdefault('rules', {}).update(jlc_rules(layers))
         ds['track_widths'] = [0.0, 0.2, 0.3, 0.5, 0.8, 1.2, 2.0]
-        ds['via_dimensions'] = [{'diameter': 0.0, 'drill': 0.0}, {'diameter': 0.6, 'drill': 0.3},
-                                {'diameter': 0.8, 'drill': 0.4}, {'diameter': 0.45, 'drill': 0.3}]
+        ds['via_dimensions'] = via_sizes(layers)
     ns = pro.setdefault('net_settings', {})
     old = {c['name']: c for c in ns.get('classes') or []}
     want = dict([('Default', dict(DEFAULT_CLASS))] + classes)
@@ -179,10 +198,11 @@ def main():
             sys.exit('unknown stackup %s; --list shows the table' % a.stackup)
         apply_stackup(Board.load(pcb_path), a.stackup, a.finish).save()      # may refuse before anything is written
         print('stackup %s (%.3f mm) written to %s' % (a.stackup, thickness(a.stackup), pcb_path))
-    project = apply_project(project, a.rules, classes, assigns, patterns)
+    layers = copper_count(a.stackup) if a.stackup else len(Board.load(pcb_path).copper_layers()) if os.path.exists(pcb_path) else 2
+    project = apply_project(project, a.rules, classes, assigns, patterns, layers)
     project.save()                            # KiCad's JSON layout: sorted keys, 2-space indent, final newline
-    print('%s: rules %s; classes %s; %d assignments, %d patterns' % (
-        pro_path, a.rules, [c['name'] for c in project.netclasses()], len(assigns), len(patterns)))
+    print('%s: rules %s (%d copper layers); classes %s; %d assignments, %d patterns' % (
+        pro_path, a.rules, layers, [c['name'] for c in project.netclasses()], len(assigns), len(patterns)))
 
 
 if __name__ == '__main__':

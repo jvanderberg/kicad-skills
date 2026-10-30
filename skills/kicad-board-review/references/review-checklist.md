@@ -417,8 +417,8 @@ and the missing file is a finding.
   via diameter and annular ring (via and PTH separately), aspect ratio (0.2 mm drill in 1.6 mm = 8:1, a common limit),
   copper-to-edge clearance, filled/capped via-in-pad cost, solder-mask web between fine-pitch pads (0.4 mm-pitch QFN
   leaves ~0.1 mm of web - at the minimum; check the mask expansion or accept a ganged opening). Tie any cost claim to
-  the fab's current price page. At JLCPCB the smallest drill on the board (vias and pad drills, e.g. a library
-  `_ThermalVias` footprint's 0.2 mm) sets a price tier: below 0.3 mm a small 4-layer order cost about 4x
+  the fab's current price page. At JLCPCB a hole under 0.3 mm is charged unless the board has 4+ layers and the via
+  (or pad) is at least 0.45 mm: 0.45 / 0.2 is free on 4 layers, 0.4 / 0.2 is not, and on 2 layers no 0.2 mm hole is
   (kicad-new-board `references/jlcpcb-stackups.md`).
 
 ## 10. Firmware-visible consequences

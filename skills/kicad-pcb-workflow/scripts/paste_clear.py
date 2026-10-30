@@ -7,8 +7,9 @@ larger via drills.
 
 KiCad's own *_ThermalVias footprints fail board_lint.py's PASTE ON HOLE as shipped: QFN-24-1EP_4x4mm_P0.5mm_EP2.7x2.7mm
 _ThermalVias has four 1.17 mm paste windows at +-0.675 mm that cover its corner drills at +-1.1 mm, and reflow pulls
-that paste down the barrels. Their 0.2 mm drills also put a JLC order in a costlier via tier (kicad-new-board
-references/jlcpcb-stackups.md); --drill 0.3 enlarges every plated drill smaller than that.
+that paste down the barrels. Their 0.2 mm drills in 0.5 mm pads are free at JLC on 4+ layers but charged on 2 (a hole
+under 0.3 mm is free only on a multilayer board with a via of 0.45 mm or more: kicad-new-board
+references/jlcpcb-stackups.md); --drill 0.3 enlarges every plated drill smaller than that, for a 2-layer board.
 
 Each paste-only window (a pad on F.Paste / B.Paste and no copper, rect or roundrect) that comes within --margin of a
 drill is cut to the largest of the four rectangles beside that hole (left, right, above, below), repeated until it

@@ -1,6 +1,6 @@
 """paste_clear.py on a thermal-via exposed pad laid out like KiCad's QFN-24 _ThermalVias footprint (four 1.17 mm
 paste windows at +-0.675 mm over a 3 x 3 grid of 0.2 mm drills at 1.1 mm pitch):  python3 tests/test_paste_clear.py
-Every window ends up clear of every drill by the margin, the drills move to JLC's 0.3 mm tier with --drill, and the
+Every window ends up clear of every drill by the margin, the drills grow to 0.3 mm with --drill (a 2-layer JLC board), and the
 paste coverage stays in the usual 40-60 %. With KiCad's library installed, the real footprint is checked too."""
 import math, os, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
