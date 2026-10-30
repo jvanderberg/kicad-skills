@@ -96,6 +96,16 @@ def checks():
         rv, vt = run([c, '--version'])
         return '--region' in t, '%s %s%s' % (c, vt.splitlines()[0] if rv == 0 and vt else '', '' if '--region' in t else ' (no search --region: needs v1.6.0+)')
     out.append(('jlcimport-cli >= 1.6.0', {'parts'}, jlc, 'pipx install git+https://github.com/jvanderberg/kicad_jlcimport'))
+
+    def jlc_production():
+        c = os.environ.get('JLCIMPORT_CLI') or shutil.which('jlcimport-cli') or first(glob.glob(os.path.expanduser('~/.local/bin/jlcimport-cli')))
+        if not c:
+            return False, 'no jlcimport-cli'
+        rc, t = run([c, 'production', '--help'])
+        return rc == 0 and '--check-only' in t, c if rc == 0 else '%s has no production command (v1.6.7 and older; it reports 1.6.7 either way)' % c
+    # optional (needed by nothing): the order files and placement check; on JLCImport's main after v1.6.7, unreleased
+    out.append(('jlcimport-cli production (order files)', set(), jlc_production,
+                'pipx install --force git+https://github.com/jvanderberg/kicad_jlcimport (main, after v1.6.7)'))
     return out
 
 
@@ -143,7 +153,7 @@ def main():
         req = bool(need & want)
         st = 'ok' if ok else ('MISSING' if req else 'optional')
         bad += (not ok) and req
-        print('%-50s %-8s %s%s' % (name, st, detail, '' if ok else '\n%50s          install: %s (needed by: %s)' % ('', hint, ', '.join(sorted(need)))))
+        print('%-50s %-8s %s%s' % (name, st, detail, '' if ok else '\n%50s          install: %s (needed by: %s)' % ('', hint, ', '.join(sorted(need)) or 'nothing required')))
     if a.project:
         sys.path.insert(0, HERE)
         try:

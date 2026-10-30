@@ -16,6 +16,7 @@ so a generator describes the design and never formats KiCad text itself:
 | Footprint facts: courtyard, pad count / body vs package, pins vs pads | `fpcheck.py` | python3 |
 | Add missing courtyards to imported footprints | `add_courtyard.py` | python3 |
 | Thermal-via footprint with paste windows clear of the drills (and 0.3 mm drills) | `paste_clear.py` | python3 |
+| JLCPCB order files (Gerbers, drill, BOM, CPL with solved rotations) and the placement / stock check | `jlcimport-cli production` (JLCImport main; pcb-part-selection "Order files") | pipx |
 | Board from the netlist: footprints, symbol links, nets, fields, assembly attributes (DNP, BOM, position file), outline, placement, pad labels | `new_board.py` | python3 |
 | JLC stackup block, design rules, net classes | `board_setup.py` | python3 |
 | Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely; re-runs itself there) |

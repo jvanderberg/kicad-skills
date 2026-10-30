@@ -180,8 +180,8 @@ library is the better default (one convention, courtyards and fab outlines). Che
 `kicad-pcb-workflow/scripts/fpcheck.py FOOTPRINT --package "<LCSC package>" --symbol LIB:NAME` (courtyard, pad count,
 body size, symbol pins vs pads), plus the datasheet land-pattern figure for pad sizes and pitch.
 
-JLCImport's geometry-checked matcher (jvanderberg/kicad_jlcimport PR #122, not yet released in October 2026)
-suggests a KiCad footprint only when JLC's pad centres fit it within 0.05 mm RMS with the same pad numbers and no
+JLCImport's geometry-checked matcher (jvanderberg/kicad_jlcimport PR #122, merged 30 October 2026, on main but not in
+a release yet: v1.6.7 is the latest) suggests a KiCad footprint only when JLC's pad centres fit it within 0.05 mm RMS with the same pad numbers and no
 mirrored numbering, and otherwise keeps JLC's; it reports a polarised part's polarity as same, reversed or unknown,
 and only "same" is safe. v1.6.7 matches by name only and offered a wrong pad count for 406 of 963 parts, so check
 what it suggests with `fpcheck.py`. The suggestion is offered in the plugin's and TUI's import dialogs; `jlcimport-cli import` always
@@ -194,7 +194,14 @@ writes JLC's footprint (to use a KiCad one, assign it in the schematic). Treat i
   pad numbers JLC places by, rather than swapping in another footprint;
 - a redrawn symbol, or a KiCad footprint, must use the footprint's pad numbers (`fpcheck.py --symbol`): a KiCad
   footprint may merge pins into one pad (e.g. FET source pins 5-8 as pad "5");
-- 3D models can be offset from the pads or missing (`board_lint.py` lists missing files) - check in a 3D render;
+- 3D models can be offset from the pads or missing (`board_lint.py` lists missing files) - check in a 3D render.
+  JLCImport's main (PR #119) centres the model on EasyEDA's own outline, fits its pins to the pads and logs a warning
+  for a model that floats, sinks into the board or misses its pads; v1.6.7 placed it from EasyEDA's origin, which was
+  1.7 mm off on some parts, and drew a vertical XH connector upside down;
+- through-hole drills from v1.6.7 and older can be wrong: an oval slot's direction came from the pad's aspect ratio
+  (a round or tall pad with a horizontal slot was drilled 90 degrees off) and every hole was plated. Main reads
+  EasyEDA's slot end points and non-plated flag (PR #120). Re-import slotted or non-plated parts imported with an
+  older build, and check their drills against the datasheet;
 - set the `LCSC` field on the symbol so the BOM and the stock sweep find it;
 - **keep the imported data when you replace the drawing.** The imported symbol carries the Datasheet link (JLCImport
   writes `https://www.lcsc.com/datasheet/C<n>.pdf`), LCSC number, manufacturer and description. A redraw takes them
@@ -205,9 +212,15 @@ writes JLC's footprint (to use a KiCad one, assign it in the schematic). Treat i
   part where one exists (TI: `https://www.ti.com/lit/ds/symlink/<device>.pdf` returns the PDF itself); the LCSC URL is
   the fallback, and it opens a viewer page whose title names the MPN.
 
-**Installing jlcimport-cli** (checked October 2026): `pipx install git+https://github.com/jvanderberg/kicad_jlcimport`
+**Installing jlcimport-cli** (checked 30 October 2026): `pipx install git+https://github.com/jvanderberg/kicad_jlcimport`
 (pipx brings its own recent pip; a system Python 3.9 with pip 21 could not do an editable `pip install -e` of the
-repository). The `--region` option the
+repository). That installs main, which has fixes and the `production` command that v1.6.7 (the latest release, and
+what KiCad's plugin manager installs) lacks; main still reports 1.6.7, so tell them apart by `jlcimport-cli --help`
+listing `production` (`preflight.py` checks it; `pipx install --force ...` updates an older install). Two of main's
+fixes protect your libraries: re-importing with overwrite on v1.6.7 could delete other symbols from a `.kicad_sym`
+(a description with an unmatched "(") or duplicate them in a library KiCad had re-saved, and a crash mid-write
+truncated it (PR #116) - commit the library before a re-import on an older build. Main also refuses a library name
+with `/ \ : " < > | ? * $`, `.` or `..` (exit 1) instead of writing a broken lib-table (PR #117). The `--region` option the
 commands here use appeared in v1.6.0: check with `jlcimport-cli search --help`, and do not use an older prebuilt
 binary that lacks it. Without `--region`, `search` uses the region saved in its config (`jlcimport.json` in KiCad's
 preferences folder, written by the plugin's region menu; v1.6.7): the skills' scripts always pass it, and
@@ -228,3 +241,21 @@ substitute (polarity-marked inductors, specific crystals, modules) need a plan b
 pre-order, or consignment. If the project has a stock policy (e.g. at least 1,000 listed per part), put it in
 `sourcing.json` as `min_stock`, with each user-approved exception named (`exceptions`: LCSC number, reason, who
 approved it and when); bom_check applies both and notes exceptions for parts no longer in the BOM.
+
+**Order files and the placement check (JLCPCB).** With JLCImport's main (above), `jlcimport-cli production
+<board>.kicad_pcb -n <boards> --check-only` checks the board itself, as JLC will see it: each part's LCSC number, stock
+for the order, Basic / Preferred Extended / Extended with the loading-fee estimate, and every part's CPL rotation and
+position, solved by fitting JLC's own footprint onto the board's pads. Exit 1 means errors; warnings exit 0, so read
+them. Then `jlcimport-cli production <board>.kicad_pcb -n <boards> -o <project>/production` writes the BOM, the CPL,
+the Gerbers and drill files (plotted with kicad-cli in JLC's layer set; KiCad 10 refills the zones in memory first and
+the board file is not touched) and a report; `--json` gives the whole result for a script, `--no-gerbers` skips
+kicad-cli. Hand-written Gerber scripts are no longer needed. What to do with its output:
+- every polarised part, and every placement marked "estimated" (a loose fit to JLC's footprint), is checked in JLC's
+  placement preview before the order is paid. On a 4-layer USB-UART board the two parts on KiCad library footprints
+  (the USB-C receptacle and an SOT-223 regulator) were the only estimated placements, and the four diodes and LEDs
+  were flagged for polarity;
+- a correction that has to persist goes in the footprint fields `JLCPCB Rotation Offset` / `JLCPCB Position Offset`
+  (they replace the solver for that part), set on the symbol so `new_board.py` carries them;
+- its stock check reads JLCPCB's international parts library (it has no `--region`): it is not a `cn` warehouse
+  check. `bom_check.py` stays the region-correct stock sweep, from the schematic; `production` checks the board, so
+  run both (`partfields.py` keeps their fields equal).

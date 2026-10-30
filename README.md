@@ -78,7 +78,9 @@ All tools also work without Claude.
   `pipx install git+https://github.com/jvanderberg/kicad_jlcimport` (checked October 2026). The scripts use
   `search --region`, which needs v1.6.0 or later; `jlcimport-cli search --help` shows whether you have it. They always
   pass the region from the project's `sourcing.json`: without `--region`, jlcimport-cli uses the region its KiCad
-  plugin last saved, which may not be the warehouse your assembler buys from.
+  plugin last saved, which may not be the warehouse your assembler buys from. The order files and placement check use
+  `jlcimport-cli production`, on JLCImport's main after v1.6.7 (main still reports 1.6.7; `jlcimport-cli --help` lists
+  `production` when you have it); its stock check reads JLCPCB's international library only.
 
 Run `skills/kicad-pcb-workflow/scripts/preflight.py` to check all of these at once.
 

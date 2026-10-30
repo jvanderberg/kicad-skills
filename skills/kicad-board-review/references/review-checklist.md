@@ -366,14 +366,17 @@ and the missing file is a finding.
 - **Substitutions since the user's approval** are listed with the user's decision on each (R26): a part, threshold or
   behaviour that changed without one is a finding, whatever the reason for the change.
 - Every polarised or oriented part checked in the assembler's placement preview; fix rotation permanently with
-  `Rotation Offset` / `Position Offset` fields on the symbol rather than per order. A part whose orientation matters
+  `JLCPCB Rotation Offset` / `JLCPCB Position Offset` fields on the symbol rather than per order (JLCImport's
+  `jlcimport-cli production --check-only` reads them, solves every other part's rotation from JLC's own footprint and
+  lists the polarised and loosely fitted parts to look at: pcb-part-selection "Order files"). A part whose orientation matters
   but whose class the assembler treats as non-polar (an inductor or a capacitor with a polarity mark) gets an order
   note as well.
 - **Assembly method per part.** **Output:** the parts in the assembler's BOM and position file against the plan:
   hand-soldered parts out of both, not-fitted parts DNP (the schematic's attributes carried to the board,
   `partfields.py` parity). A hand-soldered header in the position file is placed, and charged, by the assembler.
 - Fabrication outputs (gerbers, BOM, CPL) regenerated after the last change - compare their timestamps with the board's
-  (stale exports are a common release blocker).
+  (stale exports are a common release blocker). `jlcimport-cli production` writes all of them in one run from the
+  board as it is.
 
 ## 9. Mechanical and silkscreen
 
