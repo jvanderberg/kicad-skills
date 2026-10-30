@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 import symgen, partfields
 from schgen import Sch
-from kicad_sexpr import SymbolLibrary, dumps
+from kicad_sexpr import LibTable, SymbolLibrary, dumps
 
 IMPORTED = symgen.ic('BOOST1_IMPORTED', 5.08, left=[('VIN', ['1'], symgen.PI)], right=[('VOUT', ['2'], symgen.PO)],
                      bottom=[('GND', ['3'], symgen.PI)], footprint='Package_TO_SOT_SMD:SOT-23',
@@ -78,7 +78,7 @@ def test_board_carries_fields_and_parity_catches_drift():
     s = sheet(d, False)
     s.write(os.path.join(d, 't.kicad_sch'))
     lib().save(os.path.join(d, 'P.kicad_sym'))
-    open(os.path.join(d, 'sym-lib-table'), 'w').write('(sym_lib_table (version 7) (lib (name "P")(type "KiCad")(uri "${KIPRJMOD}/P.kicad_sym")(options "")(descr "")))\n')
+    t = LibTable.for_project(d, 'sym'); t.add('P', 'P.kicad_sym'); t.save()
     subprocess.run([cli, 'sch', 'export', 'netlist', '--format', 'kicadxml', '-o', os.path.join(d, 'net.xml'), os.path.join(d, 't.kicad_sch')],
                    check=True, capture_output=True)
     r = subprocess.run([sys.executable, os.path.join(HERE, 'new_board.py'), os.path.join(d, 'net.xml'), os.path.join(d, 't.kicad_pcb')],
@@ -110,7 +110,7 @@ def test_board_carries_assembly_attributes():
     s.add('P:R', 'R3', '1k', 30.48, 71.12, footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25744', in_pos_files=False)
     s.write(os.path.join(d, 't.kicad_sch'))
     lib().save(os.path.join(d, 'P.kicad_sym'))
-    open(os.path.join(d, 'sym-lib-table'), 'w').write('(sym_lib_table (version 7) (lib (name "P")(type "KiCad")(uri "${KIPRJMOD}/P.kicad_sym")(options "")(descr "")))\n')
+    t = LibTable.for_project(d, 'sym'); t.add('P', 'P.kicad_sym'); t.save()
     subprocess.run([cli, 'sch', 'export', 'netlist', '--format', 'kicadxml', '-o', os.path.join(d, 'net.xml'), os.path.join(d, 't.kicad_sch')],
                    check=True, capture_output=True)
     r = subprocess.run([sys.executable, os.path.join(HERE, 'new_board.py'), os.path.join(d, 'net.xml'), os.path.join(d, 't.kicad_pcb')],

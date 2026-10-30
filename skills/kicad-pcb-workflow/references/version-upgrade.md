@@ -16,7 +16,8 @@
    schematic shows as `footprint_symbol_field_mismatch`. Fix with a text replace on the board.
 5. Libraries: parts that lived in the user's KiCad 9 global or PCM libraries (EasyEDA, PCM_JLCPCB, ...) are missing in
    KiCad 10's global tables. Copy the used symbols/footprints/3D models into project libraries under the same
-   nicknames with `${KIPRJMOD}` paths, so no reference changes and the project opens anywhere.
+   nicknames with `${KIPRJMOD}` paths, so no reference changes and the project opens anywhere: copy the file, then
+   `scripts/libtable.py add PROJECT_DIR sym|fp NICKNAME COPIED_PATH`.
 6. `lib_symbol_mismatch` from arc midpoints that differ between the schematic's embedded copy and the library: copy the
    embedded symbol back into the library and `sym upgrade --force`.
 7. kicad-cli does not touch `.kicad_pro`; KiCad 10 rewrites it on first open and the first ERC adds new default
