@@ -37,11 +37,12 @@ def git(*a, cwd=HERE):
 
 
 def tree_hash(root):
-    """sha256 of every file under root/skills (relative path and bytes), without caches, .pyc and .DS_Store"""
+    """sha256 of every file under root/skills (relative path and bytes), without caches: __pycache__ and hidden folders
+    (.pytest_cache changes on every test run), .pyc and .DS_Store"""
     h = hashlib.sha256()
     base = os.path.join(root, 'skills')
     for d, dirs, files in os.walk(base):
-        dirs[:] = sorted(x for x in dirs if x != '__pycache__')
+        dirs[:] = sorted(x for x in dirs if x != '__pycache__' and not x.startswith('.'))
         for f in sorted(files):
             if f.endswith('.pyc') or f == '.DS_Store':
                 continue
@@ -63,7 +64,9 @@ def checkout(skills_dir=None):
     """(repo root, rev, dirty files under skills/, remote branches containing rev) of the kicad-skills checkout"""
     d = skills_dir or HERE
     rc, root = git('rev-parse', '--show-toplevel', cwd=d)
-    if rc:
+    # only a repository whose root holds these skills: a plugin install under a dotfiles repository (~ or ~/.claude
+    # tracked in git) is not a kicad-skills checkout, and pinning that repository's commit would prove nothing
+    if rc or not os.path.samefile(root, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(d))))):
         return None, None, [], []
     _, rev = git('rev-parse', 'HEAD', cwd=root)
     _, st = git('status', '--porcelain', '--', 'skills', cwd=root)

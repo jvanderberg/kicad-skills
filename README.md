@@ -32,7 +32,7 @@ All tools also work without Claude.
 | Tool | What it does |
 |---|---|
 | `kicad-pcb-workflow/scripts/preflight.py` | Every tool the scripts need (KiCad and its python, the analysis venv, poppler, rsvg, jlcimport), with install hints; with `--project`, the pinned kicad-skills revision |
-| `kicad-pcb-workflow/scripts/skills_rev.py` | Pin the kicad-skills commit and KiCad version a project builds with (`kicad-skills.lock`) and check it on every build; `assets/kskills.py` is the project-side template |
+| `kicad-pcb-workflow/scripts/skills_rev.py` | Pin the kicad-skills commit (or, for a plugin install, its version and a hash of its files) and KiCad version a project builds with (`kicad-skills.lock`) and check it on every build; `assets/kskills.py` is the project-side template |
 | `kicad-pcb-workflow/scripts/projfiles.py` | One convention for finding a project's own inputs (pin decisions, DRC and field exemptions, review config, reference parts, lock), used by every wrapper |
 | `kicad-pcb-workflow/scripts/check.sh` | DRC (zone refill x2, schematic parity) + ERC on a copy of the project, summarised and diffed against a baseline, known items exempted only by name (`--accept`); runs `board_lint.py`, `nc_audit.py` and `partfields.py`, with the project's own notes and exemptions |
 | `kicad-pcb-workflow/scripts/netspec.py` | Intended netlist vs KiCad's netlist: SPLIT / SHORT / MISSING / UNEXPECTED |

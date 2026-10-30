@@ -14,7 +14,8 @@ references/jlcpcb-stackups.md); --drill 0.3 enlarges every plated drill smaller 
 Each paste-only window (a pad on F.Paste / B.Paste and no copper, rect or roundrect) that comes within --margin of a
 drill is cut to the largest of the four rectangles beside that hole (left, right, above, below), repeated until it
 clears every hole; a window left smaller than 0.2 mm is removed. The footprint is renamed to OUT's file name and the
-paste coverage of each exposed pad is printed (typically 40-60 %; fewer, larger vias leave more room). Pads whose own
+paste coverage of each exposed pad is printed (typically 40-60 %; fewer, larger vias leave more room), and a pad left
+under 30 % - or with no paste at all, which happens on small exposed pads - is a PROBLEM (exit 1). Pads whose own
 paste covers a drill, and windows of other shapes, are listed and left alone (exit 1). Then point the symbol at the
 new footprint in the project library and re-run board_lint.py: no PASTE ON HOLE, and the coverage NOTE.
 """
@@ -25,6 +26,7 @@ from fpcheck import resolve  # noqa: E402
 from kicad_sexpr import load, save  # noqa: E402
 
 MIN_SIDE = 0.2
+MIN_COVERAGE = 0.30       # below this an exposed pad is starved of solder (40-60 % is the usual target)
 
 
 def _layers(p):
@@ -97,6 +99,18 @@ def _set_rect(p, r):
     size[1], size[2] = round(w, 4), round(h, 4)
 
 
+def _coverage(fp, holes, num, side):
+    """(copper area, paste-only window area inside it, holes in it) of pad number `num` on one side, counting only
+    copper pads that have a hole in them (an exposed pad with thermal vias); (0, 0, 0) for any other pad"""
+    rs = [r for r in (_rect(p) for p in fp.nodes('pad') if str(p[1]) == num and str(p[2]) == 'smd' and side + '.Cu' in _layers(p))
+          if r and any(_dist((x, y), r) == 0 for x, y, _ in holes)]
+    if not rs:
+        return 0.0, 0.0, 0
+    windows = [_rect(p) for p in fp.nodes('pad') if side + '.Paste' in _layers(p) and not any(L.endswith('.Cu') for L in _layers(p))]
+    inside = [w for w in windows if w and any(r[0] <= (w[0] + w[2]) / 2 <= r[2] and r[1] <= (w[1] + w[3]) / 2 <= r[3] for r in rs)]
+    return sum(_area(r) for r in rs), sum(_area(w) for w in inside), sum(1 for x, y, _ in holes if any(_dist((x, y), r) == 0 for r in rs))
+
+
 def derive(fp, drill=None, margin=0.05):
     """Change the footprint node in place. Returns (report lines, problems)."""
     out, probs = [], []
@@ -114,6 +128,12 @@ def derive(fp, drill=None, margin=0.05):
         d = p.find('drill')
         if d is not None and _drill(d) > 0:
             holes.append((p.need('at').number(1), p.need('at').number(2), _drill(d) / 2 + margin))
+    before_cov = {}
+    for side in ('F', 'B'):
+        for num in {str(p[1]) for p in fp.nodes('pad') if str(p[1])}:
+            area, pa, nh = _coverage(fp, holes, num, side)
+            if area and pa:
+                before_cov[(num, side)] = (area, pa, nh)
     for p in list(fp.nodes('pad')):
         lay = _layers(p)
         paste = [L for L in lay if L.endswith('.Paste')]
@@ -143,21 +163,18 @@ def derive(fp, drill=None, margin=0.05):
         out.append('paste window %.3f x %.3f at (%.3f, %.3f) -> %.3f x %.3f at (%.3f, %.3f)' % (
             r[2] - r[0], r[3] - r[1], (r[0] + r[2]) / 2, (r[1] + r[3]) / 2,
             n[2] - n[0], n[3] - n[1], (n[0] + n[2]) / 2, (n[1] + n[3]) / 2))
-    # coverage of each side's exposed pad that has holes in it: the paste-only windows inside it over its area
-    for side in ('F', 'B'):
-        windows = [_rect(p) for p in fp.nodes('pad') if side + '.Paste' in _layers(p) and not any(L.endswith('.Cu') for L in _layers(p))]
-        cu = {}
-        for p in fp.nodes('pad'):
-            r = _rect(p)
-            if str(p[2]) == 'smd' and r and side + '.Cu' in _layers(p) and any(_dist((x, y), r) == 0 for x, y, _ in holes):
-                cu.setdefault(str(p[1]), []).append(r)
-        for num, rs in sorted(cu.items()):
-            inside = [w for w in windows if w and any(r[0] <= (w[0] + w[2]) / 2 <= r[2] and r[1] <= (w[1] + w[3]) / 2 <= r[3] for r in rs)]
-            if not inside:
-                continue
-            area, pa = sum(_area(r) for r in rs), sum(_area(w) for w in inside)
-            out.append('exposed pad %s (%s side): paste coverage %.0f %% (%.2f of %.2f mm^2; typically 40-60 %%), %d hole(s)' % (
-                num, side, 100 * pa / area, pa, area, sum(1 for x, y, _ in holes if any(_dist((x, y), r) == 0 for r in rs))))
+    # coverage of each side's exposed pad that has holes in it, after the cuts against what the library gave it: a pad
+    # left with no paste, or well under the usual 40-60 %, is a problem (a window with no room beside the drills is
+    # removed, and on small exposed pads every window can go)
+    for (num, side), (area, before, nh) in sorted(before_cov.items()):
+        pa = _coverage(fp, holes, num, side)[1]
+        out.append('exposed pad %s (%s side): paste coverage %.0f %% (%.2f of %.2f mm^2; typically 40-60 %%; was %.0f %%), %d hole(s)' % (
+            num, side, 100 * pa / area, pa, area, 100 * before / area, nh))
+        if pa / area < MIN_COVERAGE:
+            probs.append('exposed pad %s (%s side): %s paste left (%.0f %% of the pad, was %.0f %%): too little to solder it. '
+                         'Use fewer vias (paste_clear.py after deleting some), a footprint without thermal vias, or keep '
+                         'the library windows and order the vias filled and capped' % (
+                             num, side, 'no' if pa == 0 else 'only %.2f mm^2 of' % pa, 100 * pa / area, 100 * before / area))
     return out, probs
 
 

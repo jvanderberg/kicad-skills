@@ -96,5 +96,5 @@ def test_pdf_that_is_not_the_datasheet_is_flagged(server, tmp_path):
     assert r.returncode == 3 and 'reads like a certificate' in r.stderr, r.stderr
     r = fetch(server, '/sheet.pdf', out, '--mpn', 'SWPA4030S100MT')
     assert r.returncode == 0 and 'SWPA4030S100MT named' in r.stdout, r.stdout + r.stderr
-    r = fetch(server, '/sheet.pdf', out, '--mpn', 'SWPA4030S220MT')       # another value of the series
-    assert r.returncode == 0 and 'only as the series SWPA4030S' in r.stdout, r.stdout + r.stderr
+    r = fetch(server, '/sheet.pdf', out, '--mpn', 'SWPA4030S220MT')       # another value of the series: check its row
+    assert r.returncode == 3 and 'names only the series SWPA4030S' in r.stderr and 'named' not in r.stdout, r.stdout + r.stderr

@@ -67,6 +67,21 @@ def test_kicad_thermalvias_footprint():
     assert n == 4 and 0.40 <= area / 2.7 ** 2 <= 0.60, (area, n)
 
 
+def test_pad_left_without_paste_is_a_problem():
+    """a small exposed pad where no window fits beside the drills: every window goes, and that must not exit 0"""
+    fp = new_footprint('QFN_SMALL', descr='test')
+    fp.append(Node('pad', '17', Sym('smd'), Sym('rect'), Node('at', 0, 0), Node('size', 1.45, 1.45), Node('layers', 'F.Cu', 'F.Mask')))
+    for x in (-0.36, 0.36):
+        for y in (-0.36, 0.36):
+            fp.append(Node('pad', '', Sym('smd'), Sym('rect'), Node('at', x, y), Node('size', 0.63, 0.63), Node('layers', 'F.Paste')))
+            fp.append(Node('pad', '17', Sym('thru_hole'), Sym('circle'), Node('at', x / 0.36 * 0.425, y / 0.36 * 0.425),
+                           Node('size', 0.6, 0.6), Node('drill', 0.3), Node('layers', '*.Cu')))   # as KiCad's QFN-16 3x3
+    d = tempfile.mkdtemp()
+    src = os.path.join(d, 'QFN_SMALL.kicad_mod'); save(fp, src)
+    r = run(src, os.path.join(d, 'out.kicad_mod'))
+    assert r.returncode == 1 and 'PROBLEM exposed pad 17' in r.stdout and 'no paste left' in r.stdout, r.stdout
+
+
 if __name__ == '__main__':
     for k, f in list(globals().items()):
         if k.startswith('test_'):

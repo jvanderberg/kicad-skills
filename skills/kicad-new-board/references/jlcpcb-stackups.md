@@ -60,8 +60,9 @@ on any layer count and leave room for the fab's tolerance.
 "Min via hole size/diameter", checked 2026-10-30): "Additional charges will apply when the via hole<0.3mm and the via
 diameter<=0.4mm. No additional charge when the via hole>=0.3mm, and via diameter>=0.4mm ... For multi-layer boards, if
 the via diameter>=0.45mm, the 0.2mm hole is also without an extra charge." So:
-- 4+ layers: **0.45 / 0.2 mm is the small free via** (a 4-layer RP2350 board used 139 of them at no extra charge);
-  0.4 / 0.2 or 0.35 / 0.2 is charged.
+- 4+ layers: **0.45 / 0.2 mm is the small free via**; by the rule, 0.4 / 0.2 or 0.35 / 0.2 is charged. (A 4-layer
+  board with 139 vias at 0.45 / 0.2 and 87 at 0.4 / 0.2 was reported made at no extra charge, so JLC may not apply
+  the rule via by via; design to the rule, not to that.)
 - 1-2 layers: every hole under 0.3 mm is charged; 0.4 / 0.3 (or 0.45 / 0.3) is the small free via.
 - Leave the quote's via option at the default unless the board really has a charged via. Selecting the
   "0.2mm/(0.3/0.35mm)" option on a 5-pc 4-layer 44 x 30 mm HASL board (2026-10-30) raised the quote from $13.10 to

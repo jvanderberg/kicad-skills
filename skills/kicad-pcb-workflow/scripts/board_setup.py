@@ -10,7 +10,7 @@ Why: kicad-cli cannot create or set up a board, and pcbnew's python does not exp
 (GetStackupDescriptor() returns an opaque object in KiCad 10.0.1). This writes:
 - the board's (setup (stackup ...)) block from the table below (replacing an existing one), and the board thickness;
 - .kicad_pro design rules: comfortable values for JLC's capabilities, not their minimums (--rules jlc), or untouched;
-  the via minimums are JLC's no-extra-charge vias for the layer count (0.45 / 0.2 mm on 4+ layers, 0.45 / 0.3 on 2);
+  the via minimums are JLC's no-extra-charge vias for the layer count (0.45 / 0.2 mm on 4+ layers, 0.4 / 0.3 on 2);
 - .kicad_pro net classes: Default (0.2 mm track, 0.15 mm clearance, 0.6/0.3 mm via) plus any --class (keys track,
   clearance, via, drill), and net assignments by exact name (--assign) or wildcard pattern (--pattern, KiCad's
   netclass_patterns). A class clearance applies between that class's nets everywhere, IC pins included: a Power
@@ -64,10 +64,12 @@ def jlc_rules(layers):
     """JLC_RULES for a board of this many copper layers. JLC's quote page (checked 2026-10-30): "Additional charges
     will apply when the via hole < 0.3mm and the via diameter <= 0.4mm ... For multi-layer boards, if the via diameter
     >= 0.45mm, the 0.2mm hole is also without an extra charge." So 0.45 / 0.2 is free on 4+ layers, and on 1-2 layers
-    every hole under 0.3 mm is charged."""
+    every hole under 0.3 mm is charged (0.4 / 0.3 is the small free via there). KiCad's board rules cannot say "via >=
+    0.45 or hole >= 0.3": on 4+ layers they ask for 0.45 everywhere, so a free 0.4 / 0.3 via is flagged too (allow it
+    in the project's .kicad_dru if you want it)."""
     r = dict(JLC_RULES)
     if layers <= 2:
-        r.update(min_through_hole_diameter=0.3, min_via_diameter=0.45)
+        r.update(min_through_hole_diameter=0.3, min_via_diameter=0.4)
     return r
 
 

@@ -44,6 +44,7 @@ def test_plugin_install_pinned_by_its_files():
     lock = json.load(open(os.path.join(proj, 'kicad-skills.lock')))['kicad_skills']
     assert lock['plugin_version'] == '0.1.0' and len(lock['tree']) == 64, lock
     os.makedirs(os.path.join(scripts, '__pycache__')); open(os.path.join(scripts, '__pycache__', 'x.pyc'), 'w').write('x')
+    os.makedirs(os.path.join(scripts, '.pytest_cache', 'v')); open(os.path.join(scripts, '.pytest_cache', 'v', 'x'), 'w').write('x')
     r = sh(proj, sys.executable, rev, 'check', proj)
     assert r.returncode == 0 and r.stdout.startswith('ok') and 'plugin 0.1.0' in r.stdout, r.stdout + r.stderr
     open(os.path.join(scripts, 'projfiles.py'), 'a').write('# an update that kept the version number\n')
@@ -52,6 +53,25 @@ def test_plugin_install_pinned_by_its_files():
     json.dump({'kicad_skills': {'rev': 'a' * 40}}, open(os.path.join(proj, 'kicad-skills.lock'), 'w'))
     r = sh(proj, sys.executable, rev, 'check', proj)                   # pinned to a commit: say how to get it
     assert r.returncode == 1 and 'not a git checkout' in r.stdout and 'git checkout aaaaaaaaaaaa' in r.stdout, r.stdout
+
+
+def test_plugin_inside_a_dotfiles_repository_is_not_a_checkout():
+    """~/.claude tracked in git: the plugin under it is pinned by its files, not by the dotfiles commit"""
+    home = tempfile.mkdtemp(); root = os.path.join(home, '.claude', 'plugins', 'cache', 'm', 'kicad-skills', '0.2.0')
+    scripts = os.path.join(root, 'skills', 'kicad-pcb-workflow', 'scripts'); os.makedirs(scripts)
+    os.makedirs(os.path.join(root, '.claude-plugin'))
+    open(os.path.join(root, '.claude-plugin', 'plugin.json'), 'w').write('{"name": "kicad-skills", "version": "0.2.0"}')
+    for f in ('skills_rev.py', 'projfiles.py'):
+        shutil.copy(os.path.join(HERE, f), scripts)
+    sh(home, 'git', 'init', '-q'); sh(home, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'dotfiles')
+    proj = tempfile.mkdtemp(); os.makedirs(os.path.join(proj, '.git'))
+    rev = os.path.join(scripts, 'skills_rev.py')
+    r = sh(proj, sys.executable, rev, 'pin', proj, '--allow-unpublished')
+    lock = json.load(open(os.path.join(proj, 'kicad-skills.lock')))['kicad_skills']
+    assert 'rev' not in lock and lock['plugin_version'] == '0.2.0', (lock, r.stdout + r.stderr)
+    open(os.path.join(scripts, 'projfiles.py'), 'a').write('# edited\n')
+    r = sh(proj, sys.executable, rev, 'check', proj)
+    assert r.returncode == 1 and 'different files under skills/' in r.stdout, r.stdout
 
 
 if __name__ == '__main__':

@@ -37,12 +37,16 @@ LEDS = """<?xml version="1.0" encoding="UTF-8"?>
 <comp ref="R2"><value>330</value><footprint>R_0402</footprint></comp>
 <comp ref="R3"><value>100k</value><footprint>R_0402</footprint></comp>
 <comp ref="U1"><value>BUCK</value><footprint>SOT-23-5</footprint></comp>
+<comp ref="D2"><value>LED_Red</value><footprint>LED_0603</footprint></comp>
+<comp ref="R4"><value>470</value><footprint>R_0402</footprint></comp>
 </components><nets>
 <net code="1" name="+3V3"><node ref="R1" pin="1" pintype="passive"/><node ref="R3" pin="1" pintype="passive"/><node ref="U1" pin="1" pinfunction="VIN" pintype="power_in"/></net>
 <net code="2" name="Net-(D1-A)"><node ref="R1" pin="2" pintype="passive"/><node ref="D1" pin="2" pintype="passive"/></net>
-<net code="3" name="GND"><node ref="D1" pin="1" pintype="passive"/><node ref="R2" pin="2" pintype="passive"/><node ref="U1" pin="2" pinfunction="GND" pintype="power_in"/></net>
+<net code="3" name="GND"><node ref="D1" pin="1" pintype="passive"/><node ref="D2" pin="1" pintype="passive"/><node ref="R2" pin="2" pintype="passive"/><node ref="U1" pin="2" pinfunction="GND" pintype="power_in"/></net>
 <net code="4" name="+1V8"><node ref="R2" pin="1" pintype="passive"/><node ref="U1" pin="3" pinfunction="VOUT" pintype="power_out"/></net>
 <net code="5" name="Net-(U1-FB)"><node ref="R3" pin="2" pintype="passive"/><node ref="U1" pin="4" pinfunction="FB" pintype="input"/></net>
+<net code="6" name="/3V3_LED"><node ref="R4" pin="2" pintype="passive"/><node ref="D2" pin="2" pintype="passive"/></net>
+<net code="7" name="+5V"><node ref="R4" pin="1" pintype="passive"/><node ref="U1" pin="5" pinfunction="VBUS" pintype="power_in"/></net>
 </nets></export>"""
 
 
@@ -55,6 +59,7 @@ def test_led_resistors_are_the_ones_in_series_with_an_led():
     md = open(os.path.join(d, 'netlist.md')).read()
     sec = md[md.index('### LED series resistor power'):]
     assert 'R1 1k on +3V3' in sec and 'R2 ' not in sec and 'R3 ' not in sec, sec
+    assert 'R4 470 on +5V' in sec, sec                    # its LED node is named like a rail, but it is not one
 
 
 if __name__ == '__main__':

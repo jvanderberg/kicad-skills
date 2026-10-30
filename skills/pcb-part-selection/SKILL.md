@@ -95,8 +95,9 @@ So:
   (the user's, or browser automation) and save the PDF, or take it from the manufacturer's product page; a 404 page
   for a discontinued part is itself a lifecycle warning (TI's `https://www.ti.com/lit/ds/symlink/<part>.pdf` returned
   one, October 2026). A real PDF can be the wrong one: LCSC's viewer served an ISO certificate for two Sunlord
-  inductors (C98350, C98361, October 2026). With `--mpn`, a PDF that never names the part, or that reads like a
-  certificate, is kept but exits 3 with a WARNING: open it before relying on it. Find sections and figures with `datasheet.py find ds.pdf "Layout Example"
+  inductors (C98350, C98361, October 2026). With `--mpn`, a PDF that never names the part, names only its series
+  (a sibling's datasheet reads the same), or reads like a certificate, is kept but exits 3 with a WARNING: open it
+  before relying on it. Find sections and figures with `datasheet.py find ds.pdf "Layout Example"
   "Figure 12"` (names the page, no per-page grepping) and render them with `datasheet.py page ds.pdf N out.png`; look
   at them. When you save figure pages into the project, name which page holds which figure.
 - **Record the lifecycle status** from the manufacturer's product page next to the datasheet (`part_gate.py` reads TI's).

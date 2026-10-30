@@ -153,10 +153,16 @@ for r, c in sorted(comps.items(), key=lambda kv: natkey(kv[0])):
     if not r.startswith('R') or len(c['pins']) != 2: continue
     ns = [v[0] for v in c['pins'].values()]
     # in series: the resistor shares a node with an LED that is not a rail or ground (every LED's cathode sits on GND,
-    # so "an LED on one of its nets" listed a feedback divider and a bleed resistor as LED resistors)
-    if not any(kind(n) == 'signal' and any(x[0] in leds for x in nets[n]) for n in ns): continue
+    # so "an LED on one of its nets" listed a feedback divider and a bleed resistor as LED resistors). Judged by
+    # structure, not name: no power pins on the node, and a signal net or a small one (a node named "3V3_LED" is not
+    # the 3V3 rail)
+    def led_node(n):
+        nodes = nets[n]
+        return kind(n) != 'ground' and any(x[0] in leds for x in nodes) and \
+            not any(pt in ('power_in', 'power_out') for *_, pt in nodes) and (kind(n) == 'signal' or len(nodes) <= 3)
+    if not any(led_node(n) for n in ns): continue
     m = re.match(r'([\d.]+)\s*([kKmM]?)', c['value'] or '')
-    rail = [n for n in ns if volts(n)]
+    rail = [n for n in ns if volts(n) and not led_node(n)]           # the other side, not the LED's node
     if not m or not rail: continue
     ohm = float(m.group(1)) * {'k': 1e3, 'K': 1e3, 'M': 1e6, 'm': 1e6, '': 1}[m.group(2)]
     v = volts(rail[0]); pw = max(v - 2.0, 0) ** 2 / ohm if ohm else 0

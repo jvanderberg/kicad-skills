@@ -150,6 +150,7 @@ def test_hot_loop_return_through_vias_is_flagged():
     h = json.load(open(os.path.join(d, 'emc.json')))['coverage']['hot_loops'][0]
     assert h['status'].startswith('FLAG') and h['gnd_return']['via_share'] > 0.9, h
     assert any('leaves F.Cu through vias' in f and 'C1 and U1.GND pin' in f for f in h['electrical_flags']), h
+    assert any('through one via (0.45/0.2 mm) at [7.6, 11.6]' in f for f in h['electrical_flags']), h   # where, not only how much
     assert 'leaves F.Cu through vias' in open(os.path.join(d, 'emc.md')).read()
 
 

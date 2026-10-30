@@ -295,22 +295,25 @@ if '--no-solve' not in sys.argv:
         layer = cpad['layers'][0] if cpad['layers'] else 'F.Cu'
         st['gnd_return'] = path_check(st['gnd_net'], st['ic'], n['cap'], n['cap_gnd_pad'], layer)
         st['supply_side'] = path_check(st['in_net'], st['ic'], n['cap'], n['cap_pad'], layer)
-        flags = []
+        flags, real = [], False
         for side, d in (('ground return', st['gnd_return']), ('supply side', st['supply_side'])):
-            if d.get('error') or d.get('suspect'): flags.append('%s not solved (%s)' % (side, d.get('error') or 'grid artefact'))
-            elif d['via_share'] > 0.5:
+            if d.get('error') or d.get('suspect'):
+                flags.append('%s not solved (%s)' % (side, d.get('error') or 'grid artefact')); continue
+            bv = d['busiest_via']
+            one = ('%.0f %% through one via%s at %s' % (100 * d['busiest_via_share'], ' (%g/%g mm)' % (bv['size'], bv['drill'])
+                   if bv and bv['size'] else '', bv['at'] if bv else '?')) if d['busiest_via_share'] > 0.5 else ''
+            if d['via_share'] > 0.5:
                 # the capacitor's pad and the IC's pin are not joined on their own layer (or only by a long detour): the
                 # loop closes through an inner layer, however close the parts sit (a pin strap under the IC once split
                 # the top ground between the input capacitor and the GND pin of a buck; 79 % went through vias)
-                flags.append('%s: %.0f %% of the current leaves %s through vias - %s and %s.%s are not joined directly on that '
+                flags.append('%s: %.0f %% of the current leaves %s through vias%s - %s and %s.%s are not joined directly on that '
                              'layer, so the loop closes through an inner layer (path %.1f mOhm)' % (
-                                 side, 100 * d['via_share'], layer, n['cap'], st['ic'], 'GND pin' if side == 'ground return' else 'supply pin', d['r_mohm']))
-            elif d['busiest_via_share'] > 0.5:
-                bv = d['busiest_via']
-                flags.append('%s: %.0f %% through one via%s at %s (path %.1f mOhm)' % (side, 100 * d['busiest_via_share'],
-                             ' (%g/%g mm)' % (bv['size'], bv['drill']) if bv and bv['size'] else '', bv['at'] if bv else '?', d['r_mohm']))
+                                 side, 100 * d['via_share'], layer, ' (%s)' % one if one else '', n['cap'], st['ic'],
+                                 'GND pin' if side == 'ground return' else 'supply pin', d['r_mohm'])); real = True
+            elif one:
+                flags.append('%s: %s (path %.1f mOhm)' % (side, one, d['r_mohm'])); real = True
         st['electrical_flags'] = flags
-        if flags: st['status'] = 'FLAG: see flags (geometry ok)'
+        if real: st['status'] = 'FLAG: see flags (geometry ok)'          # "not solved" alone is coverage, not a finding
         if flags: WARN.append('hot loop %s %s (cap %s): %s' % (st['ic'], st['loop'], n['cap'], '; '.join(flags)))
 
 coverage = dict(warnings=WARN, classes={c: dict(count=len(v), nets=v[:40]) for c, v in classification_coverage().items()},

@@ -17,7 +17,8 @@ datasheets last) and the first that is a real PDF is saved, with the link it cam
 bot-protection page): nothing saved - open the URL in a browser (the user's, or browser automation), save the PDF as
 OUT, or take it from the manufacturer's product page instead. A real PDF can still be the wrong document: LCSC's viewer
 served an ISO certificate as the datasheet of two Sunlord inductors (C98350, C98361). So the saved PDF's text is
-checked: with --mpn it must name the part (spaces and dashes ignored; a series prefix is reported as such), and a
+checked: with --mpn it must name the part (spaces and dashes ignored; naming only the series prefix is a warning: a
+sibling part's datasheet reads the same), and a
 document that reads like a certificate or test report rather than a datasheet is flagged. Exit 3: saved, but it failed
 that check - open it, and find the real datasheet on the manufacturer's site if it is not one.
 find: prints every page whose text contains each phrase (case-insensitive, whitespace-insensitive), with the matching
@@ -101,20 +102,21 @@ def content_problems(pdf, mpns=()):
     txt = subprocess.run(['pdftotext', '-layout', pdf, '-'], capture_output=True, text=True, errors='replace').stdout
     if not txt.strip():
         return [], 'content not checked: no text in the PDF (scanned?) - look at it'
-    probs, notes, flat = [], [], norm(txt)
+    probs, named, flat = [], [], norm(txt)
     for m in mpns:
         n = norm(m)
         if n in flat:
+            named.append(m)
             continue
+        # only the series: a sibling's datasheet reads the same (USBLC6-2SC6's names USBLC6, not USBLC6-4SC6)
         pre = next((n[:k] for k in range(len(n) - 1, max(5, int(0.6 * len(n))) - 1, -1) if n[:k] in flat), None)
-        if pre:
-            notes.append('%s appears only as the series %s' % (m, pre))
-        else:
-            probs.append('it never mentions %s' % m)
+        probs.append('it names only the series %s, not %s: find %s in its ordering / variant table, or it is a sibling '
+                     'part\'s datasheet' % (pre, m, m) if pre else 'it never mentions %s' % m)
     head = txt[:3000]
     if CERT.search(head) and not SHEET.search(txt):
         probs.append('it reads like a certificate or test report ("%s"), not a datasheet' % CERT.search(head).group(0))
-    return probs, '; '.join(notes) or 'content checked: %s' % (', '.join(mpns) + ' named' if mpns else 'no certificate wording')
+    return probs, 'content checked: %s' % ('; '.join(['%s named' % ', '.join(named)] if named else []) or
+                                           ('no certificate wording' if not mpns else 'see WARNING'))
 
 
 def fetch(url, out, max_follow=4, mpns=()):
