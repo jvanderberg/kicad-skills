@@ -329,7 +329,7 @@ def main():
         cy = f.GetCourtyard(side)
         crt[f.GetReference()] = (cy, f.IsFlipped())
         if not a.no_courtyard and cy.OutlineCount() == 0 and f.Pads():
-            probs.append('NO COURTYARD  %s (%s): DRC cannot report overlaps with it (add_courtyard.py on its library)' %
+            probs.append('NO COURTYARD  %s (%s): DRC cannot report overlaps with it (check its spacing: layout-rules.md)' %
                          (f.GetReference(), f.GetFPID().GetUniStringLibId()))
     if not a.no_models:
         env = kicad_vars(a.board)

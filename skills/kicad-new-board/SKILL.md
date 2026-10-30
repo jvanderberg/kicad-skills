@@ -103,7 +103,8 @@ Work through these levels in order. `references/interview-guide.md` has the deta
    Extended parts and the per-part loading fee, 0402 as the smallest practical passive, the quantity, and the fact that
    every part must be in stock **in the warehouse region the assembler buys from** (international JLCPCB: LCSC
    `global`; JLC China: `cn` - stock differs between them). Write it down once as the project's `sourcing.json`
-   (pcb-part-selection `sourcing.py init`); every stock lookup reads it. Facts and sources are in
+   (pcb-part-selection `sourcing.py init`); every stock lookup reads it. Parts JLCPCB assembles use JLC's own
+   footprints, imported with JLCImport (pcb-part-selection "Importing into KiCad"). Facts and sources are in
    `references/jlcpcb-stackups.md`.
 7. **Stackup.** Decide the layer count with the rule below and record the reason.
 8. **Component selection.** For each block, two or three candidate parts or modules, checked with the

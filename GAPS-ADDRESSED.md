@@ -662,3 +662,22 @@ Where this differs from the review:
 - **Bus order** (C9): rule only; a checker would need the pin-to-side geometry of both packages at schematic time.
 - **Windows**: `kicad_locks.py` uses `ps` and `lsof` (or `/proc`); where neither exists it reports UNSURE rather than
   guessing.
+
+# JLC's own footprints for JLC-assembled parts; placement spacing by rule of thumb
+
+Source: JLCImport's production-export work (jvanderberg/kicad_jlcimport PR #121) and its geometry-checked footprint
+matcher (PR #122). JLCPCB places every part with its own EasyEDA footprint at the CPL position and rotation. On test
+boards with the same ~900 JLC parts, JLC's footprints (imported with JLCImport) solved 958 of 962 placements at high
+confidence, with 4 warnings and no polarity guesses; KiCad library footprints solved 274 of 852, with 266 warnings and
+112 polarity guesses. Every placement bug found came from bridging a KiCad footprint to JLC's (polarity naming, mirror
+numbering, the pad-1 convention). R14's "standard, verified building blocks first" no longer applies to the footprints
+of JLC-assembled parts: JLC's footprint is the verified building block there.
+
+| Item | What changed (files) | How it was verified |
+|---|---|---|
+| Footprint default for JLC-assembled parts | ps `SKILL.md` "Importing into KiCad" (JLC's footprint by default, why, when a KiCad one is fine: unpolarised chip R/C, a geometry-checked match without a polarity caveat, a board JLC does not assemble; the matcher as of PR #122, unreleased; drafts checklist kept); wf new-design.md s5, wf `SKILL.md` s1; nb `SKILL.md` step 6; rev checklist "Land pattern" | Text. `jlcimport-cli import --help` (1.6.7): no footprint-choice option. JLC's 0402 pads sit at +-0.43 mm, KiCad's at +-0.51: chip R/C are safe because they are symmetric, not identical |
+| Most EasyEDA footprints have no courtyard | No courtyards are drawn. wf layout-rules.md "Placement and mechanical": spacing between neighbours by rule of thumb (about 0.5 mm for ordinary SMD, 0.3 mm between 0402s, 1 mm around connectors / crystals / canned capacitors / rework parts, 2 mm around BGAs; flexible), from IPC-7351B's nominal courtyard allowance on both neighbours as KLC F5.3 applies it; layout-stages.md stage 1, checks.md, rev checklist s9 point there; `board_lint.py` NO COURTYARD and `fpcheck.py` (now a note, not a PROBLEM) say to check spacing | A fresh `jlcimport-cli import` of 16 parts: none had F.CrtYd. Figures: KiCad footprint generator `src/kilibs/config/ipc_configs/` (commit 36d1ed2) and the KLC source (commit 6e8cbad), October 2026 |
+| `fpcheck.py` read "SOT-23-3" as 23 leads and pin-1 dots as the F.Fab body | wf `fpcheck.py`: family numbers (SOT, TSOT, SOD, TO, SC, DO) are not lead counts, a trailing L is allowed (SOT-23-6L); EasyEDA package names parsed (lead count, `L x W` body); filled F.Fab marks ignored | `tests/test_fpcheck_packages.py` (fails on the old parser and the old PROBLEM) |
+
+Test runs: wf `python3 -m pytest -q kicad_sexpr/tests tests`: 71 passed, 2 skipped (was 69 / 2; new:
+`test_fpcheck_packages.py` x2). rev 20 passed, 2 skipped; ps 12 passed, 1 skipped; psu 4 passed (unchanged).

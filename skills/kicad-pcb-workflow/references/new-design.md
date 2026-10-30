@@ -123,13 +123,16 @@ through bodies, overlapping bodies) must be empty and `find_merges(s, NETS)` mus
 
 ## 5. Footprints
 
-- **Prefer KiCad's library footprint whenever the package is standard** (chip passives, SOT/SOD, SOIC/TSSOP, standard
-  QFN/SON variants, common connectors and fuses). Keep an imported footprint only for genuinely part-specific packages.
-  KiCad's are drawn to one convention, have courtyards and fab layers, and are maintained.
+- **Parts JLCPCB assembles use JLC's own EasyEDA footprint** (`jlcimport-cli import`, pcb-part-selection "Importing
+  into KiCad"): JLC places each part with that footprint at the CPL position and rotation, so rotation and polarity
+  come out right without a bridge between two conventions. A KiCad library footprint is fine for unpolarised chip
+  resistors and capacitors (symmetric pads) and for a geometry-checked match without a polarity caveat, and is the
+  default for a board JLCPCB does not assemble.
 - Check every assignment, library or imported: `fpcheck.py FOOTPRINT --package "<LCSC package string>" --symbol ...`
-  (pad count, body size, numbering). Automatic matchers (jlcimport's included) propose wrong pin counts and body sizes
-  often enough that each suggestion needs this check; the datasheet's land-pattern figure decides pad sizes and pitch.
-- Imported footprints without a courtyard: `add_courtyard.py LIB.pretty` (DRC cannot see overlaps otherwise).
+  (pad count, body size, numbering; it reads EasyEDA package names such as `SOT-23-3_L2.9-W1.3-...` too). The
+  datasheet's land-pattern figure decides pad sizes and pitch.
+- Most EasyEDA footprints have no courtyard, so DRC cannot report them overlapping their neighbours. Leave them as
+  they are and space parts by the rules of thumb in `layout-rules.md` "Placement and mechanical".
 
 ## 6. The board
 
