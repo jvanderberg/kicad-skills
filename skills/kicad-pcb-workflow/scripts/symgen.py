@@ -9,10 +9,13 @@
            desc='300 mA LDO')
   NFET = fet(SymLib('Device', kicad_symbol_dir() + '/Device.kicad_sym').get('Q_NMOS'), 'MYFET',
              D=['1', '2', '5'], G=['3'], S=['4'])                  # renumber D/G/S to the FOOTPRINT's pad numbers
-  library({'MYLDO': LDO, 'MYFET': NFET}).save('proj.kicad_sym')
+  save_library({'MYLDO': LDO, 'MYFET': NFET}, 'hw/proj.kicad_sym', 'Proj')   # writes it and registers Proj in
+                                                                             # hw/sym-lib-table as ${KIPRJMOD}/proj.kicad_sym
 
 ic() and fet() return kicad_sexpr symbol nodes; library() puts them in a kicad_sexpr SymbolLibrary, which owns the
 syntax (quoting, layout, version header). library_text() returns the same file as a string (for Sch.lib(text=...)).
+save_library() saves the library and registers it in the project's sym-lib-table (kicad_sexpr LibTable): use it
+instead of editing the table, so the entry is project-relative and a re-run changes nothing.
 
 Layout convention (what makes a generated sheet readable): inputs and supplies in on the left, outputs on the right,
 supply pins on top, ground on the bottom, related pins adjacent, an empty row between groups. Pin numbers must match
@@ -24,7 +27,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from kicad_sexpr import Node, SymbolLibrary, dumps, lib_pin, lib_property, lib_rectangle, lib_symbol, loads  # noqa: E402
+import kicad_locks  # noqa: E402
+from kicad_sexpr import (LibTable, Node, SymbolLibrary, dumps, find_project_dir, lib_pin, lib_property,  # noqa: E402
+                         lib_rectangle, lib_symbol, loads)
 
 L = 2.54  # pin length and pitch
 
@@ -142,3 +147,24 @@ def library(symbols, generator='symgen'):
 def library_text(symbols, generator='symgen'):
     """symbols: {name: symbol node or text} -> the text of a .kicad_sym file, written by kicad_sexpr"""
     return dumps(library(symbols, generator).tree)
+
+
+def save_library(symbols, path, nickname, project_dir=None, descr='', generator='symgen'):
+    """Write ``symbols`` to ``path`` and register ``nickname`` for it in the project's sym-lib-table. The project is
+    ``project_dir``, else the nearest folder at or above the library that holds a .kicad_pro (KiCad reads the table
+    next to the .kicad_pro, nowhere else). Returns the table's path. Raises, before writing anything, if there is no
+    project, the nickname already names another library, the file already has another nickname, the file is outside
+    the project, or the table would change while a KiCad editor holds the project."""
+    prj = project_dir or find_project_dir(path)
+    if not prj:
+        raise ValueError('no .kicad_pro at or above %s: create the project first or pass project_dir' % path)
+    table = LibTable.for_project(os.path.abspath(prj), 'sym')
+    changed = table.add(nickname, os.path.abspath(path), descr=descr or None, must_exist=False)   # written next
+    if changed and kicad_locks.status(prj)[0] in ('OPEN', 'BUSY', 'UNSURE'):
+        raise ValueError('KiCad holds %s and reads its sym-lib-table when the project opens: close it, then run again'
+                         % prj)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    library(symbols, generator).save(path)
+    if changed or not os.path.exists(table.path):
+        table.save()
+    return table.path

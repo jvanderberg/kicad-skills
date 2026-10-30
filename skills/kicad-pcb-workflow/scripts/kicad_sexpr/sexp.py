@@ -3,7 +3,7 @@
 Every KiCad text format (.kicad_sch, .kicad_pcb, .kicad_sym, .kicad_mod, .kicad_wks, fp-lib-table, ...) is one
 s-expression. This module reads any of them into a tree of plain Python values and writes the tree back the way
 KiCad does: for a file KiCad itself saved, ``dumps(loads(text)) == text`` byte for byte (the test suite checks this
-on real KiCad 10 boards, schematics, symbol and footprint libraries).
+on real KiCad 10 boards, schematics, symbol and footprint libraries and library tables).
 
 Tree model (deliberately small, no per-object classes, so no KiCad token is ever "unknown"):
 
@@ -295,6 +295,8 @@ def load(path: str) -> Node:
 
 _XY_LIMIT = 99          # KiCad keeps consecutive (xy ...) on one line until this column
 _WRAP = 72              # ... and wraps long runs of atoms after this column
+# Library tables are saved in KiCad's LIBRARY_TABLE format mode: each (lib ...) row stays on one line.
+_LIB_TABLES = ('sym_lib_table', 'fp_lib_table', 'design_block_lib_table')
 
 
 def _tokens(node: Node, out: List[str]) -> None:
@@ -308,13 +310,17 @@ def _tokens(node: Node, out: List[str]) -> None:
 
 
 def dumps(node: Node) -> str:
-    """Write a tree exactly as KiCad 10 formats its files (a port of KiCad's KICAD_FORMAT::Prettify)."""
+    """Write a tree exactly as KiCad 10 formats its files (a port of KiCad's KICAD_FORMAT::Prettify; library
+    tables in its LIBRARY_TABLE mode)."""
     toks: List[str] = []
     _tokens(node, toks)
+    lib_mode = node.head in _LIB_TABLES
     out: List[str] = []
     depth = 0
     col = 0
     in_xy = False
+    in_lib = False
+    lib_depth = 0
     multi = False
     last = ''
     for i, t in enumerate(toks):
@@ -326,14 +332,23 @@ def dumps(node: Node) -> str:
             elif in_xy and cur_xy and col < _XY_LIMIT:
                 out.append(' (')
                 col += 2
+            elif in_lib:
+                out.append(' (')
+                col += 2
             else:
                 out.append('\n' + '\t' * depth + '(')
                 col = depth + 1
             in_xy = cur_xy
+            if lib_mode and not in_lib and toks[i + 1] == 'lib':
+                in_lib = True
+                lib_depth = depth
             depth += 1
         elif t == ')':
             depth -= 1
-            if last == ')' or multi:
+            if in_lib and depth == lib_depth:
+                out.append(')')
+                in_lib = False
+            elif last == ')' or multi:
                 out.append('\n' + '\t' * depth + ')')
                 col = depth + 1
                 multi = False
@@ -345,6 +360,8 @@ def dumps(node: Node) -> str:
                 if in_xy or col < _WRAP:
                     out.append(' ')
                     col += 1
+                elif in_lib:
+                    out.append(' ')
                 else:
                     out.append('\n' + '\t' * depth)
                     col = depth

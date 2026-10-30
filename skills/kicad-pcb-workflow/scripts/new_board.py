@@ -32,7 +32,7 @@ Regenerating overwrites OUT: GUI edits made since are lost unless folded into th
 import argparse, json, os, re, sys, xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from kicad_sexpr import Board, Node, Project, Sym, board_net_name, load  # noqa: E402
+from kicad_sexpr import Board, Node, Project, Sym, board_net_name, resolve_libraries  # noqa: E402
 
 # footprint attributes the schematic owns (netlist property -> footprint attr token), and KiCad's order in (attr ...)
 SCH_ATTRS = (('exclude_from_pos_files', 'exclude_from_pos_files'), ('exclude_from_bom', 'exclude_from_bom'), ('dnp', 'dnp'))
@@ -63,37 +63,10 @@ def set_sch_attrs(fp, flags):
 
 # ------------------------------------------------------------------ libraries
 
-def kicad_fp_dir():
-    for c in (os.environ.get('KICAD10_FOOTPRINT_DIR'), os.environ.get('KICAD9_FOOTPRINT_DIR'),
-              '/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints', '/usr/share/kicad/footprints',
-              'C:/Program Files/KiCad/10.0/share/kicad/footprints'):
-        if c and os.path.isdir(c):
-            return c
-    return ''
-
-
-def global_fp_table():
-    home = os.path.expanduser('~')
-    for c in (os.path.join(home, 'Library/Preferences/kicad/10.0/fp-lib-table'), os.path.join(home, '.config/kicad/10.0/fp-lib-table'),
-              os.path.join(os.environ.get('APPDATA', ''), 'kicad/10.0/fp-lib-table'),
-              os.path.join(home, 'Library/Preferences/kicad/9.0/fp-lib-table'), os.path.join(home, '.config/kicad/9.0/fp-lib-table')):
-        if os.path.exists(c):
-            return c
-    return None
-
-
-def read_fp_table(path, prjdir):
-    """{nickname: library directory} from an fp-lib-table, with ${VAR} expanded (KIPRJMOD = prjdir)."""
-    libs = {}
-    if not path or not os.path.exists(path):
-        return libs
-    env = dict(os.environ, KIPRJMOD=prjdir)
-    env.setdefault('KICAD10_FOOTPRINT_DIR', kicad_fp_dir()); env.setdefault('KICAD9_FOOTPRINT_DIR', kicad_fp_dir())
-    for lib in load(path).nodes('lib'):
-        name, uri = lib.get('name'), lib.get('uri')
-        if name is not None and uri is not None:
-            libs[str(name)] = re.sub(r'\$\{(\w+)\}', lambda m: env.get(m.group(1), m.group(0)), str(uri))
-    return libs
+def footprint_libraries(prjdir):
+    """{nickname: library directory} as KiCad sees the project: global fp-lib-table, then the project's (later rows
+    win, a disabled row hides the library), variables expanded (KIPRJMOD = prjdir)."""
+    return resolve_libraries(prjdir, 'fp')
 
 
 # ------------------------------------------------------------------ board
@@ -122,8 +95,7 @@ def main():
     ap.add_argument('--previous', help='board whose item ids to keep (default: OUT if it exists; "none" = none)')
     a = ap.parse_args()
     prj = os.path.abspath(a.project_dir or os.path.dirname(os.path.abspath(a.out)))
-    libs = read_fp_table(global_fp_table(), prj)
-    libs.update(read_fp_table(os.path.join(prj, 'fp-lib-table'), prj))
+    libs = footprint_libraries(prj)
     ox, oy = map(float, a.origin.split(','))
     place = json.load(open(a.placement)) if a.placement else {}
     labels = json.load(open(a.labels)) if a.labels else {}
