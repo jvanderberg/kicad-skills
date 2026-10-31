@@ -28,7 +28,8 @@ if len(sys.argv) > 1 and sys.argv[1].endswith('.kicad_pcb'):
         sys.exit('kicad-cli could not refill the copy (%s): stopping - checking stale fills would look like a pass' % (r.stderr or r.stdout)[-300:])
     kpy = kicad_python()
     if not kpy: sys.exit('no KiCad python with pcbnew (set KICAD_PYTHON)')
-    r = subprocess.run([kpy, os.path.join(HERE, 'boarddump.py'), os.path.join(tmp, name), tmp], capture_output=True, text=True)
+    r = subprocess.run([kpy, os.path.join(HERE, 'boarddump.py'), os.path.join(tmp, name), tmp, '--no-connectivity'],
+                       capture_output=True, text=True)
     if not os.path.exists(os.path.join(tmp, 'board.json')):
         sys.exit('boarddump.py failed: %s' % r.stderr[-300:])
     sys.argv[1] = tmp
@@ -50,7 +51,7 @@ def landing(net, L):
         g += [pg for _, _, pg in pad_geoms(net, L)]
         _land[(net, L)] = unary_union([x for x in g if not x.is_empty])
     return _land[(net, L)]
-holes = [(v['x'], v['y'], v['net']) for v in B['vias']] + [(p['x'], p['y'], p['net']) for f in B['footprints'] for p in f['pads'] if p['th']]
+holes = [(v['x'], v['y'], v['net'], via_span(v)) for v in B['vias']] + [(p['x'], p['y'], p['net'], LAYERS) for f in B['footprints'] for p in f['pads'] if p['th']]
 found, local, checked = [], set(), 0
 for L in LAYERS:
     nets = sorted({z['net'] for z in B['zones'] if not z['keepout'] and L in z['filled'] and z['net']}, key=natkey)
@@ -66,9 +67,9 @@ for L in LAYERS:
             checked += 1
             shapely.prepare(pc)
             n = 0
-            for x, y, hn in holes:
-                if hn != net or not pc.contains(Point(x, y)): continue
-                if any(landing(net, L2).intersects(Point(x, y)) for L2 in others): n += 1
+            for x, y, hn, span in holes:                 # a blind / buried via joins only the layers it spans
+                if hn != net or L not in span or not pc.contains(Point(x, y)): continue
+                if any(L2 in span and landing(net, L2).intersects(Point(x, y)) for L2 in others): n += 1
             if n < MIN_V:
                 c = pc.representative_point()
                 found.append('%s %s pour piece on %s, %.1f mm^2 at (%.2f, %.2f) bbox %s: %d via(s) to its plane (%s), %d needed' % (
@@ -103,6 +104,7 @@ for t in B['tracks']:
             void.append('OVER VOID %s on %s: %.2f mm with no copper on %s from (%.2f, %.2f) to (%.2f, %.2f)' % (
                 t['net'], t['layer'], span, ref, P[i, 0], P[i, 1], P[j, 0], P[j, 1]))
         i = j + 1
+if SPAN_WARNING: print('  !!', SPAN_WARNING)
 for line in found + void: print(line)
 print('%d pour piece(s) checked%s: %d weak or isolated (fewer than %d vias to their plane); %d track span(s) over nothing; '
       'nets with no copper on another layer (not judged): %s' % (checked, ' in the window' if WIN is not None else '', len(found),

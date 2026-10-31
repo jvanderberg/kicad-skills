@@ -90,7 +90,7 @@ for f in B['footprints']:
     for p in f['pads']:
         for L in p['layers']: NETS_ON[L].add(p['net'])
 for v in B['vias']:
-    for L in LAYERS: NETS_ON[L].add(v['net'])
+    for L in via_span(v): NETS_ON[L].add(v['net'])
 NET_ID = {n: i for i, n in enumerate(sorted({n for s in NETS_ON.values() for n in s}))}
 GEO = {}
 def geo(net, L):
@@ -128,14 +128,14 @@ def cell_of(x, y):
     return (r, c) if 0 <= r < NY and 0 <= c < NX else None
 
 # vias and plated holes: they join the layers where they land on copper of their own net
-HOLES = [dict(x=v['x'], y=v['y'], d=v['drill'], net=v['net'], kind='via', type=v.get('type_name')) for v in B['vias']]
+HOLES = [dict(x=v['x'], y=v['y'], d=v['drill'], net=v['net'], kind='via', type=v.get('type_name'), layers=via_span(v)) for v in B['vias']]
 HOLES += [dict(x=p['x'], y=p['y'], d=p['drill'], net=p['net'], kind='pad', ref=f['ref'], pad=p['num'], layers=p['layers'])
           for f in B['footprints'] for p in f['pads'] if p['th'] and p['drill'] > 0]
 for hh in HOLES:
     pt = Point(hh['x'], hh['y'])
-    hh['landed'] = [i for i, L in enumerate(LAYERS) if (hh['kind'] == 'pad' and L in hh['layers'] and not hh['net']) or geo(hh['net'], L).intersects(pt)]
-nonthrough = [h_ for h_ in HOLES if h_['kind'] == 'via' and h_.get('type') not in (None, 'through')]
-if nonthrough: TW.append('%d blind/buried/micro vias treated as through vias (their real span is shorter: they join fewer layers)' % len(nonthrough))
+    hh['landed'] = [i for i, L in enumerate(LAYERS) if (hh['kind'] == 'pad' and L in hh['layers'] and not hh['net'])
+                    or ((hh['kind'] == 'pad' or L in hh['layers']) and geo(hh['net'], L).intersects(pt))]   # a via: its span
+if SPAN_WARNING: TW.append(SPAN_WARNING)
 if B['vias'] and all(v.get('type_name') is None for v in B['vias']):
     TW.append('board.json has no via type names (dumped by an older boarddump.py): every via treated as a through via')
 VIAS = []

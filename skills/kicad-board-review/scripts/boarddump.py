@@ -1,12 +1,15 @@
 # Run with KiCad's bundled python (it has pcbnew):
 #   <kicad-python> boarddump.py board.kicad_pcb PACK_DIR
-# Dumps copper geometry (pads, tracks, arcs, vias, the zone fills KiCad saved, board outline, stackup) to PACK_DIR/board.json
-# for the analysis scripts, which run in a normal venv (numpy, scipy, shapely>=2, matplotlib).
+# Dumps copper geometry (pads, tracks, arcs, vias, the zone fills KiCad saved, board outline, stackup) and KiCad's own
+# connectivity (which copper items touch) to PACK_DIR/board.json for the analysis scripts, which run in a normal venv
+# (numpy, scipy, shapely>=2, matplotlib).
 # It never refills zones: refill first with `kicad-cli pcb drc --refill-zones --save-board` on a COPY, so the analysis sees
 # exactly the copper KiCad would plot.
-import argparse, json, sys, re, os
+import argparse, collections, itertools, json, sys, re, os
 ap = argparse.ArgumentParser(description='Dump a board\'s copper geometry to PACK_DIR/board.json for the analysis scripts.')
 ap.add_argument('board', help='the .kicad_pcb (zones refilled on a copy first)'); ap.add_argument('pack', metavar='PACK_DIR')
+ap.add_argument('--no-connectivity', action='store_true', help='skip KiCad\'s connectivity (decoupling.py needs it; '
+                'pour_check.py and the router do not)')
 args = ap.parse_args()                              # before the re-exec: --help and a missing argument need no KiCad
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from interp import need; need('pcbnew')            # started with another python: re-run under KiCad's
@@ -64,10 +67,17 @@ D = dict(source=os.path.abspath(src), layers=[LN[l] for l in cu], layer_names={L
          pad_poly=dict(error_mm=0.005, error_side='outside'))
 bb = b.GetBoardEdgesBoundingBox(); D['edge_bbox'] = [mm(bb.GetX()), mm(bb.GetY()), mm(bb.GetRight()), mm(bb.GetBottom())]
 eps = pcbnew.SHAPE_POLY_SET(); b.GetBoardPolygonOutlines(eps, True); D['edge'] = poly_set(eps)
+ITEMS, ID, DUP = [], {}, set()   # (id, item) of every copper item on a net, uuid -> id, uuids used twice
+def ident(iid, item):
+    if item.GetNetCode() > 0:
+        u = item.m_Uuid.AsString()
+        if u in ID: DUP.add(u)
+        ITEMS.append((iid, item)); ID[u] = iid
 for f in b.GetFootprints():
     fd = dict(ref=f.GetReference(), value=f.GetValue(), fp=str(f.GetFPID().GetLibItemName()), lib=str(f.GetFPID().GetLibNickname()),
               x=mm(f.GetPosition().x), y=mm(f.GetPosition().y), rot=f.GetOrientationDegrees(), side='B' if f.IsFlipped() else 'F', pads=[])
-    for p in f.Pads():
+    for k, p in enumerate(f.Pads()):
+        ident('p%d.%d' % (len(D['footprints']), k), p)
         layers = [LN[l] for l in cu if p.IsOnLayer(l)]
         shp = pcbnew.SHAPE_POLY_SET()
         # ERROR_OUTSIDE: the polygon contains the true pad (arcs approximated outward), so a clearance measured to it
@@ -80,16 +90,21 @@ for f in b.GetFootprints():
 _VT = {getattr(pcbnew, 'VIATYPE_' + k): k.lower() for k in ('THROUGH', 'BLIND', 'BURIED', 'BLIND_BURIED', 'MICROVIA') if hasattr(pcbnew, 'VIATYPE_' + k)}
 for t in b.GetTracks():
     if t.GetClass() == 'PCB_VIA':
+        ident('v%d' % len(D['vias']), t)
         D['vias'].append(dict(x=mm(t.GetPosition().x), y=mm(t.GetPosition().y), net=t.GetNetname(), size=mm(t.GetWidth(pcbnew.F_Cu)),
                               drill=mm(t.GetDrillValue()), type=int(t.GetViaType()), type_name=_VT.get(t.GetViaType(), 'unknown'),
                               layers=[LN[t.TopLayer()], LN[t.BottomLayer()]]))   # the span: blind / buried vias join only these
     elif t.GetClass() == 'PCB_ARC':
+        ident('t%d' % len(D['tracks']), t)
         D['tracks'].append(dict(a=(mm(t.GetStart().x), mm(t.GetStart().y)), m=(mm(t.GetMid().x), mm(t.GetMid().y)), b=(mm(t.GetEnd().x), mm(t.GetEnd().y)),
                                 w=mm(t.GetWidth()), layer=pcbnew.BOARD.GetStandardLayerName(t.GetLayer()), net=t.GetNetname(), arc=True))
     else:
+        ident('t%d' % len(D['tracks']), t)
         D['tracks'].append(dict(a=(mm(t.GetStart().x), mm(t.GetStart().y)), b=(mm(t.GetEnd().x), mm(t.GetEnd().y)), w=mm(t.GetWidth()),
                                 layer=pcbnew.BOARD.GetStandardLayerName(t.GetLayer()), net=t.GetNetname()))
+ZONES = []
 for z in b.Zones():
+    if not z.GetIsRuleArea() and z.GetNetCode() > 0: ZONES.append((len(D['zones']), z))
     zd = dict(net=z.GetNetname(), name=z.GetZoneName(), prio=z.GetAssignedPriority(), keepout=z.GetIsRuleArea(), layers=[], outline=poly_set(z.Outline()),
               min_w=mm(z.GetMinThickness()), clearance=mm(z.GetLocalClearance() or 0), filled={})
     for l in cu:
@@ -100,5 +115,98 @@ for z in b.Zones():
 ds = b.GetDesignSettings()
 for name, nc in ds.m_NetSettings.GetNetclasses().items():
     D['netclass'][str(name)] = dict(track=mm(nc.GetTrackWidth()), clearance=mm(nc.GetClearance()), via=mm(nc.GetViaDiameter()))
+
+def connectivity():
+    """KiCad's own connectivity (BuildConnectivity: what the ratsnest and DRC's unconnected items come from) as links
+    between board.json items: "t<i>" tracks[i], "v<i>" vias[i], "p<f>.<k>" footprints[f].pads[k] and
+    "z<i>/<layer>/<j>" piece j of zones[i].filled[layer]. Tracks, arcs, vias and pads: the items KiCad connects each one
+    to (GetConnectedTracks / GetConnectedPads) - T-joins, crossings, vias mid-track, overlapping pads, copper touching
+    an arc. Zones: the items KiCad connects to the zone (thermal-relief spokes and a track crossing a pour included),
+    each joined to the fill piece its copper collides with on each layer (KiCad's own shapes); two same-net zones join
+    where their fills collide. The links are then checked against KiCad's clusters (GetConnectedItems): a cluster they
+    leave split, joined through copper board.json does not record (a copper shape, a footprint's own zone), gets a
+    "cluster" link and a warning; one they merge that KiCad keeps apart is a warning."""
+    b.BuildConnectivity(); cn = b.GetConnectivity(); cn.RecalculateRatsnest()
+    uid = lambda o: o.m_Uuid.AsString()
+    links, warn = {}, []
+    if DUP:              # a uuid two items share cannot say which one KiCad returned: never map it (their own queries
+        for u in DUP: del ID[u]                          # below still link them; their zone joins fall to the cluster check)
+        warn.append('%d uuid(s) shared by several items (copied pads?): their zone joins are left to the cluster check' % len(DUP))
+    def link(a, c, kind='touch'):
+        if a != c: links.setdefault(tuple(sorted((a, c))), kind)
+    for iid, it in ITEMS:
+        for o in list(cn.GetConnectedTracks(it)) + list(cn.GetConnectedPads(it)):
+            if uid(o) in ID: link(iid, ID[uid(o)])
+    pieces = collections.defaultdict(list)               # zone index -> [(layer, piece index, polygon set, its bbox)]
+    for zi, z in ZONES:
+        for l in cu:
+            if z.IsOnLayer(l):
+                ps = z.GetFilledPolysList(l)
+                for j in range(ps.OutlineCount()):
+                    pc = ps.Subset(j, j + 1); pieces[zi].append((l, j, pc, pc.BBox()))
+    pid = lambda zi, l, j: 'z%d/%s/%d' % (zi, LN[l], j)
+    lost = 0
+    for zi, z in ZONES:
+        for o in list(cn.GetConnectedTracks(z)) + list(cn.GetConnectedPads(z)):
+            iid = ID.get(uid(o))
+            if not iid: continue
+            ob = o.GetBoundingBox()
+            hits = [pid(zi, l, j) for l, j, ps, bb in pieces[zi] if o.IsOnLayer(l) and bb.Intersects(ob) and ps.Collide(o.GetEffectiveShape(l))]
+            for h in hits: link(iid, h)
+            lost += not hits
+    if lost: warn.append('%d item(s) KiCad connects to a zone collide with none of its fill pieces: left to the cluster check' % lost)
+    same = collections.defaultdict(list)                 # (net, layer) -> its fill pieces
+    for zi, z in ZONES:
+        for l, j, ps, bb in pieces[zi]: same[(z.GetNetCode(), l)].append((zi, l, j, ps, bb))
+    for grp in same.values():
+        for (za, la, ja, pa, ba), (zc, lc, jc, pc, bc) in itertools.combinations(grp, 2):
+            if za != zc and ba.Intersects(bc) and pa.Collide(pc): link(pid(za, la, ja), pid(zc, lc, jc))
+    parent = {}
+    def find(x):
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x]); x = parent[x]
+        return x
+    for a, c in links: parent[find(a)] = find(c)
+    clusters, kc, unrec = [], {}, collections.Counter()
+    try:
+        if ITEMS: cn.GetConnectedItems(ITEMS[0][1])
+        ask = True
+    except TypeError:                                     # a KiCad whose python cannot ask for an item's cluster
+        warn.append('links not checked against KiCad\'s clusters (GetConnectedItems not callable in KiCad %s)' % pcbnew.Version())
+        ask = False
+    for iid, it in ITEMS if ask else ():
+        if iid in kc: continue
+        mem = {iid}
+        for o in cn.GetConnectedItems(it):
+            if uid(o) in ID: mem.add(ID[uid(o)])
+            elif o.GetClass() != 'ZONE' or o.GetParentFootprint(): unrec[o.GetClass()] += 1
+        for j in mem: kc[j] = len(clusters)
+        clusters.append(mem)
+    split = 0
+    for mem in clusters:
+        roots = {}
+        for j in sorted(mem): roots.setdefault(find(j), j)
+        if len(roots) > 1:
+            split += 1; first = min(roots.values())
+            for j in roots.values():
+                if j != first: link(first, j, 'cluster'); parent[find(j)] = find(first)
+    if split:
+        warn.append('%d KiCad cluster(s) joined through copper board.json does not record (%s): joined by a straight '
+                    '"cluster" link' % (split, ', '.join('%d %s' % kv for kv in sorted(unrec.items())) or 'unknown items'))
+    comps = collections.defaultdict(set)
+    for j, k in kc.items(): comps[find(j)].add(k)
+    merged = sum(len(ks) - 1 for ks in comps.values())
+    if merged:
+        warn.append('the links join %d pair(s) of copper that KiCad keeps apart (a fill piece chosen by collision)' % merged)
+    return dict(source='KiCad %s connectivity' % pcbnew.Version(), unconnected=cn.GetUnconnectedCount(False),
+                links=[[a, c] if k == 'touch' else [a, c, k] for (a, c), k in sorted(links.items())], warnings=warn)
+if not args.no_connectivity:
+    try:
+        D['connectivity'] = connectivity()
+    except Exception as e:                               # never lose the geometry the other scripts need to it
+        print('  !! connectivity not recorded (%s: %s): decoupling.py will say NOT CHECKED' % (type(e).__name__, e), file=sys.stderr)
 json.dump(D, open(os.path.join(pack, 'board.json'), 'w'))
-print(len(D['footprints']), 'footprints', len(D['tracks']), 'tracks', len(D['vias']), 'vias', len(D['zones']), 'zones,', len(cu), 'copper layers')
+C = D.get('connectivity') or dict(links=[], warnings=[])
+print(len(D['footprints']), 'footprints', len(D['tracks']), 'tracks', len(D['vias']), 'vias', len(D['zones']), 'zones,', len(cu), 'copper layers,',
+      len(C['links']), 'connectivity links')
+for w in C['warnings']: print('  !! connectivity:', w)

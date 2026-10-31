@@ -58,12 +58,12 @@ def solve(net, source, sinks, h=0.15, t_in=None, region=None, extra_vias=()):
                     d = dr * dr + dc * dc
                     if best is None or d < best[0]: best = (d, idx[L][R_, C_])
         return None if best is None else best[1]
-    barrels = [(v['x'], v['y'], v['drill']) for v in B['vias'] if v['net'] == net] + list(extra_vias)
-    barrels += [(p['x'], p['y'], p['drill']) for f in B['footprints'] for p in f['pads'] if p['net'] == net and p['th'] and p['drill'] > 0]
+    barrels = [(v['x'], v['y'], v['drill'], via_span(v)) for v in B['vias'] if v['net'] == net] + [(x, y, d, LAYERS) for x, y, d in extra_vias]
+    barrels += [(p['x'], p['y'], p['drill'], LAYERS) for f in B['footprints'] for p in f['pads'] if p['net'] == net and p['th'] and p['drill'] > 0]
     links = []
-    for (x, y, d) in barrels:
+    for (x, y, d, span) in barrels:                     # a blind / buried via joins only the layers it spans
         if region is not None and not region.contains(Point(x, y)): continue
-        cs = [(L, cell(L, x, y)) for L in sorted(LAYERS, key=lambda l: STACK[l]['z'])]
+        cs = [(L, cell(L, x, y)) for L in sorted(span, key=lambda l: STACK[l]['z'])]
         cs = [(L, c) for L, c in cs if c is not None]
         for (La, a), (Lb, b) in zip(cs, cs[1:]):
             dz = max(STACK[Lb]['z'] - STACK[La]['z'], 0.05) * 1e-3
