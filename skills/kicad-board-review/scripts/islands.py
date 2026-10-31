@@ -24,8 +24,8 @@ if not ISL:
                 'into the main pour is same-net copper, invisible to DRC and to the hot-loop table%s; declare each island '
                 '(net, layer, its pads, allowed joins) from the datasheet layout rules' % (
                     ' (%d switching IC(s) on this board)' % sw if sw else ''))
-holes = [(v['x'], v['y'], v['net'], 'via %.2f/%.2f' % (v['size'], v['drill'])) for v in B['vias']]
-holes += [(p['x'], p['y'], p['net'], 'plated hole %s.%s' % (f['ref'], p['num'])) for f in B['footprints'] for p in f['pads'] if p['th']]
+holes = [(v['x'], v['y'], v['net'], 'via %.2f/%.2f' % (v['size'], v['drill']), via_span(v)) for v in B['vias']]
+holes += [(p['x'], p['y'], p['net'], 'plated hole %s.%s' % (f['ref'], p['num']), LAYERS) for f in B['footprints'] for p in f['pads'] if p['th']]
 for k, isl in enumerate(ISL):
     name = isl.get('name') or 'island %d' % (k + 1)
     net, L = isl.get('net'), layer_key(isl.get('layer', LAYERS[0]))
@@ -52,7 +52,7 @@ for k, isl in enumerate(ISL):
     others = sorted({'%s.%s' % (f['ref'], p['num']) for f in B['footprints'] for p in f['pads']
                      if p['net'] == net and L in p['layers'] and (f['ref'], str(p['num'])) not in declared
                      and piece.intersects(Point(p['x'], p['y']))}, key=natkey)
-    joins = [dict(at=[round(x, 2), round(y, 2)], what=w) for x, y, n_, w in holes if n_ == net and piece.contains(Point(x, y))]
+    joins = [dict(at=[round(x, 2), round(y, 2)], what=w) for x, y, n_, w, span in holes if n_ == net and L in span and piece.contains(Point(x, y))]
     ja = isl.get('join_at') or []
     stray = [j for j in joins if ja and not any(math.dist(j['at'], q) <= 0.5 for q in ja)]
     total = sum(pc.area for pc in pieces)

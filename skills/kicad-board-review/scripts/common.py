@@ -135,11 +135,23 @@ def pad_geoms(net=None, layer=None):
             ps = polys(p['poly'])
             if ps: yield f, p, unary_union(ps)
 
+_SPANLESS = [v for v in B['vias'] if v.get('type_name') not in (None, 'through') and not v.get('layers')]
+if _SPANLESS:
+    WARN.append('%d blind/buried/micro vias with no layer span in board.json (an older boarddump.py), treated as through '
+                'vias (they may join layers they do not reach): re-run make_pack.sh' % len(_SPANLESS))
+
+def via_span(v):
+    """the copper layers a via joins, top to bottom: the run between the outermost layers board.json records for it
+    (all of them for a through via, or one without a record)"""
+    ix = sorted(LAYERS.index(L) for L in v.get('layers') or () if L in LAYERS)
+    return LAYERS[ix[0]:ix[-1] + 1] if ix else list(LAYERS)
+
 def copper(net, layer):
+    """a net's copper on one layer, merged: fill, tracks, pads and the vias that span the layer"""
     g = [zone_fill(net, layer)]
     g += [track_geom(t) for t in B['tracks'] if t['net'] == net and t['layer'] == layer]
     g += [pg for _, _, pg in pad_geoms(net, layer)]
-    g += [Point(v['x'], v['y']).buffer(v['size'] / 2, 8) for v in B['vias'] if v['net'] == net]
+    g += [Point(v['x'], v['y']).buffer(v['size'] / 2, 8) for v in B['vias'] if v['net'] == net and layer in via_span(v)]
     return unary_union([x for x in g if not x.is_empty])
 
 def natkey(s): return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', s)]

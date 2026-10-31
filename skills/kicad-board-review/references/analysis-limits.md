@@ -43,12 +43,15 @@
 - **Same-net isolation** (`islands.py`) is checked only for the islands the config declares, on KiCad's saved fills
   of the copy; an island's pad list must name every pad that belongs to it (any other pad of the net in the piece is a
   merge).
-- **Decoupling paths** (`decoupling.py`) follow the net's own copper: tracks joined where their copper overlaps
-  (T-joins, crossings), vias on the layers they span, and straight lines across a filled piece (a plane path around a
-  slot is longer than that). Not joined, although KiCad joins them: a pad on a pour by thermal-relief spokes whose
-  centre is outside the fill, a track crossing a pour with no vertex in it, overlapping pads with neither centre in
-  the other, copper touching an arc beyond its chords. A FAIL "no capacitor reachable" on such a pin is checked in a
-  render before it is reported. Inductance: microstrip
+- **Decoupling paths** (`decoupling.py`) follow the net's own copper as KiCad connects it: `boarddump.py` records
+  KiCad's own connectivity (the links behind the ratsnest and DRC's unconnected items: thermal-relief spokes, tracks
+  across a pour, overlapping pads, arcs, vias on the layers they span), and the script only measures. A FAIL "no
+  capacitor reachable" is therefore copper DRC also reports unconnected; the coverage compares the unconnected count
+  of the links with KiCad's and DRC's. Lengths are approximate where copper meets: two tracks at their closest points,
+  a via or pad at the track point nearest its centre, a fill piece from a via or pad centre or from where a track's
+  centreline enters it, and a straight line across the piece (a plane path around a slot is longer than that). Copper
+  board.json does not record (a copper shape, a footprint's own zone) still joins, as a straight line (a warning says
+  so). Inductance: microstrip
   per-length value per track (closed form over the nearest copper layer) plus via barrels; plane spreading inductance
   and the capacitor's own mounting are not included. Supply pins are found by pin type, supply-pin name or a power
   class; an imported symbol with every pin "passive" and odd names can hide one.

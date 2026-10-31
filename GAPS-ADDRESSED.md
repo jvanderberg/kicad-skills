@@ -817,3 +817,77 @@ part_gate (the ti.com store lookup replaces the name guessing); decoupling's pad
 connectivity from boarddump replaces the geometry).
 
 Test runs: wf 118 passed, 2 skipped; rev 31 passed, 2 skipped; ps 28 passed, 1 skipped; psu 4 passed.
+
+## Decoupling on KiCad's own connectivity (after PR #10)
+
+PR #10's reviews kept finding joins KiCad makes and `decoupling.py`'s shapely rebuild of connectivity did not, each a
+false "no capacitor reachable" or a longer path: thermal-relief pads whose centre is off the fill, a track crossing a
+pour with no vertex in it, overlapping pads, copper touching an arc beyond its chords; and no spatial index. The graph
+no longer derives connectivity at all.
+
+- `boarddump.py` records KiCad's connectivity in board.json `"connectivity"`: links between items (`t<i>` track,
+  `v<i>` via, `p<f>.<k>` pad, `z<i>/<layer>/<j>` zone fill piece), KiCad's unconnected count and warnings. KiCad 10.0.1's
+  python cannot pass a `std::vector<KICAD_T>` (no SWIG typemap), so `GetConnectedItemsAtAnchor` and `GetNetItems` are
+  unusable; `GetConnectedTracks` / `GetConnectedPads` give each track, arc, via, pad and zone its direct neighbours
+  (the zone call includes thermal-relief pads and a track crossing the pour). The fill piece an item joins is the one
+  its copper collides with (KiCad's own shapes, `SHAPE_POLY_SET.Collide`); same-net zones join where their fills
+  collide. The links are then checked against KiCad's clusters (`GetConnectedItems`): a cluster they leave split
+  (copper board.json does not record: copper shapes, footprint zones) gets a straight "cluster" link and a warning,
+  and one they merge is a warning. On all three boards below: no split, no merge, no warning.
+- `decoupling.py` builds its graph from the links. Nodes belong to an item, so nothing joins that KiCad does not join;
+  shapely only places the touch points (closest points of two tracks, the track point nearest a via or pad centre,
+  where a track's centreline enters a fill piece) and measures, with arcs measured along the arc. Its coverage gains
+  `connectivity`: the links' unconnected count next to KiCad's and DRC's, with a warning when they differ. A
+  board.json without connectivity is NOT CHECKED (re-run make_pack.sh); there is no geometric fallback.
+- Via spans (`common.via_span`): `common.copper()` put every via on every layer. It now puts a via only on the layers
+  it spans, as do the FEM barrels (`fem.py`, used by power.py and the hot-loop solve), thermal.py's holes, islands.py's
+  joins and pour_check.py's via count. The other scripts keep solving on merged copper geometry and do not use the
+  links: their question is physical copper (a grid or a piece), and overlapping same-net copper is joined there by
+  construction.
+
+Fields: every `decoupling.json` pin field is unchanged. The FAIL text no longer says "check it before reporting" (it
+says DRC reports the net unconnected); `coverage.connectivity` is new; `board.json` gains `connectivity`.
+
+### Evidence
+
+Tests (`skills/kicad-board-review/scripts/tests/test_pack_checks.py`). The decoupling tests now write each synthetic
+board as a real `.kicad_pcb`, fill and check it with kicad-cli DRC and dump it with boarddump.py (`through_kicad`; a
+skip without KiCad), so every join is KiCad's:
+
+| Case | Result | On the old graph (same KiCad-dumped board) |
+|---|---|---|
+| thermal-relief pads at the pour's edges, both centres off the fill (asserted) | C1 across the pour, 8.88 mm | FAIL no capacitor reachable |
+| track crossing a pour, no vertex inside | C2: 4.0 mm of track to the fill edge + plane | FAIL |
+| two pads overlapping at a corner, neither centre in the other | C3, 1.13 mm | FAIL |
+| track ending on an arc 1.46 mm beyond its chords | C4, arc length to the touch point + track (7.41 mm) | FAIL |
+| a pin with no copper to its cap, a floating track, a pour with no pad | FAIL; links 6 = KiCad 6 = DRC 6 unconnected (the floating track counts, the pad-less pour does not, as in KiCad) | - |
+| T-join, crossing, parallel run (boundaries either side), mid-segment via, blind-via span, fill pieces, microstrip inductance | unchanged expectations, all pass through KiCad | - |
+| old dump: NOT CHECKED and a spanless-via warning; a blind via only on its span in `copper()`; not an island join (islands.py); not a plane via (pour_check.py) | pass | islands FAIL "2 vias join it"; pour_check WEAK for ISOLATED |
+
+Real boards (copies; packs built with make_pack.sh before and after; zones refilled by DRC):
+
+| Board | Links | Unconnected: links / KiCad / DRC | decoupling.py | boarddump.py |
+|---|---|---|---|---|
+| pico-stretch2 | 1913 | 0 / 0 / 0 | 0.11 -> 0.10 s | 0.87 -> 0.97 s |
+| minipc-power | 1288 | 0 / 0 / 0 | 0.12 -> 0.10 s | 0.30 -> 0.47 s |
+| usb-uart | 819 | 0 / 0 / 0 | 0.10 -> 0.09 s | 0.25 -> 0.32 s |
+
+(median of 5 runs, including python start-up). planes.json, emc.json and islands.json are identical before and after,
+and thermal.json differs only in its solve time: every via on these boards is a through via.
+
+`decoupling.json` before -> after, every change:
+
+- minipc U1.8 (VBUS): FAIL -> C2, 22.6 mm (FLAG 13.5 mm of track). The path leaves F.Cu and comes back up a via whose
+  ring reaches the VBUS fill but whose centre is off it.
+- minipc U4.8 (Net-(Q4-S)): FAIL -> C14, 3.1 mm across the pour. The pin's pad overlaps the fill by 0.013 mm^2,
+  centre off it. These two are the pad/via-on-a-pour gap: 41 pad and via joins to a fill on these three boards have
+  their centre off the piece (pico 25, minipc 15, usb-uart 1); the old graph joined none of them directly.
+- pico U1.64 (3V3): C9 at 2.24 mm -> C12 at 1.48 mm, across the pour. The pin's pad joins two 3V3 fills with its
+  edge; C12 is on the one its centre is not in. So U1.60, U1.68 and U1.69 each count one more capacitor within 5 mm.
+- Track entering a pour (pico U1.5, .15, .24, .29, .41, .50, .65; minipc U2.24, U6.10; usb-uart U4.2, U4.4): the
+  track joins the fill where its centreline enters it, not at a vertex further in, so 0.1-1.7 mm of track becomes a
+  straight line across the plane (path lengths within 0.4 mm; usb-uart U4.2 drops under the 5 mm track limit, FLAG
+  -> ok).
+- Inductance only (pico U1.10, .51, .61; minipc U1.1, U2.22, U5.1, U5.9; usb-uart U3.4, U4.3, U5.3, U5.9): a
+  track ending inside a pad now reaches the pad's centre through the pad (its width) rather than along the stub of
+  track on the pad. Same length; 0.01-0.13 nH less.
