@@ -21,11 +21,17 @@ and flips footprints the way pcbnew does, checked item by item against pcbnew in
 - --placement JSON {"REF": [x, y, rot] or [x, y, rot, "B"]} in mm relative to --origin (the outline's top-left);
   unplaced parts are staged in a grid to the right of the outline;
 - --outline WxH draws Edge.Cuts (rounded corners with --corner-r);
-- --labels JSON {"REF": ["TEXT", dx, dy] or ["TEXT", dx, dy, rot]} puts a function label next to a footprint on
-  F.SilkS and, mirrored, on B.SilkS (solder pads and connectors: say what each one is, see layout-rules.md); a label
-  per pad (a header's pins): {"J3": {"pads": {"1": "GND", "2": "TX"}, "dx": 0, "dy": 2.35}} puts each text at its
-  pad's centre + (dx, dy), so the labels follow the part; optional "rot", "size" (mm, default 1.0) and "sides" ("F",
-  "B" or "FB", the default);
+- --labels JSON {"REF": ["TEXT", dx, dy] or ["TEXT", dx, dy, rot]} puts a function label at the footprint's position
+  + (dx, dy), in place of its reference (hidden), 1.0 mm high on F.SilkS and, mirrored, on B.SilkS (solder pads and
+  connectors: say what each one is, see layout-rules.md). The dict forms take options: "rot", "size" (text height in
+  mm, default 1.0) and "sides" ("F", "B" or "FB", the default), with 0.15 mm strokes:
+    {"D1": {"text": "TX", "dx": 0, "dy": 1.1, "size": 1.0, "sides": "F"}}  the list form's label, with options;
+    {"J3": {"pads": {"1": "GND", "2": "TX"}, "dx": 0, "dy": 2.35}}         one label per pad (a header's pins) at the
+      pad's centre + (dx, dy), so the labels follow the part; the reference stays;
+    {"_texts": [{"text": "VIO: 1 SHUNT", "at": [33.75, 25.4], "rot": 90}]}  texts tied to no footprint (a jumper's
+      setting, a board title), "at" in mm relative to --origin like --placement.
+  Text under 1.0 mm is written, with a note: layout-rules.md asks for >= 1 mm, and going smaller is the user's call.
+  Label ids derive from layer, text and position, so a regeneration with the same labels is byte-identical;
 - --refs: where references go (silk = KiCad default; fab = only on F.Fab for a dense assembled board; hidden);
 - writes a minimal .kicad_pro next to OUT if there is none (KiCad fills in its defaults; board_setup.py edits it);
 - keeps ids stable: every footprint (and item in it) keeps the uuid it had in --previous (default: OUT, if it
@@ -34,7 +40,7 @@ and flips footprints the way pcbnew does, checked item by item against pcbnew in
 Then: board_setup.py (stackup, rules, net classes), placement, routing (router.py), check.sh.
 Regenerating overwrites OUT: GUI edits made since are lost unless folded into the placement file first.
 """
-import argparse, json, os, re, sys, xml.etree.ElementTree as ET
+import argparse, collections, json, os, re, sys, xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kicad_sexpr import Board, Node, Project, Sym, board_net_name, resolve_libraries  # noqa: E402
@@ -88,6 +94,33 @@ def show_fab_reference(fp):
 
 def natkey(s):
     return [int(x) if x.isdigit() else x for x in re.split(r'(\d+)', s)]
+
+
+# ------------------------------------------------------------------ labels
+
+FREE_TEXTS = '_texts'          # --labels key for texts tied to no footprint
+MIN_TEXT = 1.0                 # mm: layout-rules.md "Silkscreen"; smaller is noted, not refused
+OPTIONS = '"rot", "size" (mm, default 1.0), "sides": "F" / "B" / "FB" (default)'
+
+
+def text_options(what, spec, keys):
+    """(rot, size, sides) of a --labels dict whose own keys are `keys`; exits on unknown keys or bad values"""
+    extra = sorted(set(spec) - set(keys) - {'rot', 'size', 'sides'})
+    if extra:
+        sys.exit('--labels %s: unknown keys: %s (expected %s; optional %s)' % (
+            what, ', '.join(extra), ', '.join('"%s"' % k for k in sorted(keys)), OPTIONS))
+    rot, size, sides = spec.get('rot', 0), spec.get('size', 1.0), spec.get('sides', 'FB')
+    if not isinstance(sides, str) or not sides or set(sides) - set('FB') or len(set(sides)) != len(sides):
+        sys.exit('--labels %s: "sides" is "F", "B" or "FB", not %s' % (what, json.dumps(sides)))
+    if isinstance(size, bool) or not isinstance(size, (int, float)) or size <= 0:
+        sys.exit('--labels %s: "size" is the text height in mm, not %s' % (what, json.dumps(size)))
+    return rot, size, sides
+
+
+def write_label(b, text, at, rot, size, sides):
+    """the text on F.SilkS and/or B.SilkS (mirrored there), 0.15 mm strokes"""
+    for side in sides:
+        b.gr_text(text, at, side + '.SilkS', size=size, thickness=0.15, angle=rot)
 
 
 def main():
@@ -174,16 +207,30 @@ def main():
             fp.set_field('Reference', c['ref'], hide=True)
             if a.refs == 'fab':
                 show_fab_reference(fp)
+    small = []                                     # (reference or "free text", size) of each text under MIN_TEXT
     for ref, spec in labels.items():
+        if ref == FREE_TEXTS:
+            if not isinstance(spec, list):
+                sys.exit('--labels %s: expected a list of {"text": "...", "at": [x, y]} (optional %s)' % (FREE_TEXTS, OPTIONS))
+            for k, t in enumerate(spec):
+                what = '%s[%d]' % (FREE_TEXTS, k)
+                rot, size, sides = text_options(what, t, {'text', 'at'})
+                at = t.get('at')
+                if not isinstance(t.get('text'), str) or not (isinstance(at, list) and len(at) == 2 and
+                                                              all(isinstance(v, (int, float)) for v in at)):
+                    sys.exit('--labels %s: expected {"text": "...", "at": [x, y]} (mm from --origin; optional %s)' % (what, OPTIONS))
+                write_label(b, t['text'], (ox + at[0], oy + at[1]), rot, size, sides)
+                if size < MIN_TEXT:
+                    small.append(('"%s"' % t['text'], size))
+            continue
         try:
             fp = b.footprint(ref)
         except KeyError:
             sys.exit('--labels: no footprint %s' % ref)
-        if isinstance(spec, dict):                                    # one label per pad
-            extra = sorted(set(spec) - {'pads', 'dx', 'dy', 'rot', 'size', 'sides'})
-            if extra or not isinstance(spec.get('pads'), dict) or set(spec.get('sides', 'FB')) - set('FB'):
-                sys.exit('--labels %s: expected {"pads": {"1": "GND", ...}, "dx": 0, "dy": 2.35} (optional "rot", "size", '
-                         '"sides": "F" / "B" / "FB")%s' % (ref, '; unknown keys: ' + ', '.join(extra) if extra else ''))
+        if isinstance(spec, dict) and 'pads' in spec:                 # one label per pad
+            rot, size, sides = text_options(ref, spec, {'pads', 'dx', 'dy'})
+            if not isinstance(spec['pads'], dict):
+                sys.exit('--labels %s: expected {"pads": {"1": "GND", ...}, "dx": 0, "dy": 2.35} (optional %s)' % (ref, OPTIONS))
             texts = []
             for num, text in spec['pads'].items():
                 try:
@@ -191,14 +238,27 @@ def main():
                 except KeyError:
                     sys.exit('--labels %s: no pad %s' % (ref, num))
                 texts.append((text, x + spec.get('dx', 0), y + spec.get('dy', 0)))
-            rot, size, sides = spec.get('rot', 0), spec.get('size', 1.0), spec.get('sides', 'FB')
+        elif isinstance(spec, dict):                                  # one label for the part, with options
+            rot, size, sides = text_options(ref, spec, {'text', 'dx', 'dy'})
+            if not isinstance(spec.get('text'), str):
+                sys.exit('--labels %s: expected {"text": "TX", "dx": 0, "dy": 1.1} or {"pads": {...}} (optional %s)' % (ref, OPTIONS))
+            fp.set_field('Reference', ref, hide=True)
+            texts = [(spec['text'], fp.at[0] + spec.get('dx', 0), fp.at[1] + spec.get('dy', 0))]
         else:
+            if not isinstance(spec, list) or len(spec) not in (3, 4):
+                sys.exit('--labels %s: expected ["TEXT", dx, dy] or ["TEXT", dx, dy, rot]; for a size or side use '
+                         '{"text": "TEXT", "dx": 0, "dy": 0, "size": 1.0, "sides": "F"}' % ref)
             fp.set_field('Reference', ref, hide=True)
             texts = [(spec[0], fp.at[0] + spec[1], fp.at[1] + spec[2])]
             rot, size, sides = spec[3] if len(spec) > 3 else 0, 1.0, 'FB'
         for text, x, y in texts:
-            for side in sides:
-                b.gr_text(text, (x, y), side + '.SilkS', size=size, thickness=0.15, angle=rot)   # B.*: mirrored
+            write_label(b, text, (x, y), rot, size, sides)
+            if size < MIN_TEXT:
+                small.append((ref, size))
+    if small:
+        print('note: --labels text under %.1f mm (layout-rules.md asks for >= %.1f mm; smaller is the user\'s call): %s' % (
+            MIN_TEXT, MIN_TEXT, ', '.join('%s%s %.2f mm' % (what, ' x%d' % n if n > 1 else '', size)
+                                          for (what, size), n in collections.Counter(small).items())))
     if a.outline:
         b.outline_rect(ox, oy, w, h, corner_radius=a.corner_r, width=0.1)
     b.save(a.out)

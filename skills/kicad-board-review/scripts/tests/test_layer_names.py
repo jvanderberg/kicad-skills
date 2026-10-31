@@ -4,7 +4,8 @@ the end-to-end test also needs KiCad's python):   python3 tests/test_layer_names
   .kicad_pcb items do, and keeps the board's own names in layer_names: emc.py and report.py run on it (they raised
   KeyError 'Top Layer' when layers held the user names and the stackup the canonical ones);
 - a board.json from the older dump (user names in layers) is a coverage warning with an assumed stackup, not a crash;
-- review_config.json may name a layer by the board's own name."""
+- review_config.json may name a layer by the board's own name;
+- boarddump.py with no arguments prints its usage."""
 import json, os, shutil, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, 'tests'))
@@ -102,9 +103,18 @@ def test_boarddump_of_a_board_with_user_layer_names():
     assert 'F.Cu (Top Layer) 35 um' in open(os.path.join(pack, 'board_overview.md')).read()
 
 
+
+def test_boarddump_without_arguments_prints_usage():
+    """no arguments, or --help, is a usage line (exit 2 / 0), not an IndexError; it needs no KiCad (skill-issues #8)"""
+    r = subprocess.run([sys.executable, os.path.join(HERE, 'boarddump.py')], capture_output=True, text=True)
+    assert r.returncode == 2 and 'usage: boarddump.py' in r.stderr and 'Traceback' not in r.stderr, r.stderr
+    r = subprocess.run([sys.executable, os.path.join(HERE, 'boarddump.py'), '--help'], capture_output=True, text=True)
+    assert r.returncode == 0 and 'PACK_DIR' in r.stdout, r.stdout + r.stderr
+
+
 if __name__ == '__main__':
     for t in (test_old_dump_with_user_names_warns_instead_of_crashing, test_config_may_name_a_layer_by_the_boards_own_name,
-              test_boarddump_of_a_board_with_user_layer_names):
+              test_boarddump_of_a_board_with_user_layer_names, test_boarddump_without_arguments_prints_usage):
         try:
             t(); print('PASS', t.__name__)
         except Skip as e:

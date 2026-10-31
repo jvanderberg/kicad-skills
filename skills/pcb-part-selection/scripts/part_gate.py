@@ -11,9 +11,11 @@ stock is per-board count x boards x (1 + attrition) from sourcing.json, at least
 
 For each device name it prints:
 - lifecycle from the manufacturer's product page, where that can be read automatically (TI: ti.com/product/<NAME>,
-  the page's status tag: ACTIVE / NRND / LAST TIME BUY / OBSOLETE / PREVIEW). A missing product page (HTTP 404) is
-  reported as SUSPECT: treat the part as discontinued until the manufacturer says otherwise. Other vendors: "check by
-  hand" (open the product page and record the status);
+  the page's status tag: ACTIVE / NRND / LAST TIME BUY / OBSOLETE / PREVIEW). An orderable number is cut back to its
+  device page (TPS61089RNRR -> TPS61089, TLV75518PDRVR -> TLV755P: a fixed-voltage code is taken out of the middle)
+  and the page used is printed. No product page for any of those (HTTP 404) is reported as SUSPECT: treat the part as
+  discontinued until the manufacturer says otherwise. Other vendors: "check by hand" (open the product page and
+  record the status);
 - every orderable LCSC variant of that exact device in the project's region, with stock (an LCSC C-number is looked
   up as exactly that part).
   Variants are kept apart: an automotive "-Q1" device is a different part with its own datasheet (equations, limits,
@@ -30,7 +32,11 @@ import argparse, os, re, sys, urllib.error, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sourcing  # noqa: E402
 
-TI_PREFIX = r'(?:TPSM?|LMR|LMQ|LMZ|LM|TLV|LP|BQ|UCC|LMG|CSD|TLC|TPA|TCA|INA|LMS|TPD|TS)'
+# TI device-name prefixes, only those no other maker uses with a digit after them (SN74 logic, SN65/SN75 interface,
+# TXS/TXB/TXU translators, OPA, ADS, DRV, HDC, TUSB, TMUX); ISO, REF and TMP only with as many digits as TI's own
+# names have, so Infineon's ISO1H811G, ADI's REF02/REF195 and TMP36 are not taken for TI parts
+TI_PREFIX = (r'(?:TPSM?|LMR|LMQ|LMZ|LM|TLV|LP|BQ|UCC|LMG|CSD|TLC|TPA|TCA|INA|LMS|TPD|TS|SN|TXS|TXB|TXU|OPA|ADS|DRV|HDC|'
+             r'TUSB|TMUX|ISOW?(?=\d{3})|REF(?=\d{4})|TMP(?=\d{3}))')
 NAME_RE = re.compile(r'\b(%s\d[0-9A-Z]*(?:-Q1)?)\b' % TI_PREFIX)
 
 
@@ -47,9 +53,9 @@ def ti_lifecycle(name):
     return m.group(1).upper() if m else 'unknown (no status tag on %s)' % url
 
 
-def ti_candidates(name):
-    """device-name guesses for a TI name that may be an orderable number: TPS61089RNRR -> TPS61089RNR ... TPS61089;
-    TPS61088QRHLRQ1 -> TPS61088-Q1. Never shorter than prefix + digits (+ one letter, as in TPS61230A)."""
+def _trims(name):
+    """name, its -Q1 device form, then name shortened from the end, never below prefix + digits (+ one letter, as in
+    TPS61230A), then prefix + digits"""
     out = [name]
     m = re.match(r'(%s\d+[A-Z]?)' % TI_PREFIX, name)
     floor = m.group(1) if m else name
@@ -64,6 +70,30 @@ def ti_candidates(name):
         out.append(s)
     if re.match(r'%s\d+' % TI_PREFIX, name):
         out.append(re.match(r'%s\d+' % TI_PREFIX, name).group(0))
+    return out
+
+
+def _without_voltage(name):
+    """the name with a two-digit voltage code taken out of the middle: TI's fixed-voltage order codes insert it
+    after the device name (TLV755+18+P+DRVR, TLV767+18+DRVR, TPS7A20+33+PDBVR, TLV1117LV+33+DCYR). Tried for every
+    digit group followed by a letter; the first group keeps at least three digits (TLV755, not TLV7)."""
+    p = re.match(TI_PREFIX, name)
+    out = []
+    for m in re.finditer(r'\d+(?=[A-Z])', name):
+        run = m.group(0)
+        if len(run) < 2 or (p and m.start() == p.end() and len(run) - 2 < 3):
+            continue
+        out.append(name[:m.end() - 2] + name[m.end():])
+    return out
+
+
+def ti_candidates(name):
+    """device-name guesses for a TI name that may be an orderable number, in the order tried: the name trimmed from
+    the end (TPS61089RNRR -> TPS61089RNR ... TPS61089; TPS61088QRHLRQ1 -> TPS61088-Q1), then the same for the name
+    without a mid-name voltage code (TLV75518PDRVR -> TLV755PDRVR ... TLV755P; TLV76718DRVR -> ... TLV767)."""
+    out = _trims(name)
+    for v in _without_voltage(name):
+        out += _trims(v)
     return list(dict.fromkeys(out))
 
 

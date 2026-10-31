@@ -58,6 +58,10 @@ while others are absent.
   it), the threshold and hysteresis from the datasheet equation, and that the threshold sits above brown-out behaviour.
 - **Power headers that bring rails out.** Can a slipped jumper short a high rail to a low one? Put ground between
   rails, fuse the raw input pin, label pins plainly.
+- **Selection jumpers.** For a header that picks one of several rails with a shunt, list what **every** single-shunt
+  position connects (each adjacent pair along a row and across rows). Any position that joins two rails is a finding
+  (Major when both rails are live): lay the pins out as a checkerboard, every adjacent pair one rail + the common net
+  (kicad-pcb-workflow `layout-rules.md` "Selection jumpers").
 - **Inrush.** Large bulk capacitance behind an ideal diode or hot-swap part: does the controller or the upstream fuse
   tolerate the charging current?
 
@@ -382,9 +386,11 @@ and the missing file is a finding.
 
 - Tall parts: 3D clearance between them and nearby parts (fuse holders, terminal blocks, electrolytics, connectors) -
   render in 3D, check model offsets. Run `kicad-pcb-workflow/scripts/board_lint.py` first: a missing 3D model file
-  renders as bare pads and looks like an empty spot; it also lists footprints without courtyards (invisible to DRC's
-  overlap check: check their spacing against kicad-pcb-workflow `layout-rules.md`) and silkscreen text on other parts'
-  bodies (DRC does not check silk against bodies).
+  renders as bare pads and looks like an empty spot; it also reports parts without courtyards whose silk outline overlaps a neighbour (SILK OUTLINE: DRC's
+  courtyard check cannot see them, and its silk_overlap misses a part sitting inside another's outline; the outline is
+  the placement boundary, kicad-pcb-workflow `layout-rules.md`) and silkscreen text on other parts' bodies (DRC does
+  not check silk against bodies). A `silk_overlap` exempted in `drc-accept.json`, or a part tighter than its outline
+  with no recorded reason and copper gap, is a finding. Parts with no outline are listed in a NOTE: measure their gaps.
 - Mounting holes: keepout around the screw head and washer; no copper or parts under it unless intended. **Output:**
   `board_lint.py` UNDER HARDWARE (other-net tracks, vias and pads within the hardware radius on **both** outer layers;
   pours as notes) with the real washer or standoff size (`--hardware-r`): solder mask is not insulation under a metal

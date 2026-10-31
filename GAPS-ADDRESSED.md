@@ -719,3 +719,30 @@ router x2, skills_rev x2). rev 26 passed, 2 skipped
 (was 20 / 2; new: the diff_pairs config error, hot loop through vias, decoupling logic inputs, LED resistors, pour vias,
 film coefficient presets). ps 13 passed, 1 skipped (was 12 / 1; new: the datasheet content check).
 psu 4 passed (unchanged).
+
+# USB-UART re-run field report: silk outlines as placement bounds, and eleven tool gaps
+
+Source: an end-to-end run of kicad-skills 0.2.0 (ed7b29d) with jlcimport-cli 59cd47f, a USB-UART board designed from
+scratch on 30 October 2026 (its `docs/skill-issues.md`, entries 1-12). With no courtyards on JLC's footprints, placement
+packed parts until about 70 silk outlines overlapped; they were exempted as cosmetic and the user objected. The user's
+rule: a courtyard-less part is bounded by its silk outline; tighter only with a reason, then the outline goes (pin-1 and
+polarity marks stay) and the rule-of-thumb gaps apply. Footprint preference reviewed at the same time: JLC's footprint
+for every JLC-assembled part, chip R/C included; a KiCad one only on a geometry-checked match with polarity "same".
+
+| Item | What changed (files) | How it was verified |
+|---|---|---|
+| 10, 11 Silk outline is the boundary of a courtyard-less part | wf layout-rules.md "Placement and mechanical" (outline as boundary; tighter only with a recorded reason and copper gap; never exempt silk_overlap) and "Silkscreen"; `board_lint.py` SILK OUTLINE (outline-and-pads rectangles of courtyard-less parts vs neighbours' outlines or courtyards, pin-1 dots excluded; NO COURTYARD problems became one NOTE listing the outlined and the outline-less parts; a notes bug that dropped them fixed); new `strip_outline.py` (same-named copy into a `NoOutline` library without the outline, dots and inner symbols kept: JLCImport's production export knows JLC's footprint by name, `production/placement.py` `own_footprint_name`); new-design.md s5, checks.md, layout-stages.md stage 1, wf SKILL.md, ps import notes, rev checklist s9 | `tests/test_board_lint_outline.py` (a part wholly inside another's outline, which silk_overlap misses; a courtyard vs an outline; a pin-1 dot not counted; an outline-less part noted; strip_outline keeps a dot and a cathode bar and refuses its own library). usb-uart board as fixed: clean, its 6 recorded exceptions listed as rule-of-thumb parts. strip_outline on 5 real JLC footprints, rendered: LED cathode bar and TVS diode symbol kept |
+| Footprint preference | ps "Importing into KiCad", wf new-design.md s5: chip R/C get JLC's footprint too (JLC 0402 pads +-0.43 mm vs KiCad +-0.51: symmetric, not a match); existing boards with KiCad chip R/C need not change | Text |
+| 1 TI lifecycle SUSPECT for live parts | ps `part_gate.py`: SN/TXS/TXB/TXU/OPA/ADS/DRV/HDC/TUSB/TMUX prefixes (ISO/ISOW/REF/TMP only with TI's digit lengths); after the end-trims, candidates with a two-digit voltage code removed mid-name | ti.com, 30 Oct 2026: TLV75518PDRVR -> TLV755P, TLV76718DRVR -> TLV767, SN74LV1T04DBVR, TPS7A2033PDBVR, TLV1117LV33DCYR, OPA333AIDBVR all ACTIVE; network-free test in `tests/test_sourcing.py` |
+| 2 sourcing search | ps `sourcing.py`: fetches >= 30 rows and ranks exact MPN / C-number first, then prefix matches; says when no result is the queried part; drops "JLCPCB Assembly" placeholders (`--placeholders` keeps them); a 0-result hint (keyword / part-number search) | `search CL21A106KAYNNNE -n 1` -> C15850 Samsung (was FOJAN C5137488); test with a fake jlcimport-cli honouring `-n` and catalogue order |
+| 3 hidden power_in stacked pins became global nets | wf `symgen.py`: stacked copies hidden and passive (no_connect for NC), as all 22,504 hidden stacked pins in KiCad's libraries are | kicad-cli: two parts with stacked IN on VA / VB were one net "IN" (ERC only multiple_net_names), now /VA and /VB; `tests/test_symgen_stacked.py` |
+| 4 board_setup assignments only added | wf `board_setup.py`: `--assign`/`--pattern` are the complete set per run (dropped ones printed; `--keep-assignments` for add-only); names and patterns checked against the board's nets (did-you-mean) | `tests/test_board_setup_assign.py`; usb-uart copy: SW warned (Net-(U3-SW)), GND and SW dropped |
+| 5 decoupling false "no capacitor reachable" | rev `decoupling.py`: tracks split wherever a via's copper or a pad meets the centreline, and at T-joins, as KiCad's connectivity joins them | `tests/test_pack_checks.py` (fails on the old graph); usb-uart copy without the workaround vertex: FAIL -> C1 at 12.8 mm. Other analyses use merged copper and did not share the bug |
+| 6 labels: size / side / free text | wf `new_board.py --labels`: per-part dict form `{"text", "dx", "dy", "rot", "size", "sides"}`, `"_texts"` free texts at board positions; malformed entries refused; text under 1 mm noted | `tests/test_new_board_labels.py`; usb-uart labels reproduced, regeneration byte-identical |
+| 7 fpcheck custom pads | wf `fpcheck.py --pads`: a custom pad's copper extent (anchor + primitives, strokes and arcs), marked custom; the pad-span note uses it with rotation | `tests/test_fpcheck_custom_pads.py`; TYPE-C-31-M-12 VBUS/GND 0.60 x 1.30 (was 0.10 x 0.10) |
+| 8 boarddump usage | rev `boarddump.py`: argparse usage, exit 2 | `tests/test_layer_names.py` |
+| 9 one LCSC part on two BOM lines | ps `bom_check.py` SPLIT (same key as JLCImport's BOM: value + footprint + LCSC); ps "Order files" bullet. JLCImport itself (group by LCSC number) in a separate change on kicad_jlcimport | `tests/test_sourcing.py` |
+| 12 selection jumper shorts two rails | wf layout-rules.md "Selection jumpers" (checkerboard: every adjacent pair one rail + common); nb interview guide s5; rev checklist "Selection jumpers" (every single-shunt position) | Text |
+
+Test runs: wf `python3 -m pytest -q kicad_sexpr/tests tests`: 103 passed, 2 skipped; rev 28 passed, 2 skipped; ps 16
+passed, 1 skipped; psu 4 passed. Rebased onto origin/main (ed7b29d) before these runs.

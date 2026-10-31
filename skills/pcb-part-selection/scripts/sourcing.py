@@ -3,7 +3,7 @@
 
   sourcing.py show [PROJECT_DIR]                      # the context every script uses, and the file it came from
   sourcing.py init PROJECT_DIR --assembler JLCPCB --region global [--boards 5] [--min-stock 0]
-  sourcing.py search "<keyword | MPN>" [--project DIR] [-n 15] [-t basic|extended|both] [--min-stock N]
+  sourcing.py search "<keyword | MPN>" [--project DIR] [-n 15] [-t basic|extended|both] [--min-stock N] [--placeholders]
   sourcing.py stock C3289423 C316138 ... [--project DIR] [--per-board 3]
 
 Availability is a fact about (part, the warehouse the assembler buys from, quantity, date), not about the part. LCSC
@@ -20,6 +20,14 @@ stock figure. With no sourcing.json and no --region the scripts stop and say how
 When a part is short in the project's region the other region is looked up too and shown, labelled as not counting,
 because "it shows stock" from the other warehouse is exactly the mistake to explain.
 
+Search is JLCPCB's / SZLCSC's keyword and part-number matching, not a description search: a phrase such as
+"2.2uH shielded power inductor 4A" finds nothing where "2.2uH" or a family part number does (a 0-result search says
+so). The catalogue answers a part number with its own idea of relevance, so a cross-reference from another maker can
+come first (CL21A106KAYNNNE -> FOJAN's FCC0805X106K250FT): results are fetched at least 30 deep, rows whose MPN (or
+C-number) is exactly the query come first, then rows whose MPN starts with it, then the rest by stock; a part-number
+query with no exact MPN among the results says so. "JLCPCB Assembly" placeholder parts (C99000..., no stock, a
+customer's own name for a part) are dropped unless --placeholders is given or the query is their C-number.
+
 sourcing.json:
   {"assembler": "JLCPCB",          # required: who assembles (stock lookups here cover JLCPCB/LCSC only)
    "region": "global",             # required: global | cn - the warehouse that assembler buys from
@@ -28,7 +36,7 @@ sourcing.json:
    "min_stock": 0,                 # stock policy: listed units per LCSC part, on top of the order need (default 0)
    "exceptions": [{"lcsc": "C123", "reason": "...", "approved": "<who>, <date>"}]}   # named policy exceptions
 """
-import argparse, csv, datetime, io, json, math, os, shutil, subprocess, sys
+import argparse, csv, datetime, io, json, math, os, re, shutil, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import projfiles  # noqa: E402
@@ -113,9 +121,47 @@ def header(ctx):
         ', policy >= %d listed per part' % ctx['min_stock'] if ctx.get('min_stock') else '', today(), ctx['source'])
 
 
-def search(keyword, region, cli=None, n=10, kind='both', min_stock=0):
-    """rows from `jlcimport-cli search ... --region REGION --csv`, each tagged with its region and currency.
-    Raises SourcingError when the CLI cannot be run or does not know --region."""
+FETCH = 30   # rows asked of the catalogue whatever -n is: the exact part can sit below the first few
+
+
+def is_placeholder(row):
+    """a "JLCPCB Assembly" placeholder (C99000..., no stock): a customer's own name for a part, not an orderable one"""
+    return 'JLCPCB ASSEMBLY' in (row.get('brand') or '').upper() or re.match(r'^C99\d{8,}$', row.get('lcsc') or '') is not None
+
+
+def is_part_number(q):
+    """a query that names one part (CL21A106KAYNNNE, PZ254V-11-06P, C15850) rather than keywords or a value (2.2uH)"""
+    q = q.strip()
+    return (not re.search(r'\s', q) and len(re.sub(r'[^0-9A-Za-z]', '', q)) >= 5 and re.search(r'[A-Za-z]', q) is not None
+            and re.search(r'\d', q) is not None and not re.match(r'^\d+(\.\d+)?[A-Za-z\u00b5\u03a9]{0,3}$', q))
+
+
+def rank(rows, query, placeholders=False):
+    """(rows, placeholders dropped): exact MPN or C-number matches first, then MPNs starting with the query, then the
+    rest in the CLI's order (stock); placeholders dropped unless asked for or named by the query"""
+    q = query.strip().upper()
+    kept = [r for r in rows if placeholders or not is_placeholder(r) or (r.get('lcsc') or '').upper() == q]
+
+    def key(r):
+        part = (r.get('part') or '').upper()
+        return 0 if part == q or (r.get('lcsc') or '').upper() == q else 1 if part.startswith(q) else 2
+    return sorted(kept, key=key), len(rows) - len(kept)
+
+
+def exact(rows, query):
+    """rows whose MPN or C-number is exactly the query (case-insensitive)"""
+    q = query.strip().upper()
+    return [r for r in rows if (r.get('part') or '').upper() == q or (r.get('lcsc') or '').upper() == q]
+
+
+def search(keyword, region, cli=None, n=10, kind='both', min_stock=0, placeholders=False):
+    """up to n rows for a keyword or part number, ranked by rank(); see cli_search"""
+    return rank(cli_search(keyword, region, cli, max(n, FETCH), kind, min_stock), keyword, placeholders)[0][:n]
+
+
+def cli_search(keyword, region, cli=None, n=10, kind='both', min_stock=0):
+    """rows from `jlcimport-cli search ... --region REGION --csv`, each tagged with its region and currency, in the
+    CLI's order. Raises SourcingError when the CLI cannot be run or does not know --region."""
     if region not in REGIONS:
         raise SourcingError('region "%s" is not one of %s' % (region, ', '.join(REGIONS)))
     cmd = [cli or default_cli(), 'search', keyword, '--region', region, '--min-stock', str(min_stock), '--csv',
@@ -193,6 +239,7 @@ def main():
         if name == 'search':
             s.add_argument('-n', type=int, default=15); s.add_argument('-t', default='both', choices=('basic', 'extended', 'both'))
             s.add_argument('--min-stock', type=int, default=0)
+            s.add_argument('--placeholders', action='store_true', help='keep "JLCPCB Assembly" placeholder parts (C99000...)')
         else:
             s.add_argument('--per-board', type=int, default=1)
     a = ap.parse_args()
@@ -218,8 +265,19 @@ def main():
             print('  note: ' + n)
         if a.cmd == 'search':
             for kw in a.items:
-                rows = search(kw, ctx['region'], a.cli, a.n, a.t, a.min_stock)
-                print('\n"%s" in %s: %d result(s)' % (kw, ctx['region'], len(rows)))
+                rows, hidden = rank(cli_search(kw, ctx['region'], a.cli, max(a.n, FETCH), a.t, a.min_stock), kw, a.placeholders)
+                rows = rows[:a.n]
+                print('\n"%s" in %s: %d result(s)%s' % (kw, ctx['region'], len(rows), ' (%d "JLCPCB Assembly" placeholder '
+                      'part(s) left out: --placeholders shows them)' % hidden if hidden else ''))
+                if not rows:
+                    print('  the search matches keywords and part numbers, not descriptions: try one or two short terms '
+                          '(a value such as 2.2uH, a package, a family part number such as TLV755)')
+                    continue
+                if is_part_number(kw) and not exact(rows, kw):
+                    pre = sum((r['part'] or '').upper().startswith(kw.strip().upper()) for r in rows)
+                    print('  note: no result is %s itself%s - read the part and brand columns before using one' % (
+                        kw, '; %d start with it (variants or order codes of it)' % pre if pre else
+                        ': these are other part numbers, often another maker\'s cross-reference'))
                 print('  %-11s %-9s %10s %10s  %-24s %-18s %s' % ('LCSC', 'type', 'stock', 'price ' + CURRENCY[ctx['region']], 'part', 'package', 'brand'))
                 for r in rows:
                     print('  %-11s %-9s %10s %10s  %-24s %-18s %s' % (r['lcsc'], r['type'], '{:,}'.format(r['stock']), r['price'],

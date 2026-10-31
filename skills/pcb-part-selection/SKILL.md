@@ -71,7 +71,10 @@ So:
   [-t basic|extended|both] [--min-stock 1000]` (JLCImport's CLI underneath, `https://github.com/jvanderberg/kicad_jlcimport`,
   with `--region` from `sourcing.json`); `sourcing.py stock C123 C456 --per-board 3` checks exact C-numbers against the
   order need. Basic parts search badly by value; search a family part number (e.g. UNI-ROYAL `0402WGF1003TCE` for 0402 1 %
-  resistors). Many descriptions are Chinese (升降压 = buck-boost, 降压 = buck).
+  resistors). Many descriptions are Chinese (升降压 = buck-boost, 降压 = buck). It matches keywords and part numbers,
+  not phrases (0 results for a sentence is not "no such part"); an MPN query lists that exact MPN first and says when
+  no result is it (the others are often another maker's cross-reference); "JLCPCB Assembly" placeholders (C99000...)
+  are left out.
 - Prefer the plentiful variant when choices are equivalent (an automotive-grade version with many times the stock for
   a small premium is often the better buy). Ask the user when the trade-off is real.
 - Stock counts only **in the region the assembler buys from** (R24 above); the other region is information, not
@@ -176,9 +179,11 @@ the same ~900 JLC parts (JLCImport's production-export work, jvanderberg/kicad_j
 footprints solved 958 of 962 placements at high confidence, with 4 warnings and no polarity guesses; KiCad library
 footprints solved 274 of 852, with 266 warnings and 112 polarity guesses.
 
-A KiCad library footprint is fine for unpolarised chip resistors and capacitors (0402/0603/0805: two symmetric pads,
-so rotation and polarity cannot come out wrong, although the pads differ slightly from JLC's), and for a footprint
-JLCImport's geometry-checked matcher suggests without a polarity caveat. On a board JLCPCB does not assemble, KiCad's
+Use a KiCad library footprint for a JLC-assembled part only on a very strong match: one JLCImport's geometry-checked
+matcher suggests with polarity "same". Chip resistors and capacitors get JLC's footprint too: a KiCad 0402/0603/0805
+cannot come out rotated or reversed (two symmetric pads), but its pads differ from JLC's, and one convention across
+the board keeps one placement-boundary rule (silk outlines, kicad-pcb-workflow `layout-rules.md`). An existing board
+with KiCad chip R/C footprints is not wrong and need not be changed. On a board JLCPCB does not assemble, KiCad's
 library is the better default (one convention, courtyards and fab outlines). Check every footprint you assign:
 `kicad-pcb-workflow/scripts/fpcheck.py FOOTPRINT --package "<LCSC package>" --symbol LIB:NAME` (courtyard, pad count,
 body size, symbol pins vs pads), plus the datasheet land-pattern figure for pad sizes and pitch.
@@ -191,8 +196,9 @@ what it suggests with `fpcheck.py`. The suggestion is offered in the plugin's an
 writes JLC's footprint (to use a KiCad one, assign it in the schematic). Treat imported parts as drafts:
 - symbols often have off-grid pins and every pin typed "unspecified" (ERC noise) - fix pin types and grid, or redraw
   with kicad-pcb-workflow's `symgen.py`;
-- most EasyEDA footprints have no courtyard: leave them, and space the parts by rule of thumb at placement
-  (kicad-pcb-workflow `references/layout-rules.md`). Silk may run through pads. Compare the pads with the datasheet
+- most EasyEDA footprints have no courtyard: leave them. Their silk outline is the placement boundary; a part
+  placed tighter on purpose gets a same-named copy without the outline and rule-of-thumb spacing (kicad-pcb-workflow
+  `references/layout-rules.md` "Placement and mechanical"). Silk may run through pads. Compare the pads with the datasheet
   land pattern (render with `kicad-cli fp export svg`); fix a real error in place, keeping the origin, rotation and
   pad numbers JLC places by, rather than swapping in another footprint;
 - a redrawn symbol, or a KiCad footprint, must use the footprint's pad numbers (`fpcheck.py --symbol`): a KiCad
@@ -261,4 +267,9 @@ kicad-cli. Hand-written Gerber scripts are no longer needed. What to do with its
   (they replace the solver for that part), set on the symbol so `new_board.py` carries them;
 - its stock check reads JLCPCB's international parts library (it has no `--region`): it is not a `cn` warehouse
   check. `bom_check.py` stays the region-correct stock sweep, from the schematic; `production` checks the board, so
-  run both (`partfields.py` keeps their fields equal).
+  run both (`partfields.py` keeps their fields equal);
+- one LCSC number goes on one BOM line. The BOM groups by value, footprint and LCSC number, so two parts with the
+  same LCSC number but different values (a red LED with Value "TX" and one with "RX") come out as two lines; JLC's
+  BOM step then matches both to the same part, unticks them (quantity 0) and assembles neither, and `--check-only`
+  does not report it. Give parts that share an LCSC number the same Value and footprint (the function goes in a
+  silk label or another field); `bom_check.py` flags a number used with different values or footprints.

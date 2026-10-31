@@ -12,6 +12,9 @@ approved. The first line of the output says which context was used.
 It exports the netlist with kicad-cli, groups parts by LCSC number, looks each one up with JLCImport's CLI
 (https://github.com/jvanderberg/kicad_jlcimport, always with an explicit --region), and flags:
   - parts with no LCSC number (JLC will not place them; may be intentional for hand-fit parts)
+  - one LCSC number on parts with different Values or footprints: JLCImport's order BOM has a line per value +
+    footprint + LCSC number, JLC's BOM step then matches two lines to one part, unticks both and fits neither (two
+    red LEDs valued "TX (red)" and "RX (red)", October 2026): give the parts one Value and footprint
   - LCSC numbers not listed in the region, or with stock below what the order needs (count per board x boards, plus
     attrition); a short part is also looked up in the other region and shown as not counting
   - stock below the project's policy (min_stock), unless a named exception in sourcing.json covers the part
@@ -50,7 +53,8 @@ def export_netlist(sch, kicad_cli):
 
 
 def bom_groups(xmlp):
-    """(groups by LCSC number, parts without one). A group: lcsc, refs, value, fp, size, no_ds (refs without a link)"""
+    """(groups by LCSC number, parts without one). A group: lcsc, refs, value, fp, size, no_ds (refs without a link),
+    lines ({(value, footprint): refs}: the order BOM's lines for this number)"""
     root = ET.parse(xmlp).getroot()
     groups = collections.OrderedDict(); missing = []
     for c in root.find('components'):
@@ -65,8 +69,10 @@ def bom_groups(xmlp):
         fp = (c.findtext('footprint') or '').split(':')[-1]; val = c.findtext('value') or ''
         if not re.match(r'^C\d+$', lc):
             missing.append((ref, val, fp)); continue
-        g = groups.setdefault(lc, dict(lcsc=lc, refs=[], value=val, fp=fp, size=pkg_size(fp, val), no_ds=[]))
+        g = groups.setdefault(lc, dict(lcsc=lc, refs=[], value=val, fp=fp, size=pkg_size(fp, val), no_ds=[],
+                                       lines=collections.OrderedDict()))
         g['refs'].append(ref)
+        g['lines'].setdefault((val, fp), []).append(ref)
         if (f.get('Datasheet') or c.findtext('datasheet') or '').strip() in ('', '~'):
             g['no_ds'].append(ref)
     return groups, missing
@@ -107,10 +113,24 @@ def local_datasheets(xmlp, ddir):
     return out
 
 
+def split_lines(g):
+    """the flag for one LCSC number spread over several order-BOM lines (by Value or footprint), or None"""
+    lines = g.get('lines') or {}
+    if len(lines) < 2:
+        return None
+    fps = len({fp for _, fp in lines}) > 1
+    return 'SPLIT: %d BOM lines for one part (%s) - JLC unticks both and fits neither: give them one Value%s' % (
+        len(lines), ' / '.join('%s "%s"%s' % (' '.join(refs), val, ' ' + fp if fps else '') for (val, fp), refs in lines.items()),
+        ' and footprint' if fps else '')
+
+
 def check(groups, ctx, cli, min_pkg='0402'):
     rows = []
     for lc, g in groups.items():
         info, flags, note = sourcing.check_part(lc, ctx, len(g['refs']), cli)
+        split = split_lines(g)
+        if split:
+            flags.append(split)
         order, policy, exc = sourcing.need_for(ctx, len(g['refs']), lc)
         if info is not None and info.get('type', '').lower().startswith('ext'):
             flags.append('extended')

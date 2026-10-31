@@ -6,7 +6,7 @@ import pytest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
-import derived_check, sourcing  # noqa: E402
+import derived_check, part_gate, sourcing  # noqa: E402
 
 # what the two warehouses said on 2026-10-25 (real values: the SiSS80DN is stocked in cn only)
 STOCK = {
@@ -23,12 +23,14 @@ FAKE = textwrap.dedent('''\
     open(os.environ['FAKE_LOG'], 'a').write(json.dumps(a) + '\\n')
     if '--region' not in a:
         sys.stderr.write('fake: no --region given, would use the config default\\n'); sys.exit(3)
-    region = a[a.index('--region') + 1]; kw = a[1]
+    region = a[a.index('--region') + 1]; kw = a[1]; n = int(a[a.index('-n') + 1])
     data = json.load(open(os.environ['FAKE_DATA']))[region]
     print('LCSC,Type,Price,Stock,Part,Package,Brand,Description')
-    for c, (part, stock, price) in data.items():
-        if kw == c or kw.upper() in part.upper():
-            print('%%s,Extended,%%s,%%s,%%s,PKG,Brand,desc' %% (c, price, stock, part))
+    # like the catalogue: the first n matches in its own order (an entry's 5th field: keywords it also matches),
+    # then sorted by stock as jlcimport-cli does
+    hits = [(c, e) for c, e in data.items() if kw == c or kw.upper() in e[0].upper() or kw in (e[4] if len(e) > 4 else [])][:n]
+    for c, e in sorted(hits, key=lambda h: -int(h[1][1] or 0)):
+        print('%%s,Extended,%%s,%%s,%%s,PKG,%%s,desc' %% (c, e[2], e[1], e[0], e[3] if len(e) > 3 else 'Brand'))
 ''') % sys.executable
 
 
@@ -164,7 +166,7 @@ def test_bom_check_ics_need_a_local_datasheet(env):
     """every IC's datasheet is saved in the project (docs/datasheets): found by MPN or value in the file name"""
     write_sourcing(env)
     sch = env['proj'] / 'hardware' / 'x.kicad_sch'; sch.write_text('')
-    xml = netlist(env, [comp('U1', 'TPS63802', 'C25076', mpn='TPS63802DLAR'), comp('U2', 'HY2113-GB3A', '', mpn='HY2113-GB3A'),
+    xml = netlist(env, [comp('U1', 'TPS63802', 'C316138', mpn='TPS63802DLAR'), comp('U2', 'HY2113-GB3A', '', mpn='HY2113-GB3A'),
                         comp('R7', '100', 'C25076', fp='Resistor_SMD:R_0402_1005Metric')])
     rc, out = sh(os.path.join(HERE, 'bom_check.py'), str(sch), '--netlist', xml, '--cli', env['cli'], '--no-derived')
     assert 'no docs/datasheets folder found' in out and 'NO LOCAL DATASHEET U1' in out and 'NO LOCAL DATASHEET U2' in out and rc == 1, out
@@ -191,6 +193,76 @@ def test_derived_check_deps_coverage_and_incomplete(env):
     parts.pop('Q2')
     probs, _ = derived_check.check(data, parts)
     assert any('Q2 is not on the schematic any more' in p for p in probs)
+
+
+def test_ti_device_page_for_order_codes():
+    """fixed-voltage order codes carry the voltage mid-name (TLV755+18+P+DRVR -> page TLV755P), SN74 logic is TI;
+    the pages are what ti.com answered on 2026-10-30 (anything else 404)"""
+    pages = {'TLV755P', 'TLV767', 'SN74LV1T04', 'TLV700', 'TPS7A20', 'TLV1117LV', 'TPS61089', 'TPS61088-Q1'}
+    life = lambda c: 'ACTIVE' if c in pages else 'SUSPECT (product page HTTP 404)'
+    orig = part_gate.ti_lifecycle
+    part_gate.ti_lifecycle = life
+    try:
+        got = {n: part_gate.ti_resolve(n) for n in ('TLV75518PDRVR', 'TLV75518PDBVR', 'TLV76718DRVR', 'SN74LV1T04DBVR',
+                                                     'TLV70033DDCR', 'TPS7A2033PDBVR', 'TLV1117LV33DCYR', 'TPS61089RNRR',
+                                                     'TPS61088QRHLRQ1', 'TPS99999RGTR')}
+    finally:
+        part_gate.ti_lifecycle = orig
+    assert got['TLV75518PDRVR'] == got['TLV75518PDBVR'] == ('ACTIVE', 'TLV755P')
+    assert got['TLV76718DRVR'] == ('ACTIVE', 'TLV767') and got['SN74LV1T04DBVR'] == ('ACTIVE', 'SN74LV1T04')
+    assert got['TLV70033DDCR'][1] == 'TLV700' and got['TPS7A2033PDBVR'][1] == 'TPS7A20' and got['TLV1117LV33DCYR'][1] == 'TLV1117LV'
+    assert got['TPS61089RNRR'][1] == 'TPS61089' and got['TPS61088QRHLRQ1'][1] == 'TPS61088-Q1'
+    assert got['TPS99999RGTR'][0].startswith('SUSPECT')
+    # the plain trims are still tried before a voltage code is taken out
+    c = part_gate.ti_candidates('TLV75518PDRVR')
+    assert c.index('TLV75518') < c.index('TLV755PDRVR') and 'TLV7PDRVR' not in c
+    assert all(part_gate.is_ti(n) for n in ('SN74LV1T04DBVR', 'SN65HVD230DR', 'TXS0108EPWR', 'TXB0104RUTR', 'ISO7721DR',
+                                            'ISOW7841DWER', 'OPA333AIDBVR', 'REF3033AIDBZR', 'TMP117AIDRVR'))
+    assert not any(part_gate.is_ti(n) for n in ('ISO1H811G', 'REF02', 'REF195', 'TMP36', 'CL21A106KAYNNNE', 'XC6206P332MR'))
+
+
+MPN_DATA = {'global': {  # the catalogue's order for "CL21A106KAYNNNE" on 2026-10-30: placeholder, cross-reference, Samsung
+    'C9900069401': ('CL21A106KAYNNNE', '', '0.0399', 'JLCPCB Assembly'),
+    'C5137488': ('FCC0805X106K250FT', '173608', '0.041', 'FOJAN', ['CL21A106KAYNNNE', 'CL21A106KAYNNNX']),
+    'C15850': ('CL21A106KAYNNNE', '8411453', '0.0437', 'Samsung Electro-Mechanics'),
+    'C9900184415': ('USB_C_Receptacle_USB2.0_16P', '', '0.0399', 'JLCPCB Assembly', ['USB Type-C 16P receptacle SMD'])}, 'cn': {}}
+
+
+def test_search_exact_mpn_first_no_placeholders(env):
+    """an MPN search answers with that MPN (not the catalogue's first pick, a cross-reference), placeholders are left
+    out, a part number with no exact match and a 0-result phrase both say what happened"""
+    (env['tmp'] / 'data.json').write_text(json.dumps(MPN_DATA))
+    rows = sourcing.search('CL21A106KAYNNNE', 'global', env['cli'], n=1)
+    assert [r['lcsc'] for r in rows] == ['C15850'], rows
+    assert all(c[c.index('-n') + 1] == '30' for c in calls(env))         # fetched deep enough to find it
+    assert sourcing.lookup('C9900069401', 'global', env['cli'])['lcsc'] == 'C9900069401'   # its own C-number still finds it
+    run = lambda *q: sh(os.path.join(HERE, 'sourcing.py'), 'search', *q, '--region', 'global', '--cli', env['cli'], '-n', '1')
+    rc, out = run('CL21A106KAYNNNE')
+    assert rc == 0 and 'C15850' in out and 'C5137488' not in out and 'C9900069401' not in out, out
+    assert '1 "JLCPCB Assembly" placeholder' in out and 'no result is' not in out, out
+    rc, out = run('CL21A106KAYNNNE', '--placeholders')
+    assert 'placeholder' not in out and '1 result(s)' in out, out
+    rc, out = run('CL21A106KAYNNNX')
+    assert 'C5137488' in out and 'note: no result is CL21A106KAYNNNX itself' in out and 'cross-reference' in out, out
+    rc, out = run('USB Type-C 16P receptacle SMD')
+    assert '0 result(s)' in out and 'matches keywords and part numbers, not descriptions' in out, out
+
+
+def test_bom_check_one_part_on_two_bom_lines(env):
+    """one LCSC number on parts with different Values (or footprints) is two order-BOM lines: JLC fits neither"""
+    data = json.loads(json.dumps(STOCK)); data['global']['C2286'] = ('KT-0603R', '7277385', '0.0077')
+    (env['tmp'] / 'data.json').write_text(json.dumps(data))
+    write_sourcing(env)
+    sch = env['proj'] / 'hardware' / 'x.kicad_sch'; sch.write_text('')
+    led = 'LED_SMD:LED_0603_1608Metric'
+    run = lambda comps: sh(os.path.join(HERE, 'bom_check.py'), str(sch), '--netlist', netlist(env, comps), '--cli', env['cli'],
+                           '--no-derived', '--no-local-datasheets')
+    rc, out = run([comp('D1', 'TX (red)', 'C2286', fp=led), comp('D2', 'RX (red)', 'C2286', fp=led)])
+    assert rc == 1 and 'SPLIT: 2 BOM lines for one part (D1 "TX (red)" / D2 "RX (red)")' in out and 'footprint' not in out.split('SPLIT')[1].splitlines()[0], out
+    rc, out = run([comp('D1', 'red', 'C2286', fp=led), comp('D2', 'red', 'C2286', fp='LED_SMD:LED_0805_2012Metric')])
+    assert rc == 1 and 'D2 "red" LED_0805_2012Metric' in out and 'one Value and footprint' in out, out
+    rc, out = run([comp('D1', 'red', 'C2286', fp=led), comp('D2', 'red', 'C2286', fp=led)])
+    assert rc == 0 and 'SPLIT' not in out, out
 
 
 @pytest.mark.skipif(not os.environ.get('LCSC_LIVE'), reason='set LCSC_LIVE=1 to query LCSC for real')

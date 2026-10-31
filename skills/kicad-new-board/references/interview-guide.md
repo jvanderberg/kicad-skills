@@ -123,6 +123,7 @@ roughly 10 / 0.9 + 2 x 4.2 / 0.9, about 20 W - beyond any 5 V USB-C source.
 | Height limit above/below the board? | None | Tall parts (electrolytics, connectors, inductors) may not fit a lid |
 | All parts on top? | Yes | Required for JLC economic assembly; cheaper and simpler |
 | Through-hole parts? | Few, hand-soldered or JLC through-hole assembly | Each is a cost and process decision |
+| Jumpers or switches that select a rail or mode? | Solder jumper or a header + shunt | A header that picks one of several rails must be a checkerboard (every adjacent pin pair one rail + common) so no shunt position shorts two rails (kicad-pcb-workflow `layout-rules.md` "Selection jumpers"); record each position's meaning |
 
 ## 6. Manufacturing
 

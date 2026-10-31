@@ -5,8 +5,8 @@
   LDO = ic('MYLDO', 7.62,
            left=[('VIN', ['1'], PI), ('EN', ['3'], IN)],          # (name, [pin numbers], type); None = empty row
            right=[('VOUT', ['5'], PO), None, ('PG', ['4'], OC)],
-           bottom=[('GND', ['2', '6'], PI)],                       # several numbers = stacked, extra copies hidden
-           desc='300 mA LDO')
+           bottom=[('GND', ['2', '6'], PI)],                       # several numbers = stacked: the first as typed,
+           desc='300 mA LDO')                                      # the others hidden and passive on the same point
   NFET = fet(SymLib('Device', kicad_symbol_dir() + '/Device.kicad_sym').get('Q_NMOS'), 'MYFET',
              D=['1', '2', '5'], G=['3'], S=['4'])                  # renumber D/G/S to the FOOTPRINT's pad numbers
   save_library({'MYLDO': LDO, 'MYFET': NFET}, 'hw/proj.kicad_sym', 'Proj')   # writes it and registers Proj in
@@ -22,14 +22,19 @@ supply pins on top, ground on the bottom, related pins adjacent, an empty row be
 the footprint you will use (check with `fpcheck.py --symbol`): an imported symbol numbered for one package and a
 KiCad library footprint numbered differently (e.g. a footprint that merges several source pins into one pad) is a
 silent wrong connection. Read every pin's type from the datasheet pin table; "unspecified" hides ERC problems.
+
+Stacked pins (several pad numbers on one pin, ic() and fet()) follow KiCad's own libraries: one visible pin with the
+stated type, the other numbers hidden and passive on the same point (no_connect for an NC pin). Never hidden power_in:
+KiCad connects a hidden power_in pin to a global net named after the pin, so two parts with stacked IN or VCC pins
+would be shorted together (ERC says only multiple_net_names).
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kicad_locks  # noqa: E402
-from kicad_sexpr import (LibTable, Node, SymbolLibrary, dumps, find_project_dir, lib_pin, lib_property,  # noqa: E402
-                         lib_rectangle, lib_symbol, loads)
+from kicad_sexpr import (LibTable, Node, Sym, SymbolLibrary, dumps, find_project_dir, lib_pin,  # noqa: E402
+                         lib_property, lib_rectangle, lib_symbol, loads)
 
 L = 2.54  # pin length and pitch
 
@@ -73,7 +78,11 @@ def ic(name, half_w, left=(), right=(), top=(), bottom=(), ref='U', desc='', top
             for k, n in enumerate(nums):
                 assert n not in seen, '%s: pin number %s used twice' % (name, n)
                 seen.add(n)
-                pins.append(lib_pin(typ, round(x, 4), round(y, 4), rot, pname, n, length=L, hide=k > 0))
+                # stacked copies as in KiCad's libraries: hidden and passive (a hidden power_in pin is an implicit
+                # global net named after the pin, which would join every part with a pin of that name); NC copies
+                # stay no_connect (a passive copy would be an unconnected pin and touch the NC pin)
+                etype = typ if k == 0 or typ == NC else PA
+                pins.append(lib_pin(etype, round(x, 4), round(y, 4), rot, pname, n, length=L, hide=k > 0))
     y0 = half_h - L - (2 * L if top else 0)
     side(left, lambda i: (-half_w - L, y0 - i * L), 0)
     side(right, lambda i: (half_w + L, y0 - i * L), 180)
@@ -95,7 +104,7 @@ def _node(sym):
 
 def fet(base, name, D, G, S, desc='', inherit=None):
     """Copy a Device:Q_NMOS / Q_PMOS symbol (node, or its text) and renumber its D/G/S pins to the footprint's pad
-    numbers; extra pads become hidden pins stacked on the same point. inherit: as for ic()."""
+    numbers; extra pads become hidden passive pins stacked on the same point. inherit: as for ic()."""
     t = _node(base)
     old = str(t[1]).split(':', 1)[-1]
     t[1] = name
@@ -118,6 +127,7 @@ def fet(base, name, D, G, S, desc='', inherit=None):
         pos = sub.index(pin)
         for k, n in enumerate(nums[1:], 1):
             extra = pin.deepcopy()
+            extra[1] = Sym(PA)                            # hidden copies passive, as for ic()
             extra.need('number')[1] = n
             extra.remove_all('hide')
             extra.insert(extra.index(extra.need('length')) + 1, Node('hide', True))

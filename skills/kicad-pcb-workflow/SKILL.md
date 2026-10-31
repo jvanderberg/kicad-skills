@@ -31,7 +31,7 @@ Scripts are in `${CLAUDE_SKILL_DIR}/scripts/`. Detailed references (read the one
 escaping, uuids, headers, `{slash}` net names, KiCad's own formatting). The higher-level writers sit on top of it and
 own the design rules: `schgen`/`symgen` for schematics and symbols, `new_board.py` and `board_setup.py` for boards and
 projects, `libtable.py` (`kicad_sexpr.LibTable`) for library tables, `router.py` for copper and hole spacing,
-`add_courtyard.py` for footprints. They build every item through the layer's builders and format no KiCad text
+`add_courtyard.py` and `strip_outline.py` for footprints. They build every item through the layer's builders and format no KiCad text
 themselves (the `.kicad_dru` rules language, which is not KiCad s-expression data, is the one thing still written as
 text). A project generator describes the design; if it needs a
 feature the writers lack, add it to the writer or the layer, never as a format string in the project.
@@ -188,8 +188,8 @@ comparison: a minutes-long run restarted after every fix is abandoned, and nothi
    netlist export, all diffed against the baseline. Required: **0 unconnected items**, no new errors, parity clean.
 3. Netlist assertions for what you added: `scripts/netspec.py check <spec> <sheet>` against the intended netlist (SPLIT,
    SHORT, MISSING, UNEXPECTED). ERC passing does not prove a symbol was not silently dropped or two nets were not
-   joined. `check.sh` also runs `board_lint.py` (no courtyard - space those parts by the rules of thumb in
-   `references/layout-rules.md`; missing 3D models, silk on part bodies, vias on same-net pads, paste over drilled
+   joined. `check.sh` also runs `board_lint.py` (silk outlines of courtyard-less parts overlapping - the outline is
+   the placement boundary, `references/layout-rules.md`; missing 3D models, silk on part bodies, vias on same-net pads, paste over drilled
    holes, other-net copper under mounting hardware) and writes the unused/strapped-pin table (`nc_audit.py`);
    every pin in it needs a recorded decision before layout.
 4. **Geometry checks DRC cannot do**: does a new track on a plane layer cut that plane (and what return paths cross the

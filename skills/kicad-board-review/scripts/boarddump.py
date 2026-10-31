@@ -4,11 +4,14 @@
 # for the analysis scripts, which run in a normal venv (numpy, scipy, shapely>=2, matplotlib).
 # It never refills zones: refill first with `kicad-cli pcb drc --refill-zones --save-board` on a COPY, so the analysis sees
 # exactly the copper KiCad would plot.
-import json, sys, re, os
+import argparse, json, sys, re, os
+ap = argparse.ArgumentParser(description='Dump a board\'s copper geometry to PACK_DIR/board.json for the analysis scripts.')
+ap.add_argument('board', help='the .kicad_pcb (zones refilled on a copy first)'); ap.add_argument('pack', metavar='PACK_DIR')
+args = ap.parse_args()                              # before the re-exec: --help and a missing argument need no KiCad
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from interp import need; need('pcbnew')            # started with another python: re-run under KiCad's
 import pcbnew
-src, pack = sys.argv[1], sys.argv[2]
+src, pack = args.board, args.pack
 os.makedirs(pack, exist_ok=True)
 # pcbnew.LoadBoard prints wx's "assert traits failed ... create wxApp before calling this" on every run (KiCad 10.0.x,
 # harmless). Drop exactly that line and pass every other stderr line through: never filter a whole category.

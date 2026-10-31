@@ -4,7 +4,12 @@
         [--no-paste] [--vias-filled [REF ...]] [--no-hardware] [--hardware-r MM | --hardware-r REF=MM ...]
 (started with another python it re-runs itself under KiCad's: interp.py)
 
-- footprints without a courtyard: DRC's courtyards_overlap cannot see them, so they can sit on top of other parts;
+- footprints without a courtyard (most EasyEDA imports): DRC's courtyards_overlap cannot see them, so they can sit on
+  top of other parts. Such a part's silkscreen outline is its boundary (layout-rules.md "Placement and mechanical"):
+  SILK OUTLINE reports one whose outline-and-pads rectangle overlaps a neighbour's (or the neighbour's courtyard) on
+  the same side; DRC's silk_overlap only sees crossing lines, not a part sitting inside another's outline. A part
+  whose outline was removed to place it tighter is checked by its pads alone, and is listed in a NOTE as spaced by
+  rule of thumb. Rectangles are axis-aligned, so a part at 45 degrees is checked generously;
 - 3D models whose file does not exist (${KICAD10_3DMODEL_DIR}, ${KIPRJMOD} and other variables expanded from the
   environment and kicad_common.json): the 3D render silently shows bare pads, so a missing model looks like a
   missing part or hides a collision. KiCad's own library references models it does not install for some footprints;
@@ -99,6 +104,64 @@ def bodies(f):
     if not rs:
         return []
     return [(min(r[0] for r in rs), min(r[1] for r in rs), max(r[2] for r in rs), max(r[3] for r in rs))]
+
+
+def merged(rs):
+    return (min(r[0] for r in rs), min(r[1] for r in rs), max(r[2] for r in rs), max(r[3] for r in rs)) if rs else None
+
+
+MARK = 1.0        # a silk circle or filled shape smaller than this both ways is a mark (pin-1 dot), not the outline
+
+
+def silk_outline(f):
+    """(the part's boundary, whether it has a silk outline): one rectangle over its silkscreen outline on its own side
+    (graphics, not text; marks such as a pin-1 dot outside the outline do not count) and its pads, for a footprint
+    without a courtyard"""
+    silk = pcbnew.B_SilkS if f.IsFlipped() else pcbnew.F_SilkS
+    rs = []
+    for g in f.GraphicalItems():
+        if not isinstance(g, pcbnew.PCB_SHAPE) or g.GetLayer() != silk:
+            continue
+        r = box(g.GetBoundingBox())
+        if (g.GetShape() == pcbnew.SHAPE_T_CIRCLE or g.IsSolidFill()) and r[2] - r[0] < MARK and r[3] - r[1] < MARK:
+            continue
+        rs.append(r)
+    return merged(rs + [box(p.GetBoundingBox()) for p in f.Pads()]), bool(rs)
+
+
+def outline_overlaps(fps, crt, minimum):
+    """SILK OUTLINE problems, and the NOTE listing the parts without a courtyard. Each part's area is its courtyard's
+    rectangle when it has one, else its silk outline and pads; a pair is reported when one of them has no courtyard
+    (two courtyards are DRC's) and the rectangles overlap by more than `minimum` both ways"""
+    area, outlined, bare = [], [], []
+    for f in fps:
+        if not f.Pads():
+            continue
+        cy, flipped = crt[f.GetReference()]
+        if cy.OutlineCount():
+            area.append((f.GetReference(), flipped, True, box(cy.BBox())))
+            continue
+        r, has = silk_outline(f)
+        (outlined if has else bare).append(f.GetReference())
+        area.append((f.GetReference(), flipped, False, r))
+    probs = []
+    for i, (ra, fa, ca, a) in enumerate(area):
+        for rb, fb, cb, b in area[i + 1:]:
+            if fa != fb or (ca and cb):
+                continue
+            ox, oy = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+            if ox > minimum and oy > minimum:
+                probs.append('SILK OUTLINE  %s and %s overlap by %.2f x %.2f mm at (%.2f, %.2f)%s: move them apart, or '
+                             'place them tighter on purpose (remove the outline, space by rule of thumb: layout-rules.md)' % (
+                                 ra, rb, ox, oy, (max(a[0], b[0]) + min(a[2], b[2])) / 2, (max(a[1], b[1]) + min(a[3], b[3])) / 2,
+                                 ' (%s by its courtyard)' % (ra if ca else rb) if ca or cb else ''))
+    notes = []
+    if outlined:
+        notes.append('NOTE  no courtyard, silk outline checked as the boundary (DRC cannot see these): %s' % ' '.join(outlined))
+    if bare:
+        notes.append('NOTE  no courtyard and no silk outline, spaced by rule of thumb (layout-rules.md; check the gaps): %s'
+                     % ' '.join(bare))
+    return probs, notes
 
 
 def vias_in_pads(b, fps):
@@ -322,16 +385,14 @@ def main():
     a = ap.parse_args()
     b = load_board(a.board)
     fps = list(b.GetFootprints())
-    probs = []
+    probs, notes = [], []
     crt = {}
     for f in fps:
         f.BuildCourtyardCaches()
         side = pcbnew.B_CrtYd if f.IsFlipped() else pcbnew.F_CrtYd
-        cy = f.GetCourtyard(side)
-        crt[f.GetReference()] = (cy, f.IsFlipped())
-        if not a.no_courtyard and cy.OutlineCount() == 0 and f.Pads():
-            probs.append('NO COURTYARD  %s (%s): DRC cannot report overlaps with it (check its spacing: layout-rules.md)' %
-                         (f.GetReference(), f.GetFPID().GetUniStringLibId()))
+        crt[f.GetReference()] = (f.GetCourtyard(side), f.IsFlipped())
+    if not a.no_courtyard:
+        probs, notes = outline_overlaps(fps, crt, a.min_overlap)
     if not a.no_models:
         env = kicad_vars(a.board)
         for f in fps:
@@ -361,10 +422,9 @@ def main():
                 if any(overlap(tb, bx, a.min_overlap) for bx in bxs):
                     probs.append('SILK ON PART  "%s"%s on %s at (%.2f, %.2f) lies on the body of %s' % (
                         s, ' (of %s)' % owner if owner else '', b.GetLayerName(layer), (tb[0] + tb[2]) / 2, (tb[1] + tb[3]) / 2, ref))
-    notes = []
     if not a.no_via_in_pad:
-        vp, notes = vias_in_pads(b, fps)
-        probs += vp
+        vp, vn = vias_in_pads(b, fps)
+        probs += vp; notes += vn
     if not a.no_paste:
         filled = None if a.vias_filled is None else (True if not a.vias_filled else set(a.vias_filled))
         pp, pn = paste_on_holes(b, fps, filled)

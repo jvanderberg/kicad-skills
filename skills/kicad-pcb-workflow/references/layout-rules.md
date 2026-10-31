@@ -71,10 +71,26 @@ plane), not the free-wire ~1 nH/mm, and compute the before/after of a relocation
   sides. `board_lint.py` checks it (UNDER HARDWARE; `--hardware-r` for the real hardware size).
 - Bring-up test points for every rail and ground (kicad-new-board requirements), labelled, each with a ground pad
   within probe reach.
-- Spacing between parts, by rule of thumb. Most EasyEDA footprints have no courtyard, so DRC cannot report them
-  overlapping (`board_lint.py` lists them); check the gaps yourself at placement, edge to edge of pads and bodies.
-  Starting points, from IPC-7351B's nominal courtyard allowance per part (as KiCad's KLC F5.3 applies it) on both
-  neighbours:
+- **A part without a courtyard is bounded by its silkscreen outline.** Most EasyEDA footprints have no courtyard, so
+  DRC cannot report them overlapping, and DRC's `silk_overlap` sees only crossing lines, not a part sitting inside
+  another's outline. Place them so no two outlines overlap and no part sits inside another's outline (a footprint with
+  a courtyard counts by its courtyard). The outline is generous, but it is what the part's author drew, and it keeps
+  the silk readable. `board_lint.py` checks it (SILK OUTLINE, from each part's outline-and-pads rectangle). A silk
+  overlap is a placement problem: never exempt `silk_overlap` items or SILK OUTLINE lines to get a clean report.
+- **Tighter than the outline only with a reason** (a decoupling capacitor at its pin, an LED resistor squeezed
+  between its parts, a board size the user fixed), recorded in the layout compliance file with the part, its
+  neighbour, the reason and the measured copper gap. Then the part gets a copy of its footprint without the outline
+  (`strip_outline.py FOOTPRINT.kicad_mod --to PROJECT/NoOutline.pretty`, registered once with `libtable.py add PROJECT
+  fp NoOutline NoOutline.pretty`; set that part's Footprint field to `NoOutline:<same name>`), and remove the outline
+  of every part in the tight spot whose outline would still overlap. The copy keeps the footprint's name, pads,
+  origin and rotation: JLCImport's production export recognises JLC's own footprint by name, and JLC places by the
+  pads, so only the library nickname changes. Pin-1 and polarity marks stay (the script keeps dots and anything drawn
+  inside the outline, and says when nothing is left to mark a polarised part: add a dot); look at a silk render.
+  Do not delete silk on the board itself: regenerating the board brings it back, and DRC reports the footprint as
+  differing from its library.
+- Spacing without an outline (and around parts whose courtyard you do not trust), by rule of thumb; check the gaps
+  yourself at placement, edge to edge of pads and bodies (`board_lint.py` lists these parts in a NOTE). Starting
+  points, from IPC-7351B's nominal courtyard allowance per part (as KiCad's KLC F5.3 applies it) on both neighbours:
   - about 0.5 mm between ordinary SMD parts (SOT, SOIC, QFN, chips 0603 and up) and around through-hole bodies;
   - down to about 0.3 mm between 0402 and smaller passives;
   - about 1 mm around connectors (plus room for the mating plug and fingers), crystals, canned capacitors and parts
@@ -87,18 +103,28 @@ plane), not the free-wire ~1 nH/mm, and compute the before/after of a relocation
 
 ## Silkscreen
 
-Plain and readable: text >= 1 mm, lines >= 0.15 mm, never on pads, labels that say what the thing is. No decoration
+Plain and readable: text >= 1 mm, lines >= 0.15 mm, never on pads, labels that say what the thing is (`new_board.py
+--labels` takes a smaller "size" and notes it: going under 1 mm is the user's call, not a way to fit). No decoration
 (knockouts, dashes) unless asked. Once the user accepts a silk position, leave it. Labels must also clear other parts'
-bodies, which DRC does not check (`board_lint.py` does).
+bodies, which DRC does not check (`board_lint.py` does). Overlapping part outlines are not cosmetic: on a footprint
+without a courtyard the outline is the placement boundary ("Placement and mechanical").
 
 ## External connections are a user interface
 
 Every connector, solder pad, switch and test point is used by a person who does not have the schematic. Give each one:
 - a **function label** on the silkscreen (on both sides when wires can be soldered from either side; `new_board.py
-  --labels` writes both, mirrored on the bottom), one per pin on a header (`--labels` with `{"J3": {"pads": {"1":
-  "GND", ...}, "dy": 2.35}}` places each at its pad);
+  --labels` writes both, mirrored on the bottom, or one side with `{"D1": {"text": "TX", "dx": 0, "dy": 1.1,
+  "sides": "F"}}`), one per pin on a header (`--labels` with `{"J3": {"pads": {"1": "GND", ...}, "dy": 2.35}}` places
+  each at its pad), and a jumper's settings beside it (`{"_texts": [{"text": "VIO: 1 SHUNT", "at": [x, y]}]}`);
 - **polarity and orientation** marks: +/- or pin 1, a keyed footprint where one exists, and one pad-shape convention
   kept across the board (for example square = positive or signal, round = ground), stated in the board's docs;
 - a **consistent order** for pairs and groups (always + then GND, the same order on every connector);
 - labels clear of pads, other silk and part bodies.
 Check them in a silk render and a 3D render, not only in DRC.
+
+**Selection jumpers.** A header that selects one of several rails with one shunt (a VIO select: 3V3 / 1V8 / 5V to a
+common pin) is laid out so that every pair of adjacent pins, along a row and across rows, is one rail and the common
+net, never two rails: a checkerboard. On a 2x3 header, for example, row 1 = 3V3, VIO, 1V8 and row 2 = VIO, 5V, VIO
+(every VIO pin is the common net). With the rails in one row, a shunt fitted sideways or one pitch off shorts two
+rails. Label each position with the rail it selects, and list in the design notes what every possible single-shunt
+position connects.

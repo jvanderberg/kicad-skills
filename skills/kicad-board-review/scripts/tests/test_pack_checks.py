@@ -4,6 +4,7 @@
   apart with one allowed via it is ok; with none declared the coverage says the check did not run;
 - each IC supply pin gets its nearest capacitor by copper path, with an inductance estimate from microstrip per-length
   inductance (not the free-wire 1 nH/mm); a cap 18 mm of track away is flagged;
+- the path joins a via dropped mid-way on a track and a pad a track runs straight across (no vertex there), as KiCad does;
 - a differential pair with the ground pour 0.15 mm from it is flagged as partly coplanar;
 - a net_classes pattern that matches nothing, and a connector net that falls through to "slow", are warnings."""
 import json, os, subprocess, sys, tempfile
@@ -111,6 +112,44 @@ def test_decoupling_by_path_with_microstrip_inductance():
     # 0.3 mm over 0.2 mm of prepreg: about 0.3 nH/mm, nowhere near the free-wire 1 nH/mm
     assert 0.15 * b['track_mm'] < b['est_nH'] < 0.5 * b['track_mm'], b
     assert ('U1', '2') not in rows, 'ground pins are not supply pins'
+
+
+def test_decoupling_joins_mid_segment_vias_and_pads():
+    """KiCad joins a via dropped on a straight run, and a pad a track runs across, with no vertex on the track there
+    (skill-issues #5: a false "no capacitor reachable"). VBUS: U2.1 -> via (10, 6) -> In2.Cu track (8, 6)-(22, 6), with
+    both vias mid-way along it -> via (20, 6) -> C2. VDD: U2.3 -> a track ending on another (T-join) that runs straight
+    across C3.1 and on past it."""
+    d = tempfile.mkdtemp()
+    fps = [dict(ref='U2', value='LDO', fp='SOT', lib='', x=10, y=10, rot=0, side='F',
+                pads=[pad('1', 'VBUS', 10, 10), pad('2', 'GND', 10, 11), pad('3', 'VDD', 30, 10)]),
+           dict(ref='C2', value='1uF', fp='C_0402', lib='', x=20, y=10.5, rot=0, side='F', pads=[pad('1', 'VBUS', 20, 10), pad('2', 'GND', 20, 11)]),
+           dict(ref='C3', value='1uF', fp='C_0402', lib='', x=36, y=14.5, rot=0, side='F', pads=[pad('1', 'VDD', 36, 14), pad('2', 'GND', 36, 15)])]
+    tracks = [dict(a=[10, 10], b=[10, 6], w=0.3, layer='F.Cu', net='VBUS'),
+              dict(a=[8, 6], b=[22, 6], w=0.3, layer='In2.Cu', net='VBUS'),       # no vertex at either via
+              dict(a=[20, 6], b=[20, 10], w=0.3, layer='F.Cu', net='VBUS'),
+              dict(a=[30, 10], b=[30, 14], w=0.3, layer='F.Cu', net='VDD'),        # ends mid-way on the next one
+              dict(a=[26, 14], b=[40, 14], w=0.3, layer='F.Cu', net='VDD')]        # straight across C3.1
+    vias = [dict(x=10, y=6, net='VBUS', size=0.6, drill=0.3, type=4, type_name='through'),
+            dict(x=20, y=6, net='VBUS', size=0.6, drill=0.3, type=4, type_name='through')]
+    edge = rect(0, 0, 45, 20)
+    board = dict(source='synthetic', layers=['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'], stackup=STACK, netclass={}, vias=vias,
+                 edge=[[edge, []]], edge_bbox=[0, 0, 45, 20], footprints=fps, tracks=tracks, zones=[])
+    comps, nets = {}, {}
+    for f in fps:
+        comps[f['ref']] = dict(ref=f['ref'], value=f['value'], fp=f['fp'], pins={})
+        for p in f['pads']:
+            pt = 'power_in' if f['ref'] == 'U2' else 'passive'
+            comps[f['ref']]['pins'][p['num']] = [p['net'], '', pt]
+            nets.setdefault(p['net'], []).append([f['ref'], p['num'], '', pt])
+    cfg = dict(ground_nets=['GND'], decoupling=dict(max_mm=20))
+    for n, v in (('board.json', board), ('netlist.json', dict(components=comps, nets=nets)), ('review_config.json', cfg)):
+        json.dump(v, open(os.path.join(d, n), 'w'))
+    out = run(d, 'decoupling.py')
+    rows = {(r['ic'], r['pin']): r for r in json.load(open(os.path.join(d, 'decoupling.json')))['pins']}
+    a, b = rows[('U2', '1')], rows[('U2', '3')]
+    assert a['status'] == 'ok' and a['cap'] == 'C2' and abs(a['track_mm'] - 18.0) < 0.05 and a['via_hops'] > 0, a
+    assert b['status'] == 'ok' and b['cap'] == 'C3' and abs(b['track_mm'] - 10.0) < 0.05, b
+    assert 'no capacitor reachable' not in out, out
 
 
 def test_diff_pair_coplanar_and_coverage_warnings():
