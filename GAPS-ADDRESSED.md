@@ -764,3 +764,24 @@ passed, 1 skipped; psu 4 passed. Rebased onto origin/main (ed7b29d) before these
 | sourcing lookup fetched 30 rows; search logic duplicated | lookup fetches 5; one `search_ranked()` | `test_lookup_fetches_only_a_few_rows` |
 
 Test runs: wf 110 passed, 2 skipped; rev 29 passed, 2 skipped; ps 21 passed, 1 skipped; psu 4 passed.
+
+## Second review (PR #10, code-review xhigh) and its fixes
+
+| Finding | Fix | Verified |
+|---|---|---|
+| part_gate: dash / dot voltage suffixes (LP5907MFX-3.3/NOPB, LP2985-33DBVR, LP5912-3.3DRVR) no longer reached their page (regression) | the name is also cut at its first "-", "." or "/"; a page found that way needs part-details confirmation, like a dropped voltage code | live: all three ACTIVE (LP5907 and LP5912 confirmed by part-details, LP2985-33 a ti.com redirect) |
+| part_gate: an unconfirmed `unknown (...)` status passed the gate | every unconfirmed status carries one marker that gate_flag fails on, whatever its case | tests: 403, timeout, no tag, `main()` exit 1 |
+| part_gate: automotive ...Q1 parts never reached their -Q1 device page; a plain-page fallback passed as ACTIVE | -Q1 forms of the full and voltage-dropped device number first; a plain page for a Q1 orderable is ACTIVE? unless part-details confirms it | live: TPS7A1633QDGNRQ1 -> TPS7A16-Q1, TPS7B6933QDBVRQ1 -> TPS7B69-Q1; TLV75533PQWDRBRQ1 ACTIVE? (TI has no TLV755P-Q1 page) |
+| part_gate: http.client errors (IncompleteRead) crashed it; a dead budget guard | one `_fetch` catching OSError and HTTPException; ti_resolve owns the request count | tests |
+| decoupling: same-net tracks crossing mid-span not joined | segments whose copper overlaps are split at their closest points and joined (STRtree prefilter) | KiCad 10.0.1: crossing tracks join; parallel 0.3 mm tracks join below 0.30 mm apart, not at it |
+| decoupling: pour pieces keyed by `id()` of shapely objects, reused after free, so pieces were lost (found while testing the above) | pieces keyed by layer and index | pico-stretch2: U6.8 (3V3) FAIL -> ok, C16 at 1.88 mm across the pour; DRC 0 unconnected; pack 0.22 -> 0.11 s |
+| bom_check SPLIT flagged parts JLCImport v1.7.0 (PR #126, released 30 October 2026) puts on one line | different Values flagged only when the installed jlcimport-cli is older than v1.7.0 or of unknown version (`sourcing.cli_version`: `--version`, else the package metadata of its python); one LCSC number on two footprints always flagged | tests at 1.6.7 / 1.7.0 / 1.8.2 / unknown; this machine's pipx build of main reports 1.6.7 and is flagged |
+| docs said `production` and the matcher were unreleased | ps install notes, matcher, "Order files"; README; fpcheck docstring; wf/rev `preflight.py` reports a pre-v1.7.0 main build (has `production`, splits BOM lines) | preflight on this machine: "1.6.7: a build of main from before v1.7.0" |
+| strip_outline overwrote a different same-named footprint on a later run | an existing destination is rewritten only if it is a strip_outline copy with the same pads | test (also `--dry-run`; same-source re-run byte-identical) |
+| board_lint: silk text boxes (PCB_TEXTBOX is a PCB_SHAPE) counted as outline; marks measured in the board frame (a 0.8 mm square at 45 degrees became outline) | text boxes excluded; marks measured in the footprint's frame, as strip_outline does | tests |
+| board_setup: the dropped warning advised --keep-assignments to a run that used it | separate "moved X from A to B" warning; help and docstring say what --keep-assignments keeps | test |
+
+Not changed: the reviewer's alternative of drawing courtyards from the silk outline (add_courtyard.py) so KiCad's DRC
+enforces the rule; the user kept the board_lint check (30 October 2026).
+
+Test runs: wf 114 passed, 2 skipped; rev 31 passed, 2 skipped; ps 26 passed, 1 skipped; psu 4 passed.

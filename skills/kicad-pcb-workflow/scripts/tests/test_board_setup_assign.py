@@ -1,7 +1,8 @@
 """board_setup.py net class assignments:  python3 tests/test_board_setup_assign.py
 - a run with --assign / --pattern replaces the complete set: a net taken out of a class on a re-run leaves it, a
-  pattern no longer given is dropped, and the run warns (stderr) what it dropped; --keep-assignments adds to the
-  existing ones; a run with neither (--stackup only) leaves them untouched, KiCad-made ones included
+  pattern no longer given is dropped, and the run warns (stderr) what it dropped; --keep-assignments keeps the ones it
+  does not name, and a net it names moves to the class given (a warning says from which); a run with neither
+  (--stackup only) leaves them untouched, KiCad-made ones included
 - an assigned name that is not a net of the board next to the .kicad_pro (SW for Net-(U3-SW)) and a pattern that
   matches no net are warnings, as is a missing board."""
 import os, subprocess, sys, tempfile
@@ -68,6 +69,24 @@ def test_stackup_only_run_keeps_assignments():
     assert p.assignments() == {'GND': ['Power']}, p.assignments()
     assert p.data['net_settings']['netclass_patterns'] == []
     assert 'WARNING: dropped 2 existing' in err and 'VBUS (Power), pattern /USB_D* (Power)' in err, err
+
+
+def test_keep_assignments_says_what_it_moved():
+    """--keep-assignments keeps the nets and patterns it does not name, but a net it names gets only the class given:
+    the warning says which net moved from which class (not "dropped", and not advice to use the flag already given)"""
+    d = project()
+    out, err, p = run(d, '--class', 'Signal:track=0.2', '--assign', 'Signal=GND,3V3', '--pattern', 'USB=/USB_D*')
+    out, err, p = run(d, '--class', 'Signal:track=0.2', '--keep-assignments', '--assign', 'Power=GND',
+                      '--pattern', 'Power=/USB_D*')
+    assert p.assignments() == {'GND': ['Power'], '3V3': ['Signal']}, p.assignments()
+    assert p.data['net_settings']['netclass_patterns'] == [{'netclass': 'Power', 'pattern': '/USB_D*'}]
+    warn = [l for l in err.splitlines() if l.startswith('WARNING:')]
+    assert len(warn) == 1 and 'moved 2 existing' in warn[0], err
+    assert 'GND from Signal to Power' in warn[0] and 'pattern /USB_D* from USB to Power' in warn[0], err
+    assert 'dropped' not in err and 'adds instead' not in err, err
+    out, err, p = run(d, '--class', 'Signal:track=0.2', '--assign', 'Signal=GND')     # replacing: 3V3 and the
+    assert 'WARNING: dropped 2 existing' in err and '3V3 (Signal)' in err, err         # pattern gone, GND moved
+    assert 'moved 1 existing' in err and 'GND from Power to Signal' in err and 'GND (Power)' not in err, err
 
 
 def test_assigned_names_that_are_not_nets_warn():

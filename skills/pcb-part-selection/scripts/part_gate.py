@@ -12,12 +12,14 @@ stock is per-board count x boards x (1 + attrition) from sourcing.json, at least
 For each device name it prints:
 - lifecycle from the manufacturer's product page, where that can be read automatically (TI: ti.com/product/<NAME>,
   the page's status tag: ACTIVE / NRND / LAST TIME BUY / OBSOLETE / PREVIEW). An orderable number is cut back to its
-  device page (TPS61089RNRR -> TPS61089, TLV75518PDRVR -> TLV755P: a fixed-voltage code is taken out of the middle)
-  and the page used is printed. A page found only by taking a voltage code out may be another device: it counts only
-  when ti.com lists the orderable number under it (ti.com/product/TLV755P/part-details/TLV75518PDRVR answers 200);
-  otherwise its status gets a "?" (ACTIVE? (as TLV755P, found only by dropping '18' ...)) and fails the gate until
-  the device is confirmed by hand. No product page for any of those (HTTP 404) is reported as SUSPECT: treat the part as discontinued until
-  the manufacturer says otherwise. Other vendors: "check by hand" (open the product page and
+  device page (TPS61089RNRR -> TPS61089; TPS7A1633QDGNRQ1 -> TPS7A16-Q1) and the page used is printed. A page found
+  only by dropping something may be another device: a fixed-voltage code from the middle (TLV75518PDRVR -> TLV755P),
+  everything from the first "-", "." or "/" (LP5907MFX-3.3/NOPB -> LP5907), or the automotive grade (a plain page for
+  a ...Q1 orderable). It counts only when ti.com lists the orderable number under it
+  (ti.com/product/TLV755P/part-details/TLV75518PDRVR answers 200); otherwise its status gets a "?" (ACTIVE? (as
+  TLV755P, found only by dropping '18' ...)) and fails the gate, whatever the status (also "unknown"), until the
+  device is confirmed by hand. No product page for any of those (HTTP 404) is reported as SUSPECT: treat the part as
+  discontinued until the manufacturer says otherwise. Other vendors: "check by hand" (open the product page and
   record the status);
 - every orderable LCSC variant of that exact device in the project's region, with stock (an LCSC C-number is looked
   up as exactly that part).
@@ -31,7 +33,7 @@ design tool's top picks may have no stock at all. Run this on every candidate be
 and again right before ordering, and present every candidate to the user with its stock, region and date (the
 first output line). Results are a snapshot.
 """
-import argparse, os, re, sys, urllib.error, urllib.request
+import argparse, http.client, os, re, sys, urllib.error, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sourcing  # noqa: E402
@@ -44,46 +46,42 @@ TI_PREFIX = (r'(?:TPSM?|LMR|LMQ|LMZ|LM|TLV|LP|BQ|UCC|LMG|CSD|TLC|TPA|TCA|INA|LMS
 NAME_RE = re.compile(r'\b(%s\d[0-9A-Z]*(?:-Q1)?)\b' % TI_PREFIX)
 
 
+def _fetch(url):
+    """(final URL, first 400 kB of the page) for a ti.com GET; raises urllib.error.HTTPError for an error status and
+    OSError / http.client.HTTPException (IncompleteRead, InvalidURL, ...) when the request itself fails"""
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    r = urllib.request.urlopen(req, timeout=20)
+    return r.geturl(), r.read(400000).decode('utf-8', 'replace')
+
+
 def ti_lifecycle(name):
     url = 'https://www.ti.com/product/%s' % name
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     try:
-        html = urllib.request.urlopen(req, timeout=20).read(400000).decode('utf-8', 'replace')
+        html = _fetch(url)[1]
     except urllib.error.HTTPError as e:
         return ('SUSPECT (product page HTTP %d)' % e.code) if e.code == 404 else 'unknown (HTTP %d)' % e.code
-    except (urllib.error.URLError, OSError) as e:
-        return 'unknown (%s)' % e
+    except (OSError, http.client.HTTPException) as e:      # URLError is an OSError
+        return 'unknown (%s: %s)' % (type(e).__name__, e)
     m = re.search(r'<meta\s+name="status"\s+content="([^"]+)"', html, re.I)
     return m.group(1).upper() if m else 'unknown (no status tag on %s)' % url
 
 
-MAX_TI_REQUESTS = 13   # ti.com requests per part at most: up to 12 product pages (TLV75518PDRVR needs 11, TPS7A2033PDBVR
-                       # 12; a SUSPECT part tries them all), then one part-details confirmation (ti_orderable_confirmed)
+MAX_TI_REQUESTS = 13   # ti.com requests per part at most, counted in ti_resolve only: up to 12 product pages
+                       # (TLV75518PDRVR needs 11, TPS7A2033PDBVR 12; a SUSPECT part tries as many as fit), plus one
+                       # part-details confirmation (ti_orderable_confirmed) when the page found may be another device
 # two-digit output-voltage codes taken for one in a fixed-voltage order code: 0.8-3.6 V, 4.5 V, 5.0 V. Not 40, 60, 89
 # and the like, which end ordinary device numbers (TPS62840, TPS54360, TPS61089)
 VOLTAGE_CODES = {'%02d' % v for v in range(8, 37)} | {'45', '50'}
-
-
-def _core(name):
-    """an orderable automotive number without its trailing Q1 (TPS61088QRHLRQ1 -> TPS61088QRHLR)"""
-    return name[:-2] if name.endswith('Q1') and not name.endswith('-Q1') else name
+UNCONFIRMED = 'confirm the device'    # ends every unconfirmed lifecycle text (lifecycle_text); gate_flag fails on it
 
 
 def _trims(name):
-    """name, its -Q1 device forms, then name cut back letter by letter from the end, never past its last digit
-    (TPS61089RNRR -> TPS61089RNR ... TPS61089; TPS61230ADRRR -> ... TPS61230A, TPS61230): dropping a digit names
-    another device, which only _without_voltage does, and says so"""
-    out = [name]
-    core = _core(name)
-    if core != name:
-        q = re.match(r'(%s\d+[A-Z]?)Q' % TI_PREFIX, name)
-        if q:
-            out.append(q.group(1) + '-Q1')
-            out.append(re.match(r'%s\d+' % TI_PREFIX, name).group(0) + '-Q1')
-    digits = [m.end() for m in re.finditer(r'\d', core)]
-    floor = digits[-1] if digits else len(core)
-    out += [core[:i] for i in range(len(core), floor - 1, -1)]
-    return out
+    """name cut back letter by letter from the end, longest first, never past its last digit (TPS61089RNRR ->
+    TPS61089RNR ... TPS61089; TPS61230ADRRR -> ... TPS61230A, TPS61230): dropping a digit names another device, which
+    only _without_voltage does, and says so"""
+    digits = [m.end() for m in re.finditer(r'\d', name)]
+    floor = digits[-1] if digits else len(name)
+    return [name[:i] for i in range(len(name), floor - 1, -1)]
 
 
 def _without_voltage(name):
@@ -91,69 +89,103 @@ def _without_voltage(name):
     two-digit code after the device name (TLV755+18+P+DRVR, TLV767+18+DRVR, TPS7A20+33+PDBVR, TLV1117LV+33+DCYR).
     Only a digit group followed by a letter, ending in a VOLTAGE_CODES code; the first digit group keeps at least three
     digits (TLV755, not TLV7) and a later one none or at least two (TPS7A20, TLV1117LV; not LMG3410R0)."""
-    core = _core(name)
     out = []
-    for i, m in enumerate(re.finditer(r'\d+(?=[A-Z])', core)):
+    for i, m in enumerate(re.finditer(r'\d+(?=[A-Z])', name)):
         run = m.group(0)
         if len(run) < 2 or run[-2:] not in VOLTAGE_CODES:
             continue
         left = len(run) - 2
         if (i == 0 and left < 3) or (i > 0 and left == 1):
             continue
-        out.append((core[:m.end() - 2] + core[m.end():] + name[len(core):], run[-2:]))
+        out.append((name[:m.end() - 2] + name[m.end():], run[-2:]))
     return out
 
 
+def _q_stem(core):
+    """the device part of an automotive orderable without its trailing Q1: up to the Q (temperature grade) after its
+    first digit (TPS7A1633QDGNR -> TPS7A1633, TLV75533PQWDRBR -> TLV75533P, LMS3655AQRNLR -> LMS3655A), or None"""
+    m = re.match(r'(%s\d[0-9A-Z]*?)Q[A-Z]' % TI_PREFIX, core)
+    return m.group(1) if m else None
+
+
 def ti_candidates(name):
-    """[(device-name guess, voltage code dropped or None)] for a TI name that may be an orderable number, in the order
-    tried, at most MAX_TI_REQUESTS - 1 (the last request is kept for the part-details confirmation): the name trimmed from the end (TPS61089RNRR -> TPS61089RNR ... TPS61089;
-    TPS61088QRHLRQ1 -> TPS61088-Q1), then the same for the name without a mid-name voltage code (TLV75518PDRVR ->
-    TLV755PDRVR ... TLV755P; TLV76718DRVR -> ... TLV767)."""
-    out = {c: None for c in _trims(name)}
-    for v, code in _without_voltage(name):
-        for c in _trims(v):
-            out.setdefault(c, code)
-    return list(out.items())[:MAX_TI_REQUESTS - 1]
+    """[(device-name guess, why)] for a TI name that may be an orderable number, in the order tried. why is None for
+    a guess that keeps the orderable's own device name (letters trimmed off the end: TPS61089RNRR -> TPS61089; a -Q1
+    form of an automotive number: TPS61088QRHLRQ1 -> TPS61088-Q1), else what was dropped to make it, which may name
+    another device, so a page found that way needs ti_orderable_confirmed:
+    - a voltage code from the middle (TLV75518PDRVR -> TLV755P),
+    - everything from the first "-", "." or "/" (LP5907MFX-3.3/NOPB -> LP5907, LP2985-33DBVR -> LP2985),
+    - the automotive grade: a plain page for a ...Q1 orderable (TPS61088QRHLRQ1 -> TPS61088).
+    An automotive number tries its -Q1 device pages first (TPS7A1633QDGNRQ1 -> TPS7A1633-Q1, TPS7A16-Q1), then plain
+    pages of its device part only (the letters after its Q are the package). Guesses that cannot be a page (with a
+    "/", ending in "-" or ".") are left out. Not capped: ti_resolve stops at MAX_TI_REQUESTS."""
+    q1 = name.endswith('Q1') and not name.endswith('-Q1')
+    core = name[:-2] if q1 else name
+    head, tail = re.match(r'([^-./]*)(.*)', core).groups()
+    base, base_why = (head, ("the suffix '%s'" % tail,)) if tail and tail != '-Q1' else (core, ())
+    forms = [(core, ())] + ([(base, base_why)] if base != core else [])
+    forms += [(v, ("'%s' as a voltage code" % code,) + base_why) for v, code in _without_voltage(base)]
+    out = {}
+
+    def add(c, why):
+        if c and '/' not in c and c[-1] not in '-.':
+            out.setdefault(c, ' and '.join(why) or None)
+    if q1:
+        stems = [(_q_stem(f), why) for f, why in forms]
+        for stem, why in stems:
+            if stem:
+                add(stem + '-Q1', why)
+                add(_trims(stem)[-1] + '-Q1', why)
+        for (stem, why), (f, _) in zip(stems, forms):
+            for c in _trims(stem or f):
+                add(c, why + ('the automotive grade (Q1)',))
+    else:
+        for f, why in forms:
+            for c in _trims(f):
+                add(c, why)
+    return list(out.items())
 
 
 def ti_orderable_confirmed(page, order):
     """True when ti.com lists the orderable number under that device page: ti.com/product/PAGE/part-details/ORDER
     answers 200 at that same URL and the page names ORDER. Checked 2026-10-30: TLV755P/TLV75518PDRVR,
-    TLV767/TLV76718DRVR, TPS7A20/TPS7A2033PDBVR are 200; mismatched pairs (TLV755P/TPS61089RNRR,
-    TLV767/TLV75518PDRVR, TPS7A20/TLV76718DRVR, TLV755P/TLV75599PDRVR, ...) are a plain 404 with no redirect.
-    Any failure is False."""
-    url = 'https://www.ti.com/product/%s/part-details/%s' % (page, order)
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    TLV767/TLV76718DRVR, TPS7A20/TPS7A2033PDBVR, TPS7A16-Q1/TPS7A1633QDGNRQ1, LP2985/LP2985-33DBVR and
+    LP5907/LP5907MFX-3.3/NOPB (the "/" as is; encoded as %2F it is a 404) are 200; mismatched pairs
+    (TLV755P/TPS61089RNRR, TLV767/TLV75518PDRVR, TPS7A16/TPS7A1633QDGNRQ1, LP5912/LP2985-33DBVR, ...) are a plain 404
+    with no redirect. Any failure is False."""
     try:
-        r = urllib.request.urlopen(req, timeout=20)
-        html = r.read(400000).decode('utf-8', 'replace')
-    except (urllib.error.URLError, OSError):       # HTTPError (404) is a URLError
+        url, html = _fetch('https://www.ti.com/product/%s/part-details/%s' % (page, order))
+    except (OSError, http.client.HTTPException):      # HTTPError (404) and URLError are OSErrors
         return False
-    return r.geturl().rstrip('/').upper().endswith('/PART-DETAILS/' + order.upper()) and order.upper() in html.upper()
+    return url.rstrip('/').upper().endswith('/PART-DETAILS/' + order.upper()) and order.upper() in html.upper()
 
 
 def ti_resolve(name):
-    """(status, device page name, voltage code dropped to find it or None, orderable confirmed on that page). The first
-    candidate with a product page wins; none -> SUSPECT. A page found only by dropping a voltage code is checked with
-    ti_orderable_confirmed(page, name), within MAX_TI_REQUESTS."""
-    last, asked = None, 0
-    for c, code in ti_candidates(name):
+    """(status, device page name, what was dropped to find it or None, orderable confirmed on that page). The first
+    candidate with a product page wins; none -> SUSPECT. A page found by dropping something (ti_candidates) is checked
+    with ti_orderable_confirmed(page, name), unless its status could not be read. This is the one place that counts
+    requests: at most MAX_TI_REQUESTS, a candidate that would need a confirmation only tried while both fit."""
+    last, asked = 'SUSPECT (no product page tried)', 0
+    for c, why in ti_candidates(name):
+        if asked + 1 + bool(why) > MAX_TI_REQUESTS:
+            continue
         st = ti_lifecycle(c)
         asked += 1
-        if not st.startswith('SUSPECT'):
-            return st, c, code, bool(code) and asked < MAX_TI_REQUESTS and ti_orderable_confirmed(c, name)
-        last = st
+        if st.startswith('SUSPECT'):
+            last = st
+            continue
+        return st, c, why, bool(why) and not st.startswith('unknown') and ti_orderable_confirmed(c, name)
     return last, name, None, False
 
 
-def lifecycle_text(name, status, page, code, confirmed=False):
-    """the lifecycle column. A page found only by dropping a voltage code may be another device: unless ti.com lists
-    the orderable number under it (confirmed), its status gets a "?" and does not pass the gate (gate_flag) until the
-    device is confirmed by hand"""
-    if code and confirmed:
+def lifecycle_text(name, status, page, why, confirmed=False):
+    """the lifecycle column. A page found only by dropping something (why) may be another device: unless ti.com lists
+    the orderable number under it (confirmed), its status gets a "?" and the text ends in UNCONFIRMED, so it does not
+    pass the gate (gate_flag) whatever the status, until the device is confirmed by hand"""
+    if why and confirmed:
         return '%s (as %s; ti.com lists %s under it)' % (status, page, name)
-    if code:
-        return "%s? (as %s, found only by dropping '%s' as a voltage code: confirm the device)" % (status, page, code)
+    if why:
+        return '%s? (as %s, found only by dropping %s: %s)' % (status, page, why, UNCONFIRMED)
     return status + (' (as %s)' % page if page != name else '')
 
 
@@ -161,7 +193,7 @@ def gate_flag(life):
     """the flag a lifecycle text raises, or None when it passes"""
     if re.match(r'SUSPECT|NRND|OBSOLETE|LAST TIME', life):
         return 'LIFECYCLE'
-    if re.match(r'[A-Z ]+\?', life):
+    if life.endswith(UNCONFIRMED + ')'):
         return 'LIFECYCLE UNCONFIRMED'
     return None
 
@@ -234,9 +266,7 @@ def main():
         except sourcing.SourcingError as e:
             rows, err = [], str(e)
         best = rows[0]['stock'] if rows else 0
-        flags = []
-        if gate_flag(life):
-            flags.append(gate_flag(life))
+        flags = [f for f in (gate_flag(life),) if f]
         if best < need:
             flags.append('STOCK %d < %d in %s' % (best, need, reg))
         other = ''

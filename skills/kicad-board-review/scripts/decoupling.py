@@ -8,13 +8,15 @@
 # sqrt(eps_eff) / c on their own layer and width; vias: 0.2 h (ln(4h/d) + 1); plane spreading not included), how many
 # capacitors lie within the limit, and the distance from that capacitor's ground pad to the nearest ground via.
 # Copper joins where KiCad's connectivity joins it: wherever the copper shapes overlap, at a track's ends or mid-way
-# along it (a via dropped on a straight run, with no vertex there, still joins). A track (its centreline swept by half
-# its width, round ends), a via (a disc of its size) and a pad (its polygon) join when the distance between them is
-# under the sum of their half-widths - strictly: KiCad 10's BuildConnectivity leaves two shapes that only touch at
-# exactly that distance apart. So a track end within w/2 + w2/2 of another track (T-join), a via within w/2 + size/2
-# of a track's centreline or within size1/2 + size2/2 of another via, and a track or via closer than its half-width
-# to a pad. A via joins only the layers it spans: a through via all of them; a blind, buried or micro via the run
-# between the layers board.json records for it ("layers"; one without them is treated as through, with a warning).
+# along it (a via dropped on a straight run, or two tracks crossing, with no vertex there, still joins). A track (its
+# centreline swept by half its width, round ends), a via (a disc of its size) and a pad (its polygon) join when the
+# distance between them is under the sum of their half-widths - strictly: KiCad 10's BuildConnectivity leaves two
+# shapes that only touch at exactly that distance apart. So two tracks whose centrelines come within w1/2 + w2/2 of
+# each other anywhere (a T-join, a crossing, a parallel run; joined at their closest points), a via within
+# w/2 + size/2 of a track's centreline or within size1/2 + size2/2 of another via, and a track or via closer than its
+# half-width to a pad. A via joins only the layers it spans: a through via all of them; a blind, buried or micro via
+# the run between the layers board.json records for it ("layers"; one without them is treated as through, with a
+# warning).
 # A rail that reaches its pins by tracks only (no plane) is where this matters most: allocate a decoupling site at each
 # power pin at placement. review_config.json "decoupling": {"max_mm": 5, "ignore": ["U7"]} (defaults shown, none ignored).
 import heapq, itertools
@@ -63,8 +65,8 @@ class NetGraph:
         self.rad = {}                                            # node -> half-width of the copper there (pad joins)
         padjoin = collections.defaultdict(list)                  # pad index -> split points of tracks that touch it
         # Each segment is split wherever something's copper overlaps its own, as KiCad's connectivity does: a track
-        # end (T-join), a via on a layer it spans and a pad - at its ends or mid-way along it (a via dropped on a
-        # straight run has no vertex there).
+        # end (T-join), another track mid-span (crossing), a via on a layer it spans and a pad - at its ends or mid-way
+        # along it (a via dropped on a straight run, or a track crossing it, has no vertex there).
         for L, ss in segs.items():
             ends = {}                                            # point copper on L: track ends and vias, by half-width
             for a, b, w in ss:
@@ -74,8 +76,21 @@ class NetGraph:
                 if L in span:
                     k = self.key(L, (v['x'], v['y'])); ends[k] = max(ends.get(k, 0.0), v['size'] / 2)
             for k, r in ends.items(): self.rad[k] = max(self.rad.get(k, 0.0), r)
-            for a, b, w in ss:
-                line = LineString([a, b]); cut = [0.0, line.length]; joins = []; touched = []
+            lines = [LineString([a, b]) for a, b, w in ss]
+            # Track to track, segment to segment: two segments closer than w1/2 + w2/2 join at their closest points
+            # (the crossing point for crossing centrelines). Where that point is an end of either, the end join below
+            # already holds it (an end's own half-width is at least its segment's), so only mid-span pairs are kept.
+            xcut, xpairs = collections.defaultdict(list), []
+            if len(ss) > 1:
+                ii, jj = shapely.STRtree(lines).query(lines, predicate='dwithin', distance=max(w for _, _, w in ss))
+                for i, j in zip(ii.tolist(), jj.tolist()):
+                    if i >= j or not touches(lines[i].distance(lines[j]), (ss[i][2] + ss[j][2]) / 2): continue
+                    p1, p2 = nearest_points(lines[i], lines[j])
+                    d1, d2 = lines[i].project(p1), lines[j].project(p2)
+                    if min(d1, d2) <= 1e-9 or d1 >= lines[i].length - 1e-9 or d2 >= lines[j].length - 1e-9: continue
+                    xcut[i].append(d1); xcut[j].append(d2); xpairs.append((i, d1, j, d2))
+            for si, (a, b, w) in enumerate(ss):
+                line = lines[si]; cut = [0.0, line.length] + xcut[si]; joins = []; touched = []
                 for k, r in ends.items():                        # track ends (T-joins) and vias overlapping this track
                     q = Point(self.pos[k][1])
                     if touches(line.distance(q), w / 2 + r): joins.append((line.project(q), k))
@@ -96,6 +111,10 @@ class NetGraph:
                     if kk != k: self.edge(k, kk, p.distance(Point(self.pos[k][1])), 'track', L, w)
                 for i, d in touched:
                     p = line.interpolate(d); padjoin[i].append(self.key(L, (p.x, p.y)))
+            for i, d1, j, d2 in xpairs:                          # overlapping tracks meet at their split points
+                p1, p2 = lines[i].interpolate(d1), lines[j].interpolate(d2)
+                k1, k2 = self.key(L, (p1.x, p1.y)), self.key(L, (p2.x, p2.y))
+                if k1 != k2: self.edge(k1, k2, p1.distance(p2), 'track', L, min(ss[i][2], ss[j][2]))
         self.vias = []
         for v, span in vias:                                     # the barrel, over the layers the via spans
             ks = [self.key(L, (v['x'], v['y'])) for L in span]
@@ -131,10 +150,12 @@ class NetGraph:
         for L in LAYERS:                                         # pours / planes: every node inside a filled piece
             zf = zone_fill(net, L)
             if zf.is_empty: continue
-            for pc in (zf.geoms if hasattr(zf, 'geoms') else [zf]):
-                shapely.prepare(pc)
-                ks = [k for k, (L2, q) in self.pos.items() if L2 == L and pc.buffer(0.05).contains(Point(q))]
-                if len(ks) > 1: self.pieces[id(pc)] = ks
+            # keyed by (layer, index), not id(pc): .geoms hands out a new object each time, freed when pc moves on,
+            # so a later piece can reuse its id and overwrite it (a pin left with "no capacitor reachable")
+            for i, pc in enumerate(zf.geoms if hasattr(zf, 'geoms') else [zf]):
+                pb = pc.buffer(0.05); shapely.prepare(pb)
+                ks = [k for k, (L2, q) in self.pos.items() if L2 == L and pb.contains(Point(q))]
+                if len(ks) > 1: self.pieces[(L, i)] = ks
         self.piece_of = collections.defaultdict(list)
         for pid, ks in self.pieces.items():
             for k in ks: self.piece_of[k].append(pid)

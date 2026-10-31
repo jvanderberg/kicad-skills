@@ -113,22 +113,34 @@ def local_datasheets(xmlp, ddir):
     return out
 
 
-def split_lines(g):
-    """the flag for one LCSC number spread over several order-BOM lines (by Value or footprint), or None"""
+JLC_ONE_LINE = (1, 7, 0)     # JLCImport puts each LCSC number on one order-BOM line from v1.7.0 (PR #126)
+
+
+def split_lines(g, version=None):
+    """the flag for one LCSC number on parts with different footprints (one of them is wrong, whatever the BOM), or
+    with different Values when the installed jlcimport-cli (`version`, None if unknown) predates v1.7.0: its order BOM
+    groups by Value, footprint and LCSC number, so the part lands on several lines and JLC fits none of them"""
     lines = g.get('lines') or {}
     if len(lines) < 2:
         return None
-    fps = len({fp for _, fp in lines}) > 1
-    return 'SPLIT: %d BOM lines for one part (%s) - JLC unticks both and fits neither: give them one Value%s' % (
-        len(lines), ' / '.join('%s "%s"%s' % (' '.join(refs), val, ' ' + fp if fps else '') for (val, fp), refs in lines.items()),
-        ' and footprint' if fps else '')
+    parts = ' / '.join('%s "%s" %s' % (' '.join(refs), val, fp) for (val, fp), refs in lines.items())
+    if len({fp for _, fp in lines}) > 1:
+        return 'SPLIT: one LCSC number on %d footprints (%s) - one part cannot fit two land patterns: one is the wrong part ' \
+               'or the wrong footprint' % (len({fp for _, fp in lines}), parts)
+    if version is not None and version >= JLC_ONE_LINE:
+        return None
+    return 'SPLIT: %d BOM lines for one part (%s) with jlcimport-cli %s - JLC unticks both and fits neither: update ' \
+           'it to v1.7.0 or later (pipx install --force git+https://github.com/jvanderberg/kicad_jlcimport), or give ' \
+           'them one Value' % (len(lines), parts, 'of unknown version' if version is None else
+                               '%d.%d.%d (older than v1.7.0)' % version)
 
 
 def check(groups, ctx, cli, min_pkg='0402'):
     rows = []
+    version = sourcing.cli_version(cli) if any(len(g.get('lines') or {}) > 1 for g in groups.values()) else None
     for lc, g in groups.items():
         info, flags, note = sourcing.check_part(lc, ctx, len(g['refs']), cli)
-        split = split_lines(g)
+        split = split_lines(g, version)
         if split:
             flags.append(split)
         order, policy, exc = sourcing.need_for(ctx, len(g['refs']), lc)

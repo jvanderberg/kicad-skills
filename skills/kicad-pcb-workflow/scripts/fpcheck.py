@@ -17,7 +17,7 @@ anchor (EasyEDA writes 0.1 x 0.1 + a polygon: a USB-C's VBUS/GND pads), so a cus
 (anchor and primitives together) and is marked "custom: anchor W x H + primitives"; the pad span note uses the same
 extents.
 Name-based footprint matchers propose wrong pin counts and sizes often enough that every suggested KiCad footprint
-needs this check (JLCImport v1.6.7 matches by name; its geometry-checked matcher, PR #122, is unreleased), and the
+needs this check (JLCImport v1.6.7 matched by name; v1.7.0's geometry-checked matcher, PR #122, checks the pads), and the
 datasheet's land-pattern figure is still the authority for pad sizes and pitch. EasyEDA package names work as
 --package too ("SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR": 3 leads, body 2.9 x 1.3).
 """

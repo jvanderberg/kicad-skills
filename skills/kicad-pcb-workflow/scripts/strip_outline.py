@@ -21,12 +21,15 @@ Added: a hidden property "Silk outline" = "removed by strip_outline.py" (outline
 with the footprint, and board_lint.py then checks the part by its body and pads and lists it as spaced by rule of
 thumb, whatever inner drawing it kept.
 Refused (nothing written): an output that is one of the input files (the destination is the source library, also
-under another spelling on a case-insensitive disk, or through a link), and two inputs with the same file name.
+under another spelling on a case-insensitive disk, or through a link), two inputs with the same file name, and an
+output that would replace a different footprint already in the destination (one not made by strip_outline.py, or a
+copy whose pads differ: an earlier run from another library with a footprint of the same name). Running again on the
+same footprint rewrites its copy (same pads: allowed, and the same input gives the same file).
 """
 import argparse, math, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from kicad_sexpr import Node, Uuids, load, save  # noqa: E402
+from kicad_sexpr import Node, Sym, Uuids, load, save  # noqa: E402
 from kicad_sexpr.common import font_effects  # noqa: E402
 from outline_rules import REMOVED, is_mark as _is_mark  # noqa: E402
 
@@ -73,8 +76,9 @@ def outline(fp):
     drop, keep = [], []
     for layer in SILK:
         gs = [g for g in fp.nodes() if g.head in SHAPES and _layer(g) == layer]
-        body = [g for g in gs if not is_mark(g)]
-        keep += [g for g in gs if is_mark(g)]
+        marks = [is_mark(g) for g in gs]
+        body = [g for g, m in zip(gs, marks) if not m]
+        keep += [g for g, m in zip(gs, marks) if m]
         pts = [p for g in body for p in _points(g)]
         if not pts:
             continue
@@ -128,9 +132,43 @@ def same_file(a, b):
     return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
 
 
+def _norm(a):
+    """an s-expression atom or node as a comparable value: numbers by value (0.50 == 0.5), uuids and tstamps left out"""
+    if isinstance(a, Node):
+        return (a.head,) + tuple(_norm(c) for c in a[1:] if not (isinstance(c, Node) and c.head in ('uuid', 'tstamp')))
+    if isinstance(a, str) and not isinstance(a, Sym) or isinstance(a, bool):
+        return a
+    try:
+        return round(float(a), 6)
+    except (TypeError, ValueError):
+        return str(a)
+
+
+def pads(fp):
+    """the footprint's pads, comparable (``_norm``) and in file order"""
+    return [_norm(p) for p in fp.nodes('pad')]
+
+
+def clash(src, out):
+    """why writing ``src``'s copy to the existing file ``out`` would replace a different footprint (None when it may
+    be rewritten: an earlier strip_outline.py copy, its REMOVED property on it, with the same pads as ``src``). The
+    test is the pads because they are what a part set to NoOutline:<name> is placed and soldered by."""
+    try:
+        old = load(out)
+    except (OSError, ValueError) as e:
+        return '%s exists and cannot be read (%s)' % (out, e)
+    if not any(str(p[1]) == REMOVED[0] for p in old.nodes('property')):
+        return '%s exists and is not a strip_outline.py copy' % out
+    if pads(old) != pads(load(src)):
+        return ('%s is a strip_outline.py copy of another footprint of that name (its pads differ from %s), and every '
+                'part set to it would get the new pads' % (out, src))
+    return None
+
+
 def plan(files, dest):
-    """[(input, output)], or exit (before anything is written) when an output would overwrite an input or two inputs
-    would write the same output"""
+    """[(input, output)], or exit (before anything is written) when an output would overwrite an input, two inputs
+    would write the same output, or an output would replace a different footprint already in ``dest`` (an earlier run
+    from another library: ``clash``)"""
     for f in files:
         if not os.path.isfile(f):
             sys.exit('%s: no such footprint file' % f)
@@ -153,6 +191,11 @@ def plan(files, dest):
             if same_file(out, f):
                 sys.exit('%s is the input file %s: copy into a separate library (the original stays for parts at full '
                          'spacing)' % (out, f))
+    for f, out in pairs:
+        why = os.path.exists(out) and clash(f, out)
+        if why:
+            sys.exit('%s: copy into a separate library (or, if that copy is an outdated strip of this same footprint, '
+                     'delete it and run again)' % why)
     return pairs
 
 

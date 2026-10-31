@@ -12,7 +12,8 @@
   body, pads or courtyard, e.g. a QFN's body overhanging its pads onto the next part. A part without an outline (none
   drawn, or a strip_outline.py copy, known by its "Silk outline" property whatever inner drawing it kept) is checked by
   its body and pads and listed in a NOTE as spaced by rule of thumb. Silk deleted on the board itself leaves no such
-  property: what silk is left counts as the outline. Rectangles are axis-aligned, so a part at 45 degrees is checked
+  property: what silk is left counts as the outline (shapes; text and text boxes do not). Marks are measured in the
+  footprint's own frame, as strip_outline.py does. Rectangles are axis-aligned, so a part at 45 degrees is checked
   generously;
 - 3D models whose file does not exist (${KICAD10_3DMODEL_DIR}, ${KIPRJMOD} and other variables expanded from the
   environment and kicad_common.json): the 3D render silently shows bare pads, so a missing model looks like a
@@ -105,11 +106,17 @@ def merged(rs):
     return (min(r[0] for r in rs), min(r[1] for r in rs), max(r[2] for r in rs), max(r[3] for r in rs)) if rs else None
 
 
+def drawing(g):
+    """a graphic shape: a PCB_SHAPE that is not a text box (PCB_TEXTBOX derives from PCB_SHAPE; text is not a body or
+    an outline, and strip_outline.py leaves fp_text_box alone too)"""
+    return isinstance(g, pcbnew.PCB_SHAPE) and not isinstance(g, pcbnew.PCB_TEXTBOX)
+
+
 def bodies(f):
     """the part's own area: one rectangle over its F.Fab (B.Fab) graphics and its pads. Imported footprints often
     have nothing on F.Fab but a pin-1 mark, so the pads always count."""
     fab = pcbnew.B_Fab if f.IsFlipped() else pcbnew.F_Fab
-    rs = [box(g.GetBoundingBox()) for g in f.GraphicalItems() if isinstance(g, pcbnew.PCB_SHAPE) and g.GetLayer() == fab]
+    rs = [box(g.GetBoundingBox()) for g in f.GraphicalItems() if drawing(g) and g.GetLayer() == fab]
     m = merged(rs + [box(p.GetBoundingBox()) for p in f.Pads()])
     return [m] if m else []
 
@@ -119,20 +126,28 @@ def outline_removed(f):
     return any(fd.GetName() == REMOVED[0] for fd in f.GetFields())
 
 
+def mark(f, g):
+    """g is a mark such as a pin-1 dot (outline_rules.is_mark), measured in the footprint's own frame as
+    strip_outline.py measures it in the library: a filled 0.8 mm square on a part at 45 degrees has a 1.13 mm board
+    bounding box but is still 0.8 mm. Only a circle or a filled shape can be a mark."""
+    circle = g.GetShape() == pcbnew.SHAPE_T_CIRCLE
+    if not (circle or g.IsSolidFill()):
+        return False
+    if not circle and f.GetOrientationDegrees() % 90:   # un-rotate a copy (a flip mirrors: width and height stay)
+        g = g.Duplicate()
+        g.Rotate(f.GetPosition(), pcbnew.EDA_ANGLE(-f.GetOrientationDegrees(), pcbnew.DEGREES_T))
+    r = box(g.GetBoundingBox())
+    return is_mark('circle' if circle else 'other', g.IsSolidFill(), r[2] - r[0], r[3] - r[1])
+
+
 def silk_outline(f):
-    """rectangles of the footprint's silkscreen outline on its own side: graphics, not text, without marks such as a
-    pin-1 dot (outline_rules.is_mark); none for a strip_outline.py copy, whatever inner drawing it kept"""
+    """rectangles of the footprint's silkscreen outline on its own side: graphics, not text or text boxes, without
+    marks such as a pin-1 dot (``mark``); none for a strip_outline.py copy, whatever inner drawing it kept"""
     if outline_removed(f):
         return []
     silk = pcbnew.B_SilkS if f.IsFlipped() else pcbnew.F_SilkS
-    rs = []
-    for g in f.GraphicalItems():
-        if not isinstance(g, pcbnew.PCB_SHAPE) or g.GetLayer() != silk:
-            continue
-        r = box(g.GetBoundingBox())
-        if not is_mark('circle' if g.GetShape() == pcbnew.SHAPE_T_CIRCLE else 'other', g.IsSolidFill(), r[2] - r[0], r[3] - r[1]):
-            rs.append(r)
-    return rs
+    return [box(g.GetBoundingBox()) for g in f.GraphicalItems()
+            if drawing(g) and g.GetLayer() == silk and not mark(f, g)]
 
 
 def courtyard(f):

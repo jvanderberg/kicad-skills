@@ -22,10 +22,12 @@ Net class assignments (--assign) and patterns (--pattern): a run that gives eith
 set, every assignment and pattern already in the .kicad_pro included (those made in KiCad's Net Classes panel too), so
 a regenerated project is a function of the build command and a net taken out of a class on a re-run leaves it; what
 it dropped is a WARNING on stderr. A run with neither (--stackup only, say) leaves them untouched. --keep-assignments
-makes a run with --assign / --pattern add to the existing ones instead (a one-off edit of a project whose classes are
-kept in KiCad). Assigned names and patterns are checked against the nets of the board next to the .kicad_pro
-(PROJECT.kicad_pcb, nets of its pads, tracks, vias and zones): one that names no net is a warning on stderr (the
-netlist's name for an unlabelled net is e.g. Net-(U3-SW), not SW), as is a missing board.
+makes a run with --assign / --pattern keep the existing ones of the nets and patterns it does not name (a one-off edit
+of a project whose classes are kept in KiCad); a net it names still gets only the class given (KiCad allows several),
+and a net or pattern so moved out of its old class is a WARNING too ("moved GND from Signal to Power"). Assigned
+names and patterns are checked against the nets of the board next to the .kicad_pro (PROJECT.kicad_pcb, nets of its
+pads, tracks, vias and zones): one that names no net is a warning on stderr (the netlist's name for an unlabelled net
+is e.g. Net-(U3-SW), not SW), as is a missing board.
 
 Numbers: 4-layer stackups from kicad-new-board/references/jlcpcb-stackups.md (jlcpcb.com/impedance, checked Oct 2026);
 the 2-layer entry is derived (1.6 mm board less copper and mask), JLC publishes no 2-layer table. JLC changes these:
@@ -147,7 +149,8 @@ def parse_class(spec):
 def apply_project(project, rules, classes, assigns, patterns, layers=2, keep_assignments=False):
     """project: a kicad_sexpr Project. Rules (for a board of `layers` copper layers; unknown: 2, the stricter), net
     classes (Default first, the user's other classes kept), assignments and patterns: when any are given they replace
-    all existing ones (unless keep_assignments, which adds them); none given leaves the existing ones untouched."""
+    all existing ones (keep_assignments: only those of the nets and patterns given, each of which gets only the class
+    given); none given leaves the existing ones untouched."""
     pro = project.data
     ds = project.design_settings()
     if rules == 'jlc':
@@ -175,13 +178,24 @@ def apply_project(project, rules, classes, assigns, patterns, layers=2, keep_ass
     return project
 
 
-def dropped(before, after):
-    """Assignments ('NET (Class)') and patterns ('pattern GLOB (Class)') in ``before`` and not in ``after`` (Projects)."""
-    def entries(p):
-        a = {'%s (%s)' % (n, c) for n, cs in p.assignments().items() for c in cs}
-        return a | {'pattern %s (%s)' % (q.get('pattern'), q.get('netclass'))
-                    for q in p.data.get('net_settings', {}).get('netclass_patterns') or []}
-    return sorted(entries(before) - entries(after))
+def changes(before, after):
+    """What a run did to the existing assignments and patterns (``before`` and ``after`` Projects): (dropped, moved).
+    dropped: a net or pattern gone altogether, 'NET (Class)' / 'pattern GLOB (Class)'; moved: one still there that lost
+    a class, 'NET from Old to New' / 'pattern GLOB from Old to New' (classes joined by +)."""
+    def table(p):
+        out = {n: list(cs) for n, cs in p.assignments().items()}
+        for q in p.data.get('net_settings', {}).get('netclass_patterns') or []:
+            out.setdefault('pattern %s' % q.get('pattern'), []).append(q.get('netclass'))
+        return out
+    old, new = table(before), table(after)
+    gone, moved = [], []
+    for key, cs in sorted(old.items()):
+        now = new.get(key)
+        if not now:
+            gone += ['%s (%s)' % (key, c) for c in cs]
+        elif any(c not in now for c in cs):
+            moved.append('%s from %s to %s' % (key, '+'.join(cs), '+'.join(now)))
+    return gone, moved
 
 
 def _matches(pattern, net):
@@ -215,8 +229,10 @@ def main():
     ap.add_argument('--class', dest='classes', action='append', default=[])
     ap.add_argument('--assign', action='append', default=[]); ap.add_argument('--pattern', action='append', default=[])
     ap.add_argument('--keep-assignments', action='store_true',
-                    help='with --assign / --pattern: add to the assignments and patterns already in the project '
-                         'instead of replacing them (a run with neither leaves them untouched anyway)')
+                    help='with --assign / --pattern: keep the existing assignments and patterns of the nets and '
+                         'patterns this run does not name, instead of replacing the whole set. A net named with '
+                         '--assign (a pattern given again) still gets only the class given, its old class removed '
+                         '(a WARNING lists it). A run with neither leaves them all untouched anyway')
     ap.add_argument('--list', action='store_true')
     a = ap.parse_args()
     if a.list or not a.project:
@@ -257,14 +273,20 @@ def main():
     given = assigns or patterns
     print('%s: rules %s (%d copper layers); classes %s; %s' % (
         pro_path, a.rules, layers, [c['name'] for c in project.netclasses()],
-        '%d assignments, %d patterns%s' % (len(assigns), len(patterns),
-                                           ' added (existing ones kept)' if a.keep_assignments else ' (replacing the existing set)')
+        '%d assignments, %d patterns%s' % (
+            len(assigns), len(patterns), ' added (existing ones kept for the nets and patterns not named)'
+            if a.keep_assignments else ' (replacing the existing set)')
         if given else 'net class assignments and patterns untouched (no --assign / --pattern)'))
-    gone = dropped(before, project)
-    if gone:
+    gone, moved = changes(before, project)
+    if gone:                      # only a replacing run drops: --keep-assignments keeps what it does not name
         print('WARNING: dropped %d existing assignment(s) / pattern(s) not given on this run (a run with --assign or '
-              '--pattern replaces the whole set; --keep-assignments adds instead): %s' % (len(gone), ', '.join(gone)),
-              file=sys.stderr)
+              '--pattern replaces the whole set; --keep-assignments keeps those it does not name): %s' % (
+                  len(gone), ', '.join(gone)), file=sys.stderr)
+    if moved:
+        print('WARNING: moved %d existing assignment(s) / pattern(s) out of their old class (%s): %s' % (
+            len(moved), 'a net or pattern named with --assign / --pattern gets only the class given, also with '
+            '--keep-assignments' if a.keep_assignments else 'a run with --assign or --pattern replaces the whole set',
+            ', '.join(moved)), file=sys.stderr)
     if given:
         nets = board.nets() if board is not None else None
         if nets is None:

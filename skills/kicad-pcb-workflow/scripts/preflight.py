@@ -102,10 +102,24 @@ def checks():
         if not c:
             return False, 'no jlcimport-cli'
         rc, t = run([c, 'production', '--help'])
-        return rc == 0 and '--check-only' in t, c if rc == 0 else '%s has no production command (v1.6.7 and older; it reports 1.6.7 either way)' % c
-    # optional (needed by nothing): the order files and placement check; on JLCImport's main after v1.6.7, unreleased
+        if rc != 0 or '--check-only' not in t:
+            return False, '%s has no production command (v1.6.7 and older)' % c
+        # main builds between the production command (PR #121) and v1.7.0 report 1.6.7 and put one LCSC part on several
+        # BOM lines when Values differ (JLC then fits none of them); v1.7.0 puts each part on one line (PR #126)
+        try:
+            with open(c, 'rb') as f:
+                first = f.readline().decode('utf-8', 'replace')
+        except OSError:
+            first = ''
+        rv, vt = run(first[2:].split() + ['-c', "from importlib.metadata import version; print(version('kicad-jlcimport'))"]) \
+            if first.startswith('#!') and 'python' in first else (1, '')
+        m = re.search(r'(\d+)\.(\d+)\.(\d+)', vt) if rv == 0 else None
+        if m and tuple(int(x) for x in m.groups()) < (1, 7, 0):
+            return False, '%s %s: a build of main from before v1.7.0 (its order BOM splits one part over lines by Value)' % (c, m.group(0))
+        return True, '%s %s' % (c, m.group(0) if m else '(version unknown)')
+    # optional (needed by nothing): the order files and placement check, JLCImport v1.7.0 or later
     out.append(('jlcimport-cli production (order files)', set(), jlc_production,
-                'pipx install --force git+https://github.com/jvanderberg/kicad_jlcimport (main, after v1.6.7)'))
+                'pipx install --force git+https://github.com/jvanderberg/kicad_jlcimport (v1.7.0 or later)'))
     return out
 
 

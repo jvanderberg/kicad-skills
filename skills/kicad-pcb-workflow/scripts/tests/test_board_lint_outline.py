@@ -6,7 +6,9 @@ outline-and-pads rectangles; a pin-1 dot outside the outline does not count, and
 (placed tighter on purpose) is checked by its body and pads and listed as spaced by rule of thumb, even when
 strip_outline.py kept its cathode bar (known by the property strip_outline writes). A part without an outline is still
 checked by its F.Fab body (BODY OVERLAP), and courtyards are read per footprint, not per reference (two REF**).
-strip_outline.py refuses to overwrite its input (case-different or linked --to) and same-named inputs."""
+A silk text box is not outline, and a mark on a rotated part is measured in the footprint's own frame (as
+strip_outline.py measures it). strip_outline.py refuses to overwrite its input (case-different or linked --to),
+same-named inputs, and a different footprint of the same name left in --to by an earlier run."""
 import os, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
@@ -152,6 +154,100 @@ def test_strip_outline_refuses_same_named_inputs():
     assert not os.path.exists(os.path.join(out, 'CHIP.kicad_mod'))
     r = _strip(pa, pa, '--to', out)                       # the same file twice is one copy
     assert r.returncode == 0 and r.stdout.count('wrote') == 1, r.stdout + r.stderr
+
+
+def test_strip_outline_refuses_cross_run_overwrite():
+    """a later run from another library must not replace a different footprint of the same name in the destination
+    (every part set to NoOutline:CHIP would get its pads); running again on the same footprint rewrites the same file"""
+    d = tempfile.mkdtemp()
+    a, b = os.path.join(d, 'A.pretty'), os.path.join(d, 'B.pretty'); os.makedirs(a); os.makedirs(b)
+    pa = easyeda(a, 'CHIP', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])
+    pb = easyeda(b, 'CHIP', 2.0, 0.5, [(-1.5, 0, 0.5, 0.5), (1.5, 0, 0.5, 0.5)])
+    out = os.path.join(d, 'NoOutline.pretty')
+    copy = os.path.join(out, 'CHIP.kicad_mod')
+    r = _strip(pa, '--to', out)
+    assert r.returncode == 0, r.stdout + r.stderr
+    first = open(copy).read()
+    for args in ((pb, '--to', out), (pb, '--to', out, '--dry-run')):
+        r = _strip(*args)
+        assert r.returncode != 0 and 'pads differ' in r.stderr and 'separate library' in r.stderr, r.stdout + r.stderr
+        assert open(copy).read() == first
+    r = _strip(pa, '--to', out)                           # the same source again: allowed, same file
+    assert r.returncode == 0 and open(copy).read() == first, r.stdout + r.stderr
+    c = os.path.join(d, 'C.pretty'); os.makedirs(c)       # same pads, other silk (an identical land pattern): allowed
+    pc = easyeda(c, 'CHIP', 1.2, 0.6, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])
+    assert _strip(pc, '--to', out).returncode == 0
+    hand = easyeda(out, 'HAND', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])   # not a strip_outline copy
+    before = open(hand).read()
+    src = easyeda(a, 'HAND', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])
+    r = _strip(src, '--to', out)
+    assert r.returncode != 0 and 'not a strip_outline.py copy' in r.stderr, r.stdout + r.stderr
+    assert open(hand).read() == before
+
+
+def test_silk_text_box_is_not_outline():
+    """a silk text box (PCB_TEXTBOX derives from PCB_SHAPE in KiCad 10) is text, not outline: it does not enlarge the
+    part's area, as strip_outline.py leaves fp_text_box alone"""
+    if not (FPLIB and KICAD_PYTHON):
+        print('  (skipped: no KiCad python / footprint library)'); return
+    from kicad_sexpr import load
+    d = tempfile.mkdtemp()
+    p = easyeda(d, 'CHIP_TB', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])
+    fp = load(p)
+    fp.append(Node('fp_text_box', 'note', Node('start', -1.0, 2.0), Node('end', 1.0, 4.0),
+                   Node('margins', 0.25, 0.25, 0.25, 0.25), Node('layer', 'F.SilkS'),
+                   Node('effects', Node('font', Node('size', 0.4, 0.4), Node('thickness', 0.1))),
+                   Node('border', Sym('yes')), Node('stroke', Node('width', 0.1), Node('type', Sym('solid')))))
+    save(fp, p)
+    bare = easyeda(d, 'CHIP_BARE', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)], outline=False)
+    b = Board.new(copper_layers=2)
+    b.add_footprint(p, 'T:CHIP_TB', 'U1', 'X', (100, 100))
+    b.add_footprint(bare, 'T:CHIP_BARE', 'C1', '1u', (100, 103))     # under U1's text box, clear of its outline
+    pcb = os.path.join(d, 't.kicad_pcb'); b.save(pcb)
+    r, lines = lint(pcb)
+    assert any('silk outline checked' in l and l.endswith(': U1') for l in lines), r.stdout + r.stderr  # it loaded
+    assert not any(l.startswith(('SILK OUTLINE', 'BODY OVERLAP')) for l in lines), r.stdout + r.stderr
+    assert r.returncode == 0, r.stdout
+    out = os.path.join(d, 'NoOutline.pretty')
+    r = _strip(p, '--to', out)
+    assert r.returncode == 0 and '4 outline shape(s) removed' in r.stdout, r.stdout + r.stderr
+    assert load(os.path.join(out, 'CHIP_TB.kicad_mod')).find('fp_text_box') is not None
+
+
+def test_rotated_mark_is_still_a_mark():
+    """a filled 0.8 mm square pin-1 mark on a part at 45 degrees is a mark (1.13 mm board bounding box, 0.8 mm in the
+    footprint's own frame, where strip_outline.py measures it): a neighbour beside the mark is not a SILK OUTLINE"""
+    if not (FPLIB and KICAD_PYTHON):
+        print('  (skipped: no KiCad python / footprint library)'); return
+    from kicad_sexpr import load
+    d = tempfile.mkdtemp()
+    p = easyeda(d, 'CHIP_SQ', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])
+    fp = load(p)
+    fp.append(Node('fp_rect', Node('start', 2.65, -0.35), Node('end', 3.35, 0.35),   # 0.8 x 0.8 with its stroke
+                   Node('stroke', Node('width', 0.1), Node('type', Sym('solid'))), Node('fill', Sym('solid')),
+                   Node('layer', 'F.SilkS')))
+    save(fp, p)
+    bare = easyeda(d, 'CHIP_BARE', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)], outline=False)
+    b = Board.new(copper_layers=2)
+    b.add_footprint(p, 'T:CHIP_SQ', 'U1', 'X', (100, 100), angle=45)  # the mark lands at (102.12, 97.88)
+    b.add_footprint(bare, 'T:CHIP_BARE', 'C1', '1u', (102.3, 99.0))   # just below the mark, clear of U1's outline
+    pcb = os.path.join(d, 'r.kicad_pcb'); b.save(pcb)
+    r, lines = lint(pcb)
+    assert any('silk outline checked' in l and l.endswith(': U1') for l in lines), r.stdout + r.stderr
+    assert not any(l.startswith(('SILK OUTLINE', 'BODY OVERLAP')) for l in lines), r.stdout + r.stderr
+    assert r.returncode == 0, r.stdout
+    r = _strip(p, '--to', os.path.join(d, 'NoOutline.pretty'))      # the same shape is a mark to strip_outline.py
+    assert r.returncode == 0 and '4 outline shape(s) removed, 1 mark(s)' in r.stdout, r.stdout + r.stderr
+    b = Board.new(copper_layers=2)                                    # and a 1.2 mm square is outline at 45 degrees too
+    fp[-1] = Node('fp_rect', Node('start', 2.45, -0.55), Node('end', 3.55, 0.55),
+                  Node('stroke', Node('width', 0.1), Node('type', Sym('solid'))), Node('fill', Sym('solid')),
+                  Node('layer', 'F.SilkS'))
+    save(fp, p)
+    b.add_footprint(p, 'T:CHIP_SQ', 'U1', 'X', (100, 100), angle=45)
+    b.add_footprint(bare, 'T:CHIP_BARE', 'C1', '1u', (102.3, 99.0))
+    b.save(pcb)
+    r, lines = lint(pcb)
+    assert pairs_of(lines, 'SILK OUTLINE') == {('U1', 'C1')}, r.stdout + r.stderr
 
 
 def test_duplicate_references():

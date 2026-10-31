@@ -59,6 +59,31 @@ def default_cli():
             or os.path.expanduser('~/.local/bin/jlcimport-cli'))
 
 
+def cli_version(cli=None):
+    """the installed JLCImport's version as a tuple: from `jlcimport-cli --version` if it has one, else the package
+    metadata of the python its script runs under (pipx installs one; main builds report the last release), or None"""
+    cli = cli or default_cli()
+    texts = []
+    try:
+        r = subprocess.run([cli, '--version'], capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            texts.append(r.stdout)
+        with open(cli, 'rb') as f:
+            first = f.readline().decode('utf-8', 'replace')
+        if first.startswith('#!') and 'python' in first:
+            r = subprocess.run(first[2:].split() + ['-c', "from importlib.metadata import version; print(version('kicad-jlcimport'))"],
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                texts.append(r.stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    for t in texts:
+        m = re.search(r'(\d+)\.(\d+)\.(\d+)', t)
+        if m:
+            return tuple(int(x) for x in m.groups())
+    return None
+
+
 def today():
     return datetime.date.today().isoformat()
 

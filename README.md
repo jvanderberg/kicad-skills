@@ -80,8 +80,8 @@ All tools also work without Claude.
   `search --region`, which needs v1.6.0 or later; `jlcimport-cli search --help` shows whether you have it. They always
   pass the region from the project's `sourcing.json`: without `--region`, jlcimport-cli uses the region its KiCad
   plugin last saved, which may not be the warehouse your assembler buys from. The order files and placement check use
-  `jlcimport-cli production`, on JLCImport's main after v1.6.7 (main still reports 1.6.7; `jlcimport-cli --help` lists
-  `production` when you have it); its stock check reads JLCPCB's international library only.
+  `jlcimport-cli production`, in JLCImport v1.7.0 and later (`preflight.py` reports an older build, including a
+  pre-v1.7.0 build of main that has `production` but splits one part over BOM lines); its stock check reads JLCPCB's international library only.
 
 Run `skills/kicad-pcb-workflow/scripts/preflight.py` to check all of these at once.
 

@@ -8,6 +8,8 @@
 - copper joins where the shapes overlap (centre distance under the sum of half-widths, KiCad 10's boundary) for a via
   beside a track, a wide track ending beside a thin one and a track ending short of a pad; a blind via joins only
   the layers it spans;
+- two same-net tracks crossing mid-span (no vertex there) join, and two parallel ones join just inside the
+  sum of their half-widths and not just outside; crossing tracks on different layers do not;
 - a differential pair with the ground pour 0.15 mm from it is flagged as partly coplanar;
 - a net_classes pattern that matches nothing, and a connector net that falls through to "slow", are warnings."""
 import json, os, subprocess, sys, tempfile
@@ -221,6 +223,87 @@ def test_decoupling_joins_where_copper_overlaps_and_vias_only_on_their_span():
     for net in ('VAX', 'VTX', 'VPX', 'VB'):
         assert rows[net]['status'].startswith('FAIL: no capacitor reachable'), rows[net]
     assert any('1 blind/buried/micro vias with no layer span' in w for w in D['coverage']['warnings']), out
+
+
+def test_decoupling_joins_tracks_whose_copper_overlaps_mid_span():
+    """Two same-net tracks on one layer that cross mid-span - no shared vertex, neither ending on the other - are one
+    piece of copper (KiCad 10 BuildConnectivity, measured: crossing 0.3 mm tracks join; two parallel 0.3 mm tracks
+    0.29999 mm apart join, 0.3 mm apart do not). VX: U1.1's track crosses the one to C1 on F.Cu; VXB: the same with
+    the cap track on B.Cu (no join). VL / VLX: a 0.3 mm track alongside U1's, 0.29 / 0.31 mm off it."""
+    d = tempfile.mkdtemp()
+    u1, caps, tracks = [], [], []
+
+    def cap(ref, net, x, y, layer):
+        caps.append(dict(ref=ref, value='1uF', fp='C_0402', lib='', x=x, y=y + 0.5, rot=0, side=layer[0],
+                         pads=[pad('1', net, x, y, layer=layer), pad('2', 'GND', x, y + 1, layer=layer)]))
+    for i, (net, layer) in enumerate((('VX', 'F.Cu'), ('VXB', 'B.Cu'))):     # crossing at (x + 10, 5)
+        x = 25 * i
+        u1.append(pad(str(1 + i), net, x + 5, 5))
+        tracks += [dict(a=[x + 5, 5], b=[x + 15, 5], w=0.3, layer='F.Cu', net=net),
+                   dict(a=[x + 10, 0.5], b=[x + 10, 10], w=0.3, layer=layer, net=net)]
+        cap('C%d' % (1 + i), net, x + 10, 10, layer)
+    for i, (net, gap) in enumerate((('VL', 0.29), ('VLX', 0.31))):            # parallel, overlapping by 0.01 mm or not
+        x = 25 * i
+        u1.append(pad(str(3 + i), net, x + 5, 15))
+        tracks += [dict(a=[x + 5, 15], b=[x + 15, 15], w=0.3, layer='F.Cu', net=net),
+                   dict(a=[x + 8, 15 + gap], b=[x + 12, 15 + gap], w=0.3, layer='F.Cu', net=net),
+                   dict(a=[x + 12, 15 + gap], b=[x + 12, 19], w=0.3, layer='F.Cu', net=net)]
+        cap('C%d' % (3 + i), net, x + 12, 19, 'F.Cu')
+    fps = [dict(ref='U1', value='PMIC', fp='QFN', lib='', x=20, y=30, rot=0, side='F', pads=u1)] + caps
+    edge = rect(0, 0, 45, 35)
+    board = dict(source='synthetic', layers=['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'], stackup=STACK, netclass={}, vias=[],
+                 edge=[[edge, []]], edge_bbox=[0, 0, 45, 35], footprints=fps, tracks=tracks, zones=[])
+    comps, nets = {}, {}
+    for f in fps:
+        comps[f['ref']] = dict(ref=f['ref'], value=f['value'], fp=f['fp'], pins={})
+        for p in f['pads']:
+            pt = 'power_in' if f['ref'] == 'U1' else 'passive'
+            comps[f['ref']]['pins'][p['num']] = [p['net'], '', pt]
+            nets.setdefault(p['net'], []).append([f['ref'], p['num'], '', pt])
+    cfg = dict(ground_nets=['GND'], decoupling=dict(max_mm=20))
+    for n, v in (('board.json', board), ('netlist.json', dict(components=comps, nets=nets)), ('review_config.json', cfg)):
+        json.dump(v, open(os.path.join(d, n), 'w'))
+    run(d, 'decoupling.py')
+    rows = {r['net']: r for r in json.load(open(os.path.join(d, 'decoupling.json')))['pins']}
+    for net, mm in (('VX', 10.0), ('VL', 11.0)):
+        r = rows[net]
+        assert 'cap' in r and abs(r['track_mm'] - mm) < 0.05 and r['via_hops'] == 0, r
+    for net in ('VXB', 'VLX'):
+        assert rows[net]['status'].startswith('FAIL: no capacitor reachable'), rows[net]
+
+
+def test_decoupling_keeps_every_fill_piece_of_a_net():
+    """A net poured as four separate F.Cu pieces, each holding one IC pin and its capacitor: every pin reaches its
+    capacitor across its own piece. Pieces were keyed by id() of shapely's throwaway .geoms objects, so a piece could
+    take the id of one freed two steps earlier and drop it (pico-stretch2's U6.8: "no capacitor reachable")."""
+    d = tempfile.mkdtemp()
+    u1, caps, zones = [], [], []
+    for i in range(4):
+        x = 10 * i
+        u1.append(pad(str(1 + i), 'VZ', x + 5, 5))
+        caps.append(dict(ref='C%d' % (1 + i), value='1uF', fp='C_0402', lib='', x=x + 8, y=5.5, rot=0, side='F',
+                         pads=[pad('1', 'VZ', x + 8, 5), pad('2', 'GND', x + 8, 6.5)]))
+        zones.append(zone('VZ', 'F.Cu', rect(x + 4, 4, x + 9, 6)))
+    u1.append(pad('9', 'GND', 20, 15))
+    fps = [dict(ref='U1', value='MCU', fp='QFN', lib='', x=20, y=10, rot=0, side='F', pads=u1)] + caps
+    edge = rect(0, 0, 45, 20)
+    board = dict(source='synthetic', layers=['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'], stackup=STACK, netclass={}, vias=[],
+                 edge=[[edge, []]], edge_bbox=[0, 0, 45, 20], footprints=fps, tracks=[], zones=zones)
+    comps, nets = {}, {}
+    for f in fps:
+        comps[f['ref']] = dict(ref=f['ref'], value=f['value'], fp=f['fp'], pins={})
+        for p in f['pads']:
+            pt = 'power_in' if f['ref'] == 'U1' else 'passive'
+            comps[f['ref']]['pins'][p['num']] = [p['net'], '', pt]
+            nets.setdefault(p['net'], []).append([f['ref'], p['num'], '', pt])
+    cfg = dict(ground_nets=['GND'], decoupling=dict(max_mm=20))
+    for n, v in (('board.json', board), ('netlist.json', dict(components=comps, nets=nets)), ('review_config.json', cfg)):
+        json.dump(v, open(os.path.join(d, n), 'w'))
+    run(d, 'decoupling.py')
+    rows = {(r['ic'], r['pin']): r for r in json.load(open(os.path.join(d, 'decoupling.json')))['pins']}
+    for i in range(4):
+        r = rows[('U1', str(1 + i))]
+        assert r.get('cap') == 'C%d' % (1 + i) and abs(r['plane_mm'] - 3.0) < 0.05, r
 
 
 def test_diff_pair_coplanar_and_coverage_warnings():
