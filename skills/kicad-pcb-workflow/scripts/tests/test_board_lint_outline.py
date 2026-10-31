@@ -94,6 +94,7 @@ def test_silk_outline_overlaps():
     r = subprocess.run([KICAD_PYTHON, os.path.join(HERE, 'board_lint.py'), pcb, '--no-models', '--no-silk', '--no-paste',
                         '--no-via-in-pad', '--no-hardware', '--no-outline'], capture_output=True, text=True)
     assert 'SILK OUTLINE' not in r.stdout and r.returncode == 0, r.stdout
+    assert any(l.startswith('NOTE') and l.endswith(': C3') for l in r.stdout.splitlines()), r.stdout  # NOTEs stay
 
 
 def test_strip_outline_keeps_marks():
@@ -274,6 +275,32 @@ def test_rotated_mark_is_still_a_mark():
     b.save(pcb)
     r, lines = lint(pcb)
     assert pairs_of(lines, 'SILK OUTLINE') == {('U1', 'C1')}, r.stdout + r.stderr
+
+
+def test_mark_measured_in_its_own_frame_at_30_degrees():
+    """a filled 1.05 x 0.15 mm bar (stroke included) is outline, not a mark; at 30 degrees its board bounding box is
+    0.98 x 0.65 mm, and turned back the wrong way too, so only the right inverse rotation keeps it outline. A 0.8 mm
+    square stays a mark at 30 degrees. Measured from the shape's corners, no copy of it is made."""
+    if not (FPLIB and KICAD_PYTHON):
+        print('  (skipped: no KiCad python / footprint library)'); return
+    from kicad_sexpr import load
+    d = tempfile.mkdtemp()
+    p = easyeda(d, 'CHIP_BAR', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])
+    fp = load(p)
+    for (x0, y0), (x1, y1) in (((2.5, -0.025), (3.45, 0.025)), ((2.5, 1.0), (3.2, 1.7))):  # the bar; a 0.8 mm square
+        fp.append(Node('fp_rect', Node('start', x0, y0), Node('end', x1, y1),
+                       Node('stroke', Node('width', 0.1), Node('type', Sym('solid'))), Node('fill', Sym('solid')),
+                       Node('layer', 'F.SilkS')))
+    save(fp, p)
+    b = Board.new(copper_layers=2)
+    b.add_footprint(p, 'T:CHIP_BAR', 'U1', 'X', (100, 100), angle=30)
+    pcb = os.path.join(d, 'm.kicad_pcb'); b.save(pcb)
+    code = ('import sys; sys.path.insert(0, %r); import board_lint as L, pcbnew\n'
+            'f = L.load_board(%r).FindFootprintByReference("U1")\n'
+            'print([L.mark(f, g) for g in f.GraphicalItems() if isinstance(g, pcbnew.PCB_SHAPE) and g.IsSolidFill() '
+            'and g.GetLayer() == pcbnew.F_SilkS])') % (HERE, pcb)     # the rectangles, turned into polygons at 30 degrees
+    r = subprocess.run([KICAD_PYTHON, '-c', code], capture_output=True, text=True)
+    assert r.stdout.strip().splitlines()[-1] == '[False, True]', r.stdout + r.stderr
 
 
 def test_duplicate_references():

@@ -34,7 +34,7 @@ import argparse, collections, json, os, re, shutil, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import sourcing  # noqa: E402
+import jlcversion, sourcing  # noqa: E402
 
 SIZES = ['01005', '0201', '0402', '0603', '0805', '1206']
 
@@ -113,36 +113,38 @@ def local_datasheets(xmlp, ddir):
     return out
 
 
-JLC_ONE_LINE = (1, 7, 0)     # JLCImport puts each LCSC number on one order-BOM line from v1.7.0 (PR #126)
-
-
 def split_lines(g, version=None):
-    """the flag for one LCSC number on parts with different footprints (one of them is wrong, whatever the BOM), or
-    with different Values when the installed jlcimport-cli (`version`, None if unknown) predates v1.7.0: its order BOM
-    groups by Value, footprint and LCSC number, so the part lands on several lines and JLC fits none of them"""
+    """(flag, note) for one LCSC number on parts with different footprints or Values. Different footprints: a flag,
+    whatever the BOM (one part cannot fit two land patterns). Different Values: jlcimport-cli older than v1.7.0
+    (`version`) groups its order BOM by Value too, so the part lands on several lines and JLC fits none of them: a
+    flag; v1.7.0 and later: nothing; a version that cannot be read (jlcversion.py): a note, as preflight.py says it"""
     lines = g.get('lines') or {}
     if len(lines) < 2:
-        return None
+        return None, None
     parts = ' / '.join('%s "%s" %s' % (' '.join(refs), val, fp) for (val, fp), refs in lines.items())
-    if len({fp for _, fp in lines}) > 1:
-        return 'SPLIT: one LCSC number on %d footprints (%s) - one part cannot fit two land patterns: one is the wrong part ' \
-               'or the wrong footprint' % (len({fp for _, fp in lines}), parts)
-    if version is not None and version >= JLC_ONE_LINE:
-        return None
-    return 'SPLIT: %d BOM lines for one part (%s) with jlcimport-cli %s - JLC unticks both and fits neither: update ' \
-           'it to v1.7.0 or later (pipx install --force git+https://github.com/jvanderberg/kicad_jlcimport), or give ' \
-           'them one Value' % (len(lines), parts, 'of unknown version' if version is None else
-                               '%d.%d.%d (older than v1.7.0)' % version)
+    nfp = len({fp for _, fp in lines})
+    if nfp > 1:
+        return ('SPLIT: one LCSC number on %d footprints (%s) - one part cannot fit two land patterns: one is the wrong '
+                'part or the wrong footprint' % (nfp, parts)), None
+    if version is None:
+        return None, ('one LCSC number on %d Values (%s): one order-BOM line with jlcimport-cli v1.7.0 or later, %d '
+                      '(JLC fits none) with an older one, and its version could not be read' % (len(lines), parts, len(lines)))
+    if version >= jlcversion.ONE_BOM_LINE:
+        return None, None
+    return ('SPLIT: %d BOM lines for one part (%s) with jlcimport-cli %s (older than v1.7.0) - JLC unticks both and '
+            'fits neither: update it (pipx install --force git+https://github.com/jvanderberg/kicad_jlcimport), or give '
+            'them one Value' % (len(lines), parts, jlcversion.text(version))), None
 
 
 def check(groups, ctx, cli, min_pkg='0402'):
     rows = []
-    version = sourcing.cli_version(cli) if any(len(g.get('lines') or {}) > 1 for g in groups.values()) else None
+    version = jlcversion.cli_version(cli) if any(len(g.get('lines') or {}) > 1 for g in groups.values()) else None
     for lc, g in groups.items():
         info, flags, note = sourcing.check_part(lc, ctx, len(g['refs']), cli)
-        split = split_lines(g, version)
+        split, snote = split_lines(g, version)
         if split:
             flags.append(split)
+        note = '; '.join(n for n in (note, snote) if n)
         order, policy, exc = sourcing.need_for(ctx, len(g['refs']), lc)
         if info is not None and info.get('type', '').lower().startswith('ext'):
             flags.append('extended')

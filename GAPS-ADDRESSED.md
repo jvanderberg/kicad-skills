@@ -802,3 +802,18 @@ one JLCImport version probe.
 | decoupling's header promised KiCad's connectivity | header, FAIL message and analysis-limits.md name what is not joined (thermal-relief pads off the fill, tracks crossing a pour, overlapping pads, arc bulges) | text |
 
 Test runs: wf 116 passed, 2 skipped; rev 31 passed, 2 skipped; ps 27 passed, 1 skipped; psu 4 passed.
+
+## Final review (PR #10, code-review high)
+
+| Finding | Fix | Verified |
+|---|---|---|
+| part_gate: `SN` took any SN + digit for TI (a serial number in pasted text) | `SN(?=74|65|75)` | `test_sn_is_ti_only_as_sn74_sn65_sn75` |
+| preflight passed an unknown jlcimport-cli version while bom_check flagged it as old; the version probe was copied three times | one `jlcversion.py` (identical copies in wf, rev, ps; test_shared_copies): package metadata of the launcher's python, then `--version`; unknown is reported as unknown by both (a pass in preflight, a note in bom_check) | `test_unknown_jlcimport_version_is_unknown_not_old` (a shell-script launcher); bom_check test at unknown / 1.6.7 / 1.7.0 / 1.8.2; this machine: 1.6.7 reported in both |
+| board_lint `--no-outline` also dropped the courtyard NOTEs | `--no-outline` drops only the overlap problems | test |
+| board_lint `mark()` left an unowned copy per rotated filled mark (`Duplicate()`, thisown False) | the shape's corners turned back in python, no copy | `test_mark_measured_in_its_own_frame_at_30_degrees` (fails with the rotation reversed) |
+
+Left for their own changes: a dropped revision letter (TPS2051B -> TPS2051) still counts as the same device in
+part_gate (the ti.com store lookup replaces the name guessing); decoupling's pad loop has no spatial index (KiCad's own
+connectivity from boarddump replaces the geometry).
+
+Test runs: wf 118 passed, 2 skipped; rev 31 passed, 2 skipped; ps 28 passed, 1 skipped; psu 4 passed.

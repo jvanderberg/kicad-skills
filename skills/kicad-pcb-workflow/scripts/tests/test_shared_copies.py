@@ -4,6 +4,7 @@ import filecmp, os
 SKILLS = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 COPIES = {'projfiles.py': ('kicad-pcb-workflow', 'kicad-board-review', 'pcb-part-selection'),
           'kicad_locks.py': ('kicad-pcb-workflow', 'kicad-board-review', 'pcb-part-selection'),
+          'jlcversion.py': ('kicad-pcb-workflow', 'kicad-board-review', 'pcb-part-selection'),
           'interp.py': ('kicad-pcb-workflow', 'kicad-board-review'),
           'preflight.py': ('kicad-pcb-workflow', 'kicad-board-review'),
           'drc_summary.py': ('kicad-pcb-workflow', 'kicad-board-review'),

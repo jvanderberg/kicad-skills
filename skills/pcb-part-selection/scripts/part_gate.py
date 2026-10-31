@@ -41,7 +41,7 @@ import sourcing  # noqa: E402
 # TI device-name prefixes, only those no other maker uses with a digit after them (SN74 logic, SN65/SN75 interface,
 # TXS/TXB/TXU translators, OPA, ADS, DRV, HDC, TUSB, TMUX); ISO, REF and TMP only with as many digits as TI's own
 # names have, so Infineon's ISO1H811G, ADI's REF02/REF195 and TMP36 are not taken for TI parts
-TI_PREFIX = (r'(?:TPSM?|LMR|LMQ|LMZ|LM|TLV|LP|BQ|UCC|LMG|CSD|TLC|TPA|TCA|INA|LMS|TPD|TS|SN|TXS|TXB|TXU|OPA|ADS|DRV|HDC|'
+TI_PREFIX = (r'(?:TPSM?|LMR|LMQ|LMZ|LM|TLV|LP|BQ|UCC|LMG|CSD|TLC|TPA|TCA|INA|LMS|TPD|TS|SN(?=74|65|75)|TXS|TXB|TXU|OPA|ADS|DRV|HDC|'
              r'TUSB|TMUX|ISOW?(?=\d{3})|REF(?=\d{4})|TMP(?=\d{3}))')
 NAME_RE = re.compile(r'\b(%s\d[0-9A-Z]*(?:-Q1)?)\b' % TI_PREFIX)
 

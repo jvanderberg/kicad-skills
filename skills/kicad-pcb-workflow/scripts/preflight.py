@@ -106,17 +106,14 @@ def checks():
             return False, '%s has no production command (v1.6.7 and older)' % c
         # main builds between the production command (PR #121) and v1.7.0 report 1.6.7 and put one LCSC part on several
         # BOM lines when Values differ (JLC then fits none of them); v1.7.0 puts each part on one line (PR #126)
-        try:
-            with open(c, 'rb') as f:
-                shebang = f.readline().decode('utf-8', 'replace')
-        except OSError:
-            shebang = ''
-        rv, vt = run(shebang[2:].split() + ['-c', "from importlib.metadata import version; print(version('kicad-jlcimport'))"]) \
-            if shebang.startswith('#!') and 'python' in shebang else (1, '')
-        m = re.search(r'(\d+)\.(\d+)\.(\d+)', vt) if rv == 0 else None
-        if m and tuple(int(x) for x in m.groups()) < (1, 7, 0):
-            return False, '%s %s: a build of main from before v1.7.0 (its order BOM splits one part over lines by Value)' % (c, m.group(0))
-        return True, '%s %s' % (c, m.group(0) if m else '(version unknown)')
+        sys.path.insert(0, HERE)
+        import jlcversion
+        v = jlcversion.cli_version(c)
+        if v is not None and v < jlcversion.ONE_BOM_LINE:
+            return False, '%s %s: a build of main from before v1.7.0 (its order BOM splits one part over lines by Value)' % (
+                c, jlcversion.text(v))
+        return True, '%s %s' % (c, jlcversion.text(v) if v else '(version unknown: v1.7.0 or later puts each part on one '
+                                                                   'BOM line, bom_check.py notes parts this matters for)')
     # optional (needed by nothing): the order files and placement check, JLCImport v1.7.0 or later
     out.append(('jlcimport-cli production (order files)', set(), jlc_production,
                 'pipx install --force git+https://github.com/jvanderberg/kicad_jlcimport (v1.7.0 or later)'))

@@ -44,7 +44,7 @@
   potential with --hardware-net GND and it is not mentioned).
 Exit 1 if anything is found (NOTE lines do not count). It does not replace looking at a 3D render and a silk render.
 """
-import argparse, json, os, re, sys
+import argparse, json, math, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from interp import need  # noqa: E402
@@ -134,11 +134,16 @@ def mark(f, g):
     circle = g.GetShape() == pcbnew.SHAPE_T_CIRCLE
     if not (circle or g.IsSolidFill()):
         return False
-    if not circle and f.GetOrientationDegrees() % 90:   # un-rotate a copy (a flip mirrors: width and height stay)
-        g = g.Duplicate()
-        g.Rotate(f.GetPosition(), pcbnew.EDA_ANGLE(-f.GetOrientationDegrees(), pcbnew.DEGREES_T))
-    r = box(g.GetBoundingBox())
-    return is_mark('circle' if circle else 'other', g.IsSolidFill(), r[2] - r[0], r[3] - r[1])
+    if circle or not f.GetOrientationDegrees() % 90 or not g.GetCorners():
+        r = box(g.GetBoundingBox())
+        w, h = r[2] - r[0], r[3] - r[1]
+    else:                       # its corners turned back by the footprint's angle (a flip mirrors: width and height stay)
+        a = math.radians(f.GetOrientationDegrees())
+        pts = [(MM(q.x) * math.cos(a) - MM(q.y) * math.sin(a), MM(q.x) * math.sin(a) + MM(q.y) * math.cos(a)) for q in g.GetCorners()]
+        sw = MM(g.GetWidth())
+        w = max(x for x, _ in pts) - min(x for x, _ in pts) + sw
+        h = max(y for _, y in pts) - min(y for _, y in pts) + sw
+    return is_mark('circle' if circle else 'other', g.IsSolidFill(), w, h)
 
 
 def silk_outline(f):
@@ -419,8 +424,10 @@ def main():
     b = load_board(a.board)
     fps = list(b.GetFootprints())
     probs, notes = [], []
-    if not a.no_outline:
-        probs, notes = outline_overlaps(fps, a.min_overlap)
+    if not (a.no_outline and a.no_courtyard):
+        probs, notes = outline_overlaps(fps, a.min_overlap)    # one pass gives the overlaps and the courtyard NOTEs
+        if a.no_outline:
+            probs = []
         if a.no_courtyard:
             notes = []
     if not a.no_models:

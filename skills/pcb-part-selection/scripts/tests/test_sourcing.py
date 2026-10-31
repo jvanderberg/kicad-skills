@@ -264,6 +264,13 @@ def test_ti_candidates_short_and_capped(ti_pages):
         assert part_gate.ti_resolve(n)[0].startswith('SUSPECT') and len(asked) <= part_gate.MAX_TI_REQUESTS, (n, asked)
 
 
+def test_sn_is_ti_only_as_sn74_sn65_sn75():
+    """SN logic and interface parts are TI's; SN followed by any other digit (a serial number in pasted text) is not"""
+    assert part_gate.NAME_RE.findall('SN1 SN12345 SN74LVC1G04DBVR SN65HVD230DR SN75176BP') == \
+        ['SN74LVC1G04DBVR', 'SN65HVD230DR', 'SN75176BP']
+    assert not part_gate.is_ti('SN1') and part_gate.is_ti('SN74LV1T04DBVR')
+
+
 def test_ti_lead_finish_suffix_is_the_same_device():
     """a trailing G4 / E4 (lead finish) is cut first and needs no confirmation: LM358DRG4 reaches LM358 and
     TPS2051BDBVRG4 TPS2051B (ti.com, 30 Oct 2026: both pages ACTIVE, no part-details for the G4 orderables); digits
@@ -501,7 +508,8 @@ def test_search_exact_mpn_first_no_placeholders(env):
 
 def test_bom_check_one_part_on_two_bom_lines(env):
     """one LCSC number on parts with different Values is two order-BOM lines before jlcimport-cli v1.7.0 (JLC fits
-    neither); on different footprints it is a wrong part or footprint whatever the version"""
+    neither; a version that cannot be read is a note); on different footprints it is a wrong part or footprint whatever
+    the version"""
     data = json.loads(json.dumps(STOCK)); data['global']['C2286'] = ('KT-0603R', '7277385', '0.0077')
     (env['tmp'] / 'data.json').write_text(json.dumps(data))
     write_sourcing(env)
@@ -510,8 +518,8 @@ def test_bom_check_one_part_on_two_bom_lines(env):
     run = lambda comps: sh(os.path.join(HERE, 'bom_check.py'), str(sch), '--netlist', netlist(env, comps), '--cli', env['cli'],
                            '--no-derived', '--no-local-datasheets')
     rc, out = run([comp('D1', 'TX (red)', 'C2286', fp=led), comp('D2', 'RX (red)', 'C2286', fp=led)])
-    assert rc == 1 and 'SPLIT: 2 BOM lines for one part (D1 "TX (red)" LED_0603_1608Metric / D2 "RX (red)"' in out \
-        and 'of unknown version' in out, out
+    assert rc == 0 and 'SPLIT' not in out and 'one LCSC number on 2 Values (D1 "TX (red)" LED_0603_1608Metric' in out \
+        and 'its version could not be read' in out, out                  # unknown version: a note, as preflight says
     for v, flagged in (('1.6.7', True), ('1.7.0', False), ('1.8.2', False)):
         os.environ['FAKE_VERSION'] = v
         try:

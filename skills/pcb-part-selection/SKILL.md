@@ -276,5 +276,5 @@ kicad-cli. Hand-written Gerber scripts are no longer needed. What to do with its
   same number it unticks both (quantity 0) and assembles neither. v1.7.0 writes one line per LCSC number whatever
   the Values (two LEDs named "TX" and "RX"); a build of main from before it grouped by Value too, split such parts,
   and `--check-only` did not say so. `bom_check.py` flags a number used with different Values when the installed
-  jlcimport-cli is older than v1.7.0 (or its version is unknown), and a number used on different footprints always:
-  one part cannot fit two land patterns.
+  jlcimport-cli is older than v1.7.0 (a note when its version cannot be read, as `preflight.py` reports it), and a
+  number used on different footprints always: one part cannot fit two land patterns.
