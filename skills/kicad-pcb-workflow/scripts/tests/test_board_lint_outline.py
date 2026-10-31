@@ -90,6 +90,9 @@ def test_silk_outline_overlaps():
     assert r.returncode == 1 and '2 problem(s)' in r.stdout, r.stdout
     r = subprocess.run([KICAD_PYTHON, os.path.join(HERE, 'board_lint.py'), pcb, '--no-models', '--no-silk', '--no-paste',
                         '--no-via-in-pad', '--no-hardware', '--no-courtyard'], capture_output=True, text=True)
+    assert '2 problem(s)' in r.stdout and 'NOTE' not in r.stdout and r.returncode == 1, r.stdout   # only the NOTEs go
+    r = subprocess.run([KICAD_PYTHON, os.path.join(HERE, 'board_lint.py'), pcb, '--no-models', '--no-silk', '--no-paste',
+                        '--no-via-in-pad', '--no-hardware', '--no-outline'], capture_output=True, text=True)
     assert 'SILK OUTLINE' not in r.stdout and r.returncode == 0, r.stdout
 
 
@@ -115,6 +118,29 @@ def test_strip_outline_keeps_marks():
     r = subprocess.run([sys.executable, os.path.join(HERE, 'strip_outline.py'), p, '--to', src], capture_output=True, text=True)
     assert r.returncode != 0 and 'separate library' in r.stderr, r.stdout + r.stderr
     assert '(property "Silk outline" "removed by strip_outline.py"' in open(os.path.join(out, 'DIODE.kicad_mod')).read()
+
+
+def test_strip_outline_keeps_bars_that_touch_the_outline():
+    """a cathode bar running from the outline's top line to its bottom line, and a "+" drawn beside the outline, are
+    kept; the four sides, a short side joined to its chamfer, and the chamfer go"""
+    import strip_outline
+    from kicad_sexpr import load
+    d = tempfile.mkdtemp()
+    p = easyeda(d, 'CAP', 1.5, 0.8, [(-1.2, 0, 0.6, 0.8), (1.2, 0, 0.6, 0.8)], outline=False)
+    fp = load(p)
+    line = lambda a, b: fp.append(Node('fp_line', Node('start', *a), Node('end', *b), Node('stroke', Node('width', 0.15),
+                                       Node('type', Sym('solid'))), Node('layer', 'F.SilkS')))
+    for a, b in (((-1.2, -0.8), (1.5, -0.8)), ((1.5, -0.8), (1.5, 0.8)), ((1.5, 0.8), (-1.2, 0.8)),   # three sides
+                 ((-1.5, -0.5), (-1.5, 0.5)),                                                         # short left side
+                 ((-1.5, -0.5), (-1.2, -0.8)), ((-1.5, 0.5), (-1.2, 0.8))):                           # its chamfers
+        line(a, b)
+    line((0.6, -0.8), (0.6, 0.8))                                                    # cathode bar, top line to bottom
+    line((-2.4, -0.5), (-1.8, -0.5)); line((-2.1, -0.8 + 0.0), (-2.1, -0.2))         # "+" left of the outline
+    drop, keep = strip_outline.outline(fp)
+    ends = lambda g: tuple(round(v, 2) for k in ('start', 'end') for v in (g.need(k).number(1), g.need(k).number(2)))
+    assert sorted(ends(g) for g in keep) == [(-2.4, -0.5, -1.8, -0.5), (-2.1, -0.8, -2.1, -0.2), (0.6, -0.8, 0.6, 0.8)], \
+        [ends(g) for g in keep]
+    assert len(drop) == 6, [ends(g) for g in drop]
 
 
 def _strip(*args):

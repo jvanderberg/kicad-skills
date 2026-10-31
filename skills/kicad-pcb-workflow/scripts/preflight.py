@@ -108,11 +108,11 @@ def checks():
         # BOM lines when Values differ (JLC then fits none of them); v1.7.0 puts each part on one line (PR #126)
         try:
             with open(c, 'rb') as f:
-                first = f.readline().decode('utf-8', 'replace')
+                shebang = f.readline().decode('utf-8', 'replace')
         except OSError:
-            first = ''
-        rv, vt = run(first[2:].split() + ['-c', "from importlib.metadata import version; print(version('kicad-jlcimport'))"]) \
-            if first.startswith('#!') and 'python' in first else (1, '')
+            shebang = ''
+        rv, vt = run(shebang[2:].split() + ['-c', "from importlib.metadata import version; print(version('kicad-jlcimport'))"]) \
+            if shebang.startswith('#!') and 'python' in shebang else (1, '')
         m = re.search(r'(\d+)\.(\d+)\.(\d+)', vt) if rv == 0 else None
         if m and tuple(int(x) for x in m.groups()) < (1, 7, 0):
             return False, '%s %s: a build of main from before v1.7.0 (its order BOM splits one part over lines by Value)' % (c, m.group(0))

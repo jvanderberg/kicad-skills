@@ -264,6 +264,17 @@ def test_ti_candidates_short_and_capped(ti_pages):
         assert part_gate.ti_resolve(n)[0].startswith('SUSPECT') and len(asked) <= part_gate.MAX_TI_REQUESTS, (n, asked)
 
 
+def test_ti_lead_finish_suffix_is_the_same_device():
+    """a trailing G4 / E4 (lead finish) is cut first and needs no confirmation: LM358DRG4 reaches LM358 and
+    TPS2051BDBVRG4 TPS2051B (ti.com, 30 Oct 2026: both pages ACTIVE, no part-details for the G4 orderables); digits
+    ending a device or logic name are left alone"""
+    for n, page in (('LM358DRG4', 'LM358'), ('TPS2051BDBVRG4', 'TPS2051B'), ('TPS2051BDBVRE4', 'TPS2051B')):
+        c = dict(part_gate.ti_candidates(n))
+        assert page in c and c[page] is None, (n, c)
+    for n in ('SN74LVC1G14DBVR', 'SN74LVC2G34DCKR', 'TPS62840DLCR'):
+        assert part_gate.ti_candidates(n)[0][0] == n, n
+
+
 def test_ti_budget_keeps_room_for_the_confirmation(ti_pages, monkeypatch):
     """ti_resolve owns the request count: a guess that would need a part-details confirmation is only asked for while
     both requests fit in MAX_TI_REQUESTS, so a page that could not be confirmed is never reported"""

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Checks KiCad's DRC does not make. Run with KiCad's bundled python ($KICAD_PYTHON, from kicad_env.sh):
-  $KICAD_PYTHON board_lint.py BOARD.kicad_pcb [--no-models] [--no-silk] [--no-courtyard] [--no-via-in-pad]
+  $KICAD_PYTHON board_lint.py BOARD.kicad_pcb [--no-models] [--no-silk] [--no-courtyard] [--no-outline] [--no-via-in-pad]
         [--no-paste] [--vias-filled [REF ...]] [--no-hardware] [--hardware-r MM | --hardware-r REF=MM ...]
 (started with another python it re-runs itself under KiCad's: interp.py)
 
@@ -14,7 +14,8 @@
   its body and pads and listed in a NOTE as spaced by rule of thumb. Silk deleted on the board itself leaves no such
   property: what silk is left counts as the outline (shapes; text and text boxes do not). Marks are measured in the
   footprint's own frame, as strip_outline.py does. Rectangles are axis-aligned, so a part at 45 degrees is checked
-  generously;
+  generously. --no-courtyard drops only the NOTE lines listing the parts without a courtyard; --no-outline skips the
+  SILK OUTLINE / BODY OVERLAP check itself;
 - 3D models whose file does not exist (${KICAD10_3DMODEL_DIR}, ${KIPRJMOD} and other variables expanded from the
   environment and kicad_common.json): the 3D render silently shows bare pads, so a missing model looks like a
   missing part or hides a collision. KiCad's own library references models it does not install for some footprints;
@@ -404,7 +405,9 @@ def under_hardware(b, fps, radius, hw_nets=()):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('board'); ap.add_argument('--no-models', action='store_true'); ap.add_argument('--no-silk', action='store_true')
-    ap.add_argument('--no-courtyard', action='store_true'); ap.add_argument('--min-overlap', type=float, default=0.1)
+    ap.add_argument('--no-courtyard', action='store_true', help='do not list the parts without a courtyard (NOTE lines)')
+    ap.add_argument('--no-outline', action='store_true', help='skip the SILK OUTLINE / BODY OVERLAP check')
+    ap.add_argument('--min-overlap', type=float, default=0.1)
     ap.add_argument('--no-via-in-pad', action='store_true')
     ap.add_argument('--no-paste', action='store_true')
     ap.add_argument('--vias-filled', nargs='*', help="vias are ordered filled and capped: all (no refs) or in these parts' pads "
@@ -416,8 +419,10 @@ def main():
     b = load_board(a.board)
     fps = list(b.GetFootprints())
     probs, notes = [], []
-    if not a.no_courtyard:
+    if not a.no_outline:
         probs, notes = outline_overlaps(fps, a.min_overlap)
+        if a.no_courtyard:
+            notes = []
     if not a.no_models:
         env = kicad_vars(a.board)
         for f in fps:

@@ -785,3 +785,20 @@ Not changed: the reviewer's alternative of drawing courtyards from the silk outl
 enforces the rule; the user kept the board_lint check (30 October 2026).
 
 Test runs: wf 114 passed, 2 skipped; rev 31 passed, 2 skipped; ps 26 passed, 1 skipped; psu 4 passed.
+
+## Third review (PR #10): the regressions it introduced
+
+The third review's other findings are older gaps or redesigns, left for their own changes: decoupling to take
+connectivity from KiCad itself (boarddump) instead of rebuilding it, part_gate to resolve orderables through ti.com's
+store lookup instead of name trimming, via spans in `common.copper()`, custom-pad extents shared with add_courtyard.py,
+one JLCImport version probe.
+
+| Finding | Fix | Verified |
+|---|---|---|
+| preflight.py crashed (UnboundLocalError) with no jlcimport-cli: a local `first` shadowed the helper | renamed (both copies) | new `tests/test_preflight.py` (fails on the previous commit); `env -i PATH=/usr/bin:/bin` run reports MISSING |
+| part_gate: LM358DRG4, TPS2051BDBVRG4 no longer reached their page | a trailing lead-finish code (G4, E4, G3, E3) is cut first, as the same device | live: ACTIVE as LM358 / TPS2051B; `test_ti_lead_finish_suffix_is_the_same_device`. TPS3808G01DBVR already resolved (ti.com redirects TPS3808G01) |
+| strip_outline removed a cathode bar touching the outline's top and bottom lines, and half a "+" beside it | a line or arc is outline only with both ends on the extent's edge, along a side or across a corner; the extent ignores isolated short strokes | `test_strip_outline_keeps_bars_that_touch_the_outline`; three JLCImport libraries: the same except two headers keep their pin-1 marks and a switch keeps four broken-off corner chamfers |
+| board_lint `--no-courtyard` switched off the whole overlap check | `--no-courtyard` drops only the NOTE lines; `--no-outline` skips the check | test |
+| decoupling's header promised KiCad's connectivity | header, FAIL message and analysis-limits.md name what is not joined (thermal-relief pads off the fill, tracks crossing a pour, overlapping pads, arc bulges) | text |
+
+Test runs: wf 116 passed, 2 skipped; rev 31 passed, 2 skipped; ps 27 passed, 1 skipped; psu 4 passed.

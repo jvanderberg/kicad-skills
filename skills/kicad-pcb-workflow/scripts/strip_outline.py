@@ -11,9 +11,11 @@ and everything else: JLCImport's production export recognises JLC's own footprin
 library nickname), and JLC places by the pads, origin and rotation, so only the library nickname changes. Register the
 library once (`libtable.py add PROJECT fp NoOutline NoOutline.pretty`) and set the tightened parts' Footprint field to
 `NoOutline:<name>`; parts left at full spacing keep the original.
-Removed, per silk layer: the outline - every line, arc, rectangle, polygon or circle that reaches the edge of the
-layer's silk extent. Kept: text, marks (a circle or a filled shape under 1 mm both ways, such as a pin-1 dot:
-outline_rules.py, the rule board_lint.py uses) and drawing inside the outline (a diode symbol, a cathode bar). When the
+Removed, per silk layer: the outline - every line or arc with both ends on the edge of the layer's silk extent (along
+a side or across a corner), and every larger rectangle, polygon or circle reaching it (outline()). Kept: text, marks (a
+circle or a filled shape under 1 mm both ways, such as a pin-1 dot: outline_rules.py, the rule board_lint.py uses),
+drawing inside the outline (a diode symbol, a cathode bar, also one touching the top and bottom lines) and a "+"
+beside it. A corner chamfer broken off from the sides stays too: the render shows it. When the
 outline itself carried the polarity (a chamfered corner, a cathode bar drawn as one of its sides) nothing marks it any
 more: the script says when nothing is left, and a polarised part then needs a dot added by its pin 1 / cathode. Look at
 the result in a render.
@@ -31,7 +33,7 @@ import argparse, math, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kicad_sexpr import Node, Sym, Uuids, load, save  # noqa: E402
 from kicad_sexpr.common import font_effects  # noqa: E402
-from outline_rules import REMOVED, is_mark as _is_mark  # noqa: E402
+from outline_rules import MARK, REMOVED, is_mark as _is_mark  # noqa: E402
 
 SHAPES = ('fp_line', 'fp_arc', 'fp_rect', 'fp_poly', 'fp_circle')
 SILK = {'F.SilkS', 'B.SilkS'}
@@ -70,23 +72,54 @@ def _points(g):
     return [(n.number(1), n.number(2)) for n in g.walk() if n.head in ('start', 'end', 'mid', 'center', 'xy')]
 
 
+def _size(g):
+    pts = _points(g)
+    if not pts:
+        return 0.0, 0.0
+    w = _width(g)
+    return max(p[0] for p in pts) - min(p[0] for p in pts) + w, max(p[1] for p in pts) - min(p[1] for p in pts) + w
+
+
+def _ends(g):
+    """a line's or arc's two end points, else []"""
+    if g.head not in ('fp_line', 'fp_arc'):
+        return []
+    return [(g.need(k).number(1), g.need(k).number(2)) for k in ('start', 'end')]
+
+
 def outline(fp):
-    """(outline shapes, shapes kept) on the silk layers: a non-mark shape with a point on the edge of its layer's silk
-    extent (within half its stroke and 0.02 mm) is outline"""
+    """(outline shapes, shapes kept) on the silk layers. The outline's extent comes from the shapes at least MARK long
+    one way and the short ones joined end to end with another (an outline's short sides and chamfers); an isolated
+    short stroke (a "+" beside the outline) does not move it. A line or arc is outline when both its ends lie on that
+    extent's edge (within half its stroke and 0.02 mm), along one side or across a corner (a chamfer). Kept: a bar from
+    one side to the opposite one (a cathode bar touching the top and bottom lines, a pin-1 divider), lines with an end
+    inside (a pin-1 box) - and so also a corner chamfer broken off from the sides, which the render shows. Any other
+    shape (rectangle, polygon, circle) at least MARK long one way is outline when it reaches the edge."""
     drop, keep = [], []
     for layer in SILK:
         gs = [g for g in fp.nodes() if g.head in SHAPES and _layer(g) == layer]
         marks = [is_mark(g) for g in gs]
         body = [g for g, m in zip(gs, marks) if not m]
         keep += [g for g, m in zip(gs, marks) if m]
-        pts = [p for g in body for p in _points(g)]
+        big = [g for g in body if max(_size(g)) >= MARK]
+        ends = [_ends(g) for g in body]
+        joined = [any(math.dist(p, q) <= 0.05 for j, e2 in enumerate(ends) if j != i for p in e for q in e2)
+                  for i, e in enumerate(ends)]
+        ext = [g for g, j in zip(body, joined) if g in big or j]      # an isolated short stroke ("+") is left out
+        pts = [p for g in (ext or body) for p in _points(g)]
         if not pts:
             continue
         x0, y0 = min(p[0] for p in pts), min(p[1] for p in pts)
         x1, y1 = max(p[0] for p in pts), max(p[1] for p in pts)
+        edges = (('x0', 0, x0), ('x1', 0, x1), ('y0', 1, y0), ('y1', 1, y1))
         for g in body:
             tol = _width(g) / 2 + 0.02
-            edge = any(min(abs(x - x0), abs(x - x1), abs(y - y0), abs(y - y1)) <= tol for x, y in _points(g))
+            sides = lambda q: {k for k, i, v in edges if abs(q[i] - v) <= tol}     # the edges a point lies on
+            if g.head in ('fp_line', 'fp_arc'):
+                a, b = (sides(q) for q in _ends(g))
+                edge = bool(a & b) or any(i[0] != j[0] for i in a for j in b)    # along a side, or across a corner
+            else:
+                edge = g in big and any(sides(q) for q in _points(g))
             (drop if edge else keep).append(g)
     return drop, keep
 

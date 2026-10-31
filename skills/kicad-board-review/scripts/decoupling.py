@@ -7,16 +7,16 @@
 # with the length on tracks, across planes and through vias, an inductance estimate (tracks: microstrip Z0 x
 # sqrt(eps_eff) / c on their own layer and width; vias: 0.2 h (ln(4h/d) + 1); plane spreading not included), how many
 # capacitors lie within the limit, and the distance from that capacitor's ground pad to the nearest ground via.
-# Copper joins where KiCad's connectivity joins it: wherever the copper shapes overlap, at a track's ends or mid-way
-# along it (a via dropped on a straight run, or two tracks crossing, with no vertex there, still joins). A track (its
-# centreline swept by half its width, round ends), a via (a disc of its size) and a pad (its polygon) join when the
-# distance between them is under the sum of their half-widths - strictly: KiCad 10's BuildConnectivity leaves two
-# shapes that only touch at exactly that distance apart. So two tracks whose centrelines come within w1/2 + w2/2 of
-# each other anywhere (a T-join, a crossing, a parallel run; joined at their closest points), a via within
-# w/2 + size/2 of a track's centreline or within size1/2 + size2/2 of another via, and a track or via closer than its
-# half-width to a pad. A via joins only the layers it spans: a through via all of them; a blind, buried or micro via
-# the run between the layers board.json records for it ("layers"; one without them is treated as through, with a
-# warning).
+# Joins, by copper overlap (distance under the sum of the half-widths, strictly, as KiCad 10's BuildConnectivity was
+# measured to do), at a track's ends or mid-way along it: two tracks whose centrelines come within w1/2 + w2/2 (a
+# T-join, a crossing, a parallel run; joined at their closest points), a via within w/2 + size/2 of a track's
+# centreline or size1/2 + size2/2 of another via, and a track or via closer than its half-width to a pad. A via joins
+# only the layers it spans: a through via all of them; a blind, buried or micro via the run between the layers
+# board.json records for it ("layers"; one without them is treated as through, with a warning).
+# Not joined, although KiCad joins them (a false "no capacitor reachable" or a longer path; check such a pin by hand):
+# a pad on a pour by thermal-relief spokes when the pad's centre lies outside the fill, and a track crossing a pour
+# with no vertex inside it (a pour joins only points inside its filled piece); two pads whose copper overlaps with
+# neither centre inside the other; copper touching an arc track beyond its two chords (arcs are a -> mid -> end).
 # A rail that reaches its pins by tracks only (no plane) is where this matters most: allocate a decoupling site at each
 # power pin at placement. review_config.json "decoupling": {"max_mm": 5, "ignore": ["U7"]} (defaults shown, none ignored).
 import heapq, itertools
@@ -227,7 +227,8 @@ for ref, c in sorted(NL['components'].items(), key=lambda kv: natkey(kv[0])):
             best = min(((dist[k], k) for k in ks if k in dist), default=None)
             if best: found.append((best[0], cr, best[1], cp))
         if not found:
-            row.update(status='FAIL: no capacitor reachable on %s copper from this pin (%d on the net)' % (net, len(caps)))
+            row.update(status='FAIL: no capacitor reachable on %s copper from this pin (%d on the net; a pin joined only by '
+                              'thermal-relief spokes or overlapping pads is not seen: check it before reporting)' % (net, len(caps)))
             rows.append(row); continue
         found.sort()
         mm, cr, k, cp = found[0]

@@ -116,11 +116,15 @@ def ti_candidates(name):
     - a voltage code from the middle (TLV75518PDRVR -> TLV755P),
     - everything from the first "-", "." or "/" (LP5907MFX-3.3/NOPB -> LP5907, LP2985-33DBVR -> LP2985),
     - the automotive grade: a plain page for a ...Q1 orderable (TPS61088QRHLRQ1 -> TPS61088).
+    A trailing lead-finish code (G4, E4, G3, E3: LM358DRG4 -> LM358DR ... LM358) is the same device and is cut first.
     An automotive number tries its -Q1 device pages first (TPS7A1633QDGNRQ1 -> TPS7A1633-Q1, TPS7A16-Q1), then plain
     pages of its device part only (the letters after its Q are the package). Guesses that cannot be a page (with a
     "/", ending in "-" or ".") are left out. Not capped: ti_resolve stops at MAX_TI_REQUESTS."""
     q1 = name.endswith('Q1') and not name.endswith('-Q1')
     core = name[:-2] if q1 else name
+    finish = re.match(r'(.*\d.*[A-Z])[GE][34]$', core)   # TI's lead-finish suffix (LM358DRG4, TPS2051BDBVRG4): the
+    if finish:                                            # same device, and ti.com lists no part-details for it
+        core = finish.group(1)
     head, tail = re.match(r'([^-./]*)(.*)', core).groups()
     base, base_why = (head, ("the suffix '%s'" % tail,)) if tail and tail != '-Q1' else (core, ())
     forms = [(core, ())] + ([(base, base_why)] if base != core else [])
