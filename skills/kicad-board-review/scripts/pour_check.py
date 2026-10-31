@@ -28,7 +28,8 @@ if len(sys.argv) > 1 and sys.argv[1].endswith('.kicad_pcb'):
         sys.exit('kicad-cli could not refill the copy (%s): stopping - checking stale fills would look like a pass' % (r.stderr or r.stdout)[-300:])
     kpy = kicad_python()
     if not kpy: sys.exit('no KiCad python with pcbnew (set KICAD_PYTHON)')
-    r = subprocess.run([kpy, os.path.join(HERE, 'boarddump.py'), os.path.join(tmp, name), tmp], capture_output=True, text=True)
+    r = subprocess.run([kpy, os.path.join(HERE, 'boarddump.py'), os.path.join(tmp, name), tmp, '--no-connectivity'],
+                       capture_output=True, text=True)
     if not os.path.exists(os.path.join(tmp, 'board.json')):
         sys.exit('boarddump.py failed: %s' % r.stderr[-300:])
     sys.argv[1] = tmp
@@ -103,6 +104,7 @@ for t in B['tracks']:
             void.append('OVER VOID %s on %s: %.2f mm with no copper on %s from (%.2f, %.2f) to (%.2f, %.2f)' % (
                 t['net'], t['layer'], span, ref, P[i, 0], P[i, 1], P[j, 0], P[j, 1]))
         i = j + 1
+if SPAN_WARNING: print('  !!', SPAN_WARNING)
 for line in found + void: print(line)
 print('%d pour piece(s) checked%s: %d weak or isolated (fewer than %d vias to their plane); %d track span(s) over nothing; '
       'nets with no copper on another layer (not judged): %s' % (checked, ' in the window' if WIN is not None else '', len(found),

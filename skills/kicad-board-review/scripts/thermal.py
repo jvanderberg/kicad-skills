@@ -135,6 +135,7 @@ for hh in HOLES:
     pt = Point(hh['x'], hh['y'])
     hh['landed'] = [i for i, L in enumerate(LAYERS) if (hh['kind'] == 'pad' and L in hh['layers'] and not hh['net'])
                     or ((hh['kind'] == 'pad' or L in hh['layers']) and geo(hh['net'], L).intersects(pt))]   # a via: its span
+if SPAN_WARNING: TW.append(SPAN_WARNING)
 if B['vias'] and all(v.get('type_name') is None for v in B['vias']):
     TW.append('board.json has no via type names (dumped by an older boarddump.py): every via treated as a through via')
 VIAS = []

@@ -8,6 +8,8 @@
 import argparse, collections, itertools, json, sys, re, os
 ap = argparse.ArgumentParser(description='Dump a board\'s copper geometry to PACK_DIR/board.json for the analysis scripts.')
 ap.add_argument('board', help='the .kicad_pcb (zones refilled on a copy first)'); ap.add_argument('pack', metavar='PACK_DIR')
+ap.add_argument('--no-connectivity', action='store_true', help='skip KiCad\'s connectivity (decoupling.py needs it; '
+                'pour_check.py and the router do not)')
 args = ap.parse_args()                              # before the re-exec: --help and a missing argument need no KiCad
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from interp import need; need('pcbnew')            # started with another python: re-run under KiCad's
@@ -65,10 +67,12 @@ D = dict(source=os.path.abspath(src), layers=[LN[l] for l in cu], layer_names={L
          pad_poly=dict(error_mm=0.005, error_side='outside'))
 bb = b.GetBoardEdgesBoundingBox(); D['edge_bbox'] = [mm(bb.GetX()), mm(bb.GetY()), mm(bb.GetRight()), mm(bb.GetBottom())]
 eps = pcbnew.SHAPE_POLY_SET(); b.GetBoardPolygonOutlines(eps, True); D['edge'] = poly_set(eps)
-ITEMS, ID = [], {}       # (id, item) of every copper item on a net, and uuid -> id: for the connectivity below
+ITEMS, ID, DUP = [], {}, set()   # (id, item) of every copper item on a net, uuid -> id, uuids used twice
 def ident(iid, item):
     if item.GetNetCode() > 0:
-        ITEMS.append((iid, item)); ID[item.m_Uuid.AsString()] = iid
+        u = item.m_Uuid.AsString()
+        if u in ID: DUP.add(u)
+        ITEMS.append((iid, item)); ID[u] = iid
 for f in b.GetFootprints():
     fd = dict(ref=f.GetReference(), value=f.GetValue(), fp=str(f.GetFPID().GetLibItemName()), lib=str(f.GetFPID().GetLibNickname()),
               x=mm(f.GetPosition().x), y=mm(f.GetPosition().y), rot=f.GetOrientationDegrees(), side='B' if f.IsFlipped() else 'F', pads=[])
@@ -125,32 +129,38 @@ def connectivity():
     b.BuildConnectivity(); cn = b.GetConnectivity(); cn.RecalculateRatsnest()
     uid = lambda o: o.m_Uuid.AsString()
     links, warn = {}, []
+    if DUP:              # a uuid two items share cannot say which one KiCad returned: never map it (their own queries
+        for u in DUP: del ID[u]                          # below still link them; their zone joins fall to the cluster check)
+        warn.append('%d uuid(s) shared by several items (copied pads?): their zone joins are left to the cluster check' % len(DUP))
     def link(a, c, kind='touch'):
         if a != c: links.setdefault(tuple(sorted((a, c))), kind)
     for iid, it in ITEMS:
         for o in list(cn.GetConnectedTracks(it)) + list(cn.GetConnectedPads(it)):
             if uid(o) in ID: link(iid, ID[uid(o)])
-    pieces = collections.defaultdict(list)               # zone index -> [(layer, piece index, its polygon set)]
+    pieces = collections.defaultdict(list)               # zone index -> [(layer, piece index, polygon set, its bbox)]
     for zi, z in ZONES:
         for l in cu:
             if z.IsOnLayer(l):
                 ps = z.GetFilledPolysList(l)
-                pieces[zi] += [(l, j, ps.Subset(j, j + 1)) for j in range(ps.OutlineCount())]
+                for j in range(ps.OutlineCount()):
+                    pc = ps.Subset(j, j + 1); pieces[zi].append((l, j, pc, pc.BBox()))
     pid = lambda zi, l, j: 'z%d/%s/%d' % (zi, LN[l], j)
     lost = 0
     for zi, z in ZONES:
         for o in list(cn.GetConnectedTracks(z)) + list(cn.GetConnectedPads(z)):
             iid = ID.get(uid(o))
             if not iid: continue
-            hits = [pid(zi, l, j) for l, j, ps in pieces[zi] if o.IsOnLayer(l) and ps.BBox().Intersects(o.GetBoundingBox())
-                    and ps.Collide(o.GetEffectiveShape(l))]
+            ob = o.GetBoundingBox()
+            hits = [pid(zi, l, j) for l, j, ps, bb in pieces[zi] if o.IsOnLayer(l) and bb.Intersects(ob) and ps.Collide(o.GetEffectiveShape(l))]
             for h in hits: link(iid, h)
             lost += not hits
     if lost: warn.append('%d item(s) KiCad connects to a zone collide with none of its fill pieces: left to the cluster check' % lost)
-    flat = [(zi, z, l, j, ps) for zi, z in ZONES for l, j, ps in pieces[zi]]
-    for (za, a, la, ja, pa), (zc, c, lc, jc, pc) in itertools.combinations(flat, 2):
-        if za != zc and la == lc and a.GetNetCode() == c.GetNetCode() and pa.BBox().Intersects(pc.BBox()) and pa.Collide(pc):
-            link(pid(za, la, ja), pid(zc, lc, jc))
+    same = collections.defaultdict(list)                 # (net, layer) -> its fill pieces
+    for zi, z in ZONES:
+        for l, j, ps, bb in pieces[zi]: same[(z.GetNetCode(), l)].append((zi, l, j, ps, bb))
+    for grp in same.values():
+        for (za, la, ja, pa, ba), (zc, lc, jc, pc, bc) in itertools.combinations(grp, 2):
+            if za != zc and ba.Intersects(bc) and pa.Collide(pc): link(pid(za, la, ja), pid(zc, lc, jc))
     parent = {}
     def find(x):
         while parent.get(x, x) != x:
@@ -159,17 +169,19 @@ def connectivity():
     for a, c in links: parent[find(a)] = find(c)
     clusters, kc, unrec = [], {}, collections.Counter()
     try:
-        for iid, it in ITEMS:
-            if iid in kc: continue
-            mem = {iid}
-            for o in cn.GetConnectedItems(it):
-                if uid(o) in ID: mem.add(ID[uid(o)])
-                elif o.GetClass() != 'ZONE' or o.GetParentFootprint(): unrec[o.GetClass()] += 1
-            for j in mem: kc[j] = len(clusters)
-            clusters.append(mem)
+        if ITEMS: cn.GetConnectedItems(ITEMS[0][1])
+        ask = True
     except TypeError:                                     # a KiCad whose python cannot ask for an item's cluster
         warn.append('links not checked against KiCad\'s clusters (GetConnectedItems not callable in KiCad %s)' % pcbnew.Version())
-        clusters = []
+        ask = False
+    for iid, it in ITEMS if ask else ():
+        if iid in kc: continue
+        mem = {iid}
+        for o in cn.GetConnectedItems(it):
+            if uid(o) in ID: mem.add(ID[uid(o)])
+            elif o.GetClass() != 'ZONE' or o.GetParentFootprint(): unrec[o.GetClass()] += 1
+        for j in mem: kc[j] = len(clusters)
+        clusters.append(mem)
     split = 0
     for mem in clusters:
         roots = {}
@@ -188,8 +200,13 @@ def connectivity():
         warn.append('the links join %d pair(s) of copper that KiCad keeps apart (a fill piece chosen by collision)' % merged)
     return dict(source='KiCad %s connectivity' % pcbnew.Version(), unconnected=cn.GetUnconnectedCount(False),
                 links=[[a, c] if k == 'touch' else [a, c, k] for (a, c), k in sorted(links.items())], warnings=warn)
-D['connectivity'] = connectivity()
+if not args.no_connectivity:
+    try:
+        D['connectivity'] = connectivity()
+    except Exception as e:                               # never lose the geometry the other scripts need to it
+        print('  !! connectivity not recorded (%s: %s): decoupling.py will say NOT CHECKED' % (type(e).__name__, e), file=sys.stderr)
 json.dump(D, open(os.path.join(pack, 'board.json'), 'w'))
+C = D.get('connectivity') or dict(links=[], warnings=[])
 print(len(D['footprints']), 'footprints', len(D['tracks']), 'tracks', len(D['vias']), 'vias', len(D['zones']), 'zones,', len(cu), 'copper layers,',
-      len(D['connectivity']['links']), 'connectivity links')
-for w in D['connectivity']['warnings']: print('  !! connectivity:', w)
+      len(C['links']), 'connectivity links')
+for w in C['warnings']: print('  !! connectivity:', w)

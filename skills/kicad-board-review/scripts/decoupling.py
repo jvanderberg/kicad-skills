@@ -43,30 +43,18 @@ for iid, (k, net, o) in ITEM.items(): NET_ITEMS[net].append(iid)
 CONN = B.get('connectivity')
 LINKS = collections.defaultdict(list)                    # net -> [(id, id, kind)]; kind "cluster": joined via copper
 if CONN:                                                 # board.json does not record (see boarddump.py)
-    unknown = [l for l in CONN['links'] if l[0] not in ITEM or l[1] not in ITEM]
-    if unknown: WARN.append('%d connectivity links name items not in board.json (edited by hand?): ignored' % len(unknown))
+    bad = [l for l in CONN['links'] if l[0] not in ITEM or l[1] not in ITEM or ITEM[l[0]][1] != ITEM[l[1]][1]]
+    if bad: WARN.append('%d connectivity links name items not in board.json or on two nets (edited by hand?): ignored' % len(bad))
     for l in CONN['links']:
-        if l[0] in ITEM and l[1] in ITEM: LINKS[ITEM[l[0]][1]].append((l[0], l[1], l[2] if len(l) > 2 else 'touch'))
+        if l not in bad: LINKS[ITEM[l[0]][1]].append((l[0], l[1], l[2] if len(l) > 2 else 'touch'))
     WARN += ['board.json connectivity: ' + w for w in CONN.get('warnings', [])]
 else:
     WARN.append('board.json has no "connectivity" (written by an older boarddump.py): decoupling NOT CHECKED - re-run make_pack.sh')
 
-def centreline(t):
-    """a track's centreline: its segment, or an arc as a polyline within 1 um of the true arc"""
-    if not t.get('arc'): return LineString([t['a'], t['b']])
-    (ax, ay), (mx, my), (bx, by) = t['a'], t['m'], t['b']
-    d = 2 * (ax * (my - by) + mx * (by - ay) + bx * (ay - my))
-    if abs(d) < 1e-9: return LineString([t['a'], t['b']])
-    s2 = lambda x, y: x * x + y * y
-    cx = (s2(ax, ay) * (my - by) + s2(mx, my) * (by - ay) + s2(bx, by) * (ay - my)) / d
-    cy = (s2(ax, ay) * (bx - mx) + s2(mx, my) * (ax - bx) + s2(bx, by) * (mx - ax)) / d
-    r = math.hypot(ax - cx, ay - cy)
-    t0, tm, t1 = (math.atan2(y - cy, x - cx) for x, y in (t['a'], t['m'], t['b']))
-    sw = (t1 - t0) % (2 * math.pi)
-    if (tm - t0) % (2 * math.pi) > sw: sw -= 2 * math.pi        # the way round that passes through the mid point
-    n = min(max(math.ceil(abs(sw) / (2 * math.acos(1 - 0.001 / r))) if r > 0.001 else 2, 2), 720)
-    pts = [(cx + r * math.cos(t0 + sw * i / n), cy + r * math.sin(t0 + sw * i / n)) for i in range(n + 1)]
-    return LineString([tuple(t['a'])] + pts[1:-1] + [tuple(t['b'])])
+def find(grp, x):
+    """union-find root of x in grp (path halving)"""
+    while grp[x] != x: grp[x] = grp[grp[x]]; x = grp[x]
+    return x
 
 def entries(line, poly):
     """distances along a track's centreline where it enters and leaves a fill piece (its ends, if they lie inside),
@@ -106,13 +94,10 @@ class NetGraph:
                 self.poly[iid] = pg; self.pw[iid] = max(min(*rect_dims(pg)), 0.1) if pg.area else 0.2
             else:
                 self.poly[iid] = unary_union(polys([o[1]])); grp[iid] = iid
-        def find(x):
-            while grp[x] != x: grp[x] = grp[grp[x]]; x = grp[x]
-            return x
         rank = dict(t=0, v=1, p=2, z=3)
         for a, b, kind in LINKS[net]:
             if rank[ITEM[a][0]] > rank[ITEM[b][0]]: a, b = b, a
-            if ITEM[a][0] == ITEM[b][0] == 'z': grp[find(a)] = find(b); continue
+            if ITEM[a][0] == ITEM[b][0] == 'z': grp[find(grp, a)] = find(grp, b); continue
             if kind == 'touch' and self.touch(a, b, members): continue
             self.loose += kind == 'touch'
             self.straight(a, b, members)
@@ -122,7 +107,7 @@ class NetGraph:
                 k0, k1 = self.tnode(tid, d0), self.tnode(tid, d1)
                 if k0 != k1: self.edge(k0, k1, d1 - d0, 'track', L, w)
         self.pieces = collections.defaultdict(set)
-        for pid, ks in members.items(): self.pieces[find(pid)] |= ks
+        for pid, ks in members.items(): self.pieces[find(grp, pid)] |= ks
         self.piece_of = collections.defaultdict(list)
         for pid, ks in self.pieces.items():
             for k in ks: self.piece_of[k].append(pid)
@@ -157,7 +142,7 @@ class NetGraph:
                 self.edge(self.tnode(a, d), self.at[b][L], c.distance(la.interpolate(d)), 'track', L,
                           self.pw[b] if kb == 'p' else oa['w'])
             else:                                        # a fill piece: where the centreline enters and leaves it
-                if ob[0] != L: return False
+                if ob[0] != L or self.poly[b].is_empty: return False
                 members[b] |= {self.tnode(a, d) for d in entries(la, self.poly[b])}
             return True
         if kb == 'z':                                    # a via or pad on a fill piece: at its centre
@@ -171,13 +156,15 @@ class NetGraph:
 
     def straight(self, a, b, members):
         """a join with nothing to place it on (KiCad joins a and b through copper board.json does not record, or on no
-        layer they share): a straight line between their nearest nodes"""
+        layer they share): a straight line between their nearest nodes, a "join" - in the path length, not in the
+        track length or the inductance"""
         ends = lambda i: ([self.tnode(i, 0.0), self.tnode(i, self.line[i].length)] if ITEM[i][0] == 't' else list(self.at[i].values()))
-        if not ends(a) or (ITEM[b][0] != 'z' and not ends(b)): return       # a pad on no copper layer
-        if ITEM[b][0] == 'z':
-            members[b].add(ends(a)[0]); return
-        k0, k1 = min(((p, q) for p in ends(a) for q in ends(b)), key=lambda pq: math.dist(self.pos[pq[0]][1], self.pos[pq[1]][1]))
-        self.edge(k0, k1, math.dist(self.pos[k0][1], self.pos[k1][1]), 'track', self.pos[k0][0], None)
+        ea = ends(a)
+        if not ea or (ITEM[b][0] != 'z' and not ends(b)): return           # a pad on no copper layer
+        if ITEM[b][0] == 'z':                            # on the piece's own layer if a reaches it
+            members[b].add(next((k for k in ea if self.pos[k][0] == ITEM[b][2][0]), ea[0])); return
+        k0, k1 = min(((p, q) for p in ea for q in ends(b)), key=lambda pq: math.dist(self.pos[pq[0]][1], self.pos[pq[1]][1]))
+        self.edge(k0, k1, math.dist(self.pos[k0][1], self.pos[k1][1]), 'join', None, None)
 
     def edge(self, a, b, mm, kind, L, w):
         self.adj[a].append((b, mm, kind, L, w)); self.adj[b].append((a, mm, kind, L, w))
@@ -200,18 +187,14 @@ class NetGraph:
         return dist, prev
 
 def unconnected():
-    """the ratsnest the links leave, as KiCad counts it: per net, its separate pieces of copper less one, where a fill
-    piece on its own (no pad, track or via on it: an island kept on purpose) is not a piece to connect"""
+    """the ratsnest the links leave, as KiCad counts it: per net, its separate pieces of copper less one, where fill
+    alone (no pad, track or via on it: an island kept on purpose) is not a piece to connect"""
     n = 0
     for net, ids in NET_ITEMS.items():
         if not net: continue
         grp = {i: i for i in ids}
-        def find(x):
-            while grp[x] != x: grp[x] = grp[grp[x]]; x = grp[x]
-            return x
-        for a, b, _ in LINKS[net]: grp[find(a)] = find(b)
-        size = collections.Counter(find(i) for i in ids)
-        n += max(sum(1 for r, c in size.items() if c > 1 or ITEM[r][0] != 'z') - 1, 0)
+        for a, b, _ in LINKS[net]: grp[find(grp, a)] = find(grp, b)
+        n += max(len({find(grp, i) for i in ids if ITEM[i][0] != 'z'}) - 1, 0)
     return n
 
 def unwind(prev, k):

@@ -95,11 +95,26 @@ def polys(pl):
 
 EDGE = unary_union(polys(B['edge']))
 
+def centreline(t):
+    """a track's centreline: its segment, or an arc as a polyline within 1 um of the true arc"""
+    if not t.get('arc'): return LineString([t['a'], t['b']])
+    (ax, ay), (mx, my), (bx, by) = t['a'], t['m'], t['b']
+    d = 2 * (ax * (my - by) + mx * (by - ay) + bx * (ay - my))
+    if abs(d) < 1e-9: return LineString([t['a'], t['b']])
+    s2 = lambda x, y: x * x + y * y
+    cx = (s2(ax, ay) * (my - by) + s2(mx, my) * (by - ay) + s2(bx, by) * (ay - my)) / d
+    cy = (s2(ax, ay) * (bx - mx) + s2(mx, my) * (ax - bx) + s2(bx, by) * (mx - ax)) / d
+    r = math.hypot(ax - cx, ay - cy)
+    t0, tm, t1 = (math.atan2(y - cy, x - cx) for x, y in (t['a'], t['m'], t['b']))
+    sw = (t1 - t0) % (2 * math.pi)
+    if (tm - t0) % (2 * math.pi) > sw: sw -= 2 * math.pi        # the way round that passes through the mid point
+    n = min(max(math.ceil(abs(sw) / (2 * math.acos(1 - 0.001 / r))) if r > 0.001 else 2, 2), 720)
+    pts = [(cx + r * math.cos(t0 + sw * i / n), cy + r * math.sin(t0 + sw * i / n)) for i in range(n + 1)]
+    return LineString([tuple(t['a'])] + pts[1:-1] + [tuple(t['b'])])
+
 def track_geom(t):
-    if t.get('arc'):
-        return LineString([t['a'], t['m'], t['b']]).buffer(t['w'] / 2, 8)
-    if t['a'] == t['b']: return Point(t['a']).buffer(t['w'] / 2, 8)
-    return LineString([t['a'], t['b']]).buffer(t['w'] / 2, 8)
+    if t['a'] == t['b'] and not t.get('arc'): return Point(t['a']).buffer(t['w'] / 2, 8)
+    return centreline(t).buffer(t['w'] / 2, 8)
 
 def rect_dims(g):
     """(length, width) of a shape's minimum rotated rectangle"""
@@ -110,7 +125,7 @@ def rect_dims(g):
     return max(e), min(e)
 
 def seg_len(t):
-    return math.dist(t['a'], t['m']) + math.dist(t['m'], t['b']) if t.get('arc') else math.dist(t['a'], t['b'])
+    return centreline(t).length if t.get('arc') else math.dist(t['a'], t['b'])
 
 _zone_cache = {}
 def zone_fill(net, layer):
@@ -136,9 +151,9 @@ def pad_geoms(net=None, layer=None):
             if ps: yield f, p, unary_union(ps)
 
 _SPANLESS = [v for v in B['vias'] if v.get('type_name') not in (None, 'through') and not v.get('layers')]
-if _SPANLESS:
-    WARN.append('%d blind/buried/micro vias with no layer span in board.json (an older boarddump.py), treated as through '
-                'vias (they may join layers they do not reach): re-run make_pack.sh' % len(_SPANLESS))
+SPAN_WARNING = ('%d blind/buried/micro vias with no layer span in board.json (an older boarddump.py), treated as through '
+                'vias (they may join layers they do not reach): re-run make_pack.sh' % len(_SPANLESS)) if _SPANLESS else None
+if SPAN_WARNING: WARN.append(SPAN_WARNING)
 
 def via_span(v):
     """the copper layers a via joins, top to bottom: the run between the outermost layers board.json records for it

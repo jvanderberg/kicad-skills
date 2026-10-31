@@ -891,3 +891,21 @@ and thermal.json differs only in its solve time: every via on these boards is a 
 - Inductance only (pico U1.10, .51, .61; minipc U1.1, U2.22, U5.1, U5.9; usb-uart U3.4, U4.3, U5.3, U5.9): a
   track ending inside a pad now reaches the pad's centre through the pad (its width) rather than along the stub of
   track on the pad. Same length; 0.01-0.13 nH less.
+
+### Review (PR #11, code-review high) and its fixes
+
+| Finding | Fix | Verified |
+|---|---|---|
+| a failure in the new pcbnew calls lost board.json for every script; the TypeError catch covered the whole cluster loop | `connectivity()` guarded: on any exception board.json is written without it (decoupling NOT CHECKED) and the error printed; the TypeError probe is one call | real boards unchanged |
+| a link between two nets (a uuid shared by two items maps to the wrong one) crashed `unconnected()` and joined the wrong copper | boarddump never maps a shared uuid (its zone joins fall to the cluster check, warned); decoupling ignores a link whose ends are on two nets, with a warning | test: an injected VTH-GND link is warned and ignored |
+| "cluster" / no-shared-layer joins counted as track length and inductance, onto any layer of a fill piece | a separate `join` kind: in the path length only; onto the piece's own layer where the item reaches it | text; no such join on the three boards |
+| zone pairing O(P^2) over every piece; bboxes recomputed per pair and per item | pieces paired within (net, layer); each bbox computed once | boarddump 0.98 / 0.48 / 0.32 s |
+| a group of pad-less pours joined only to each other counted as unconnected | fill alone, of any size, is not counted (KiCad 10.0.1: two overlapping pad-less pours plus a pad elsewhere on the net give 0) | test: two overlapping VZ pours, still links 6 = KiCad 6 = DRC 6 |
+| `common.track_geom` / `seg_len` still took an arc as its two chords | `centreline()` moved to common and used by both | test: a semicircle is 5 pi long and covers its bulge |
+| an empty fill piece crashed `entries()` | a track touch on an empty piece falls back to a straight join | text |
+| the spanless-via warning no longer reached pour_check's or thermal's output | `common.SPAN_WARNING`, printed by pour_check and added to thermal's warnings | test: pour_check prints it |
+| pour_check's per-edit dump paid for the connectivity it does not read | `boarddump.py --no-connectivity`, used by pour_check | test; 0.89 / 0.31 / 0.26 s, as before |
+| three copies of the union-find | one `find()` in decoupling (boarddump keeps its own: KiCad's python has no common.py) | - |
+
+Test runs: rev 33 passed, 2 skipped (test_thermal_minipc needs `MINIPC_PACK`); wf test_shared_copies passed. The three
+packs rebuilt: decoupling, planes, emc and islands identical to the run above.

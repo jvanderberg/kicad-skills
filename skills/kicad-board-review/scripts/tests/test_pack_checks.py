@@ -386,7 +386,8 @@ def test_decoupling_joins_what_kicad_joins_beyond_the_old_geometry():
     and C3.1 overlap at a corner, neither centre inside the other. VARC: C4's track ends on U1.4's arc where the arc
     bulges 1.46 mm beyond its chords; the path is measured along the arc. VNC: U1.5 and C5 with no copper between
     them, a FAIL. Unconnected, for the links, KiCad and DRC alike: VNC 2 (a floating VNC track counts), GND 4 (five
-    unjoined ground pads); a pour with no pad on it (VZ) is not counted."""
+    unjoined ground pads); pours with no pad, track or via on them (VZ: one alone, two
+    overlapping) are not counted."""
     d = tempfile.mkdtemp()
     u1 = [pad('1', 'VTH', 1.8, 7, 1, 1), pad('2', 'VCR', 16, 6), pad('3', 'VOV', 40, 6, 1, 1), pad('4', 'VARC', 50, 20),
           pad('5', 'VNC', 70, 5)]
@@ -401,7 +402,8 @@ def test_decoupling_joins_what_kicad_joins_beyond_the_old_geometry():
               dict(a=[50 + q, 15 + q], b=[49, 14], w=0.3, layer='F.Cu', net='VARC'),
               dict(a=[65, 12], b=[75, 12], w=0.3, layer='F.Cu', net='VNC')]
     zones = [dict(zone('VTH', 'F.Cu', rect(2, 2, 12, 12)), connect=None), zone('VCR', 'F.Cu', rect(20, 2, 30, 10)),
-             zone('VZ', 'F.Cu', rect(65, 20, 75, 28))]
+             zone('VZ', 'F.Cu', rect(65, 20, 75, 28)), zone('VZ', 'F.Cu', rect(55, 22, 62, 28)),
+             zone('VZ', 'F.Cu', rect(60, 23, 64, 27))]
     board = dict(source='synthetic', layers=['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'], stackup=STACK, netclass={}, vias=[],
                  edge=[[rect(0, 0, 80, 30), []]], edge_bbox=[0, 0, 80, 30], footprints=fps, tracks=tracks, zones=zones)
     comps, nets = {}, {}
@@ -428,6 +430,17 @@ def test_decoupling_joins_what_kicad_joins_beyond_the_old_geometry():
     assert rows['VNC']['status'].startswith('FAIL: no capacitor reachable'), rows['VNC']
     c = D['coverage']['connectivity']
     assert c['unconnected_links'] == c['unconnected_kicad'] == c['unconnected_drc'] == 6, c
+    # a link between two nets (a hand-edited board.json) is ignored with a warning, not followed or a crash
+    B['connectivity']['links'].append(['p0.0', 'p1.1'])                  # U1.1 (VTH) to C1.2 (GND)
+    json.dump(B, open(os.path.join(d, 'board.json'), 'w'))
+    run(d, 'decoupling.py')
+    D = json.load(open(os.path.join(d, 'decoupling.json')))
+    assert any('1 connectivity links name items not in board.json or on two nets' in w for w in D['coverage']['warnings'])
+    assert {r['net']: r for r in D['pins']}['VTH'].get('cap') == 'C1'
+    # pour_check.py dumps without the connectivity it does not use
+    r = subprocess.run([KICAD_PYTHON, os.path.join(HERE, 'boarddump.py'), os.path.join(d, 'board.kicad_pcb'),
+                        os.path.join(d, 'nc'), '--no-connectivity'], capture_output=True, text=True)
+    assert 'connectivity' not in json.load(open(os.path.join(d, 'nc', 'board.json'))), r.stderr[-1500:]
 
 
 def test_decoupling_without_connectivity_and_via_spans():
@@ -447,14 +460,20 @@ def test_decoupling_without_connectivity_and_via_spans():
     assert r['status'].startswith('ok') and len(r['joins']) == 1, r
     r = subprocess.run([PY, os.path.join(HERE, 'pour_check.py'), d], capture_output=True, text=True)
     assert any(l.startswith('ISOLATED GND') and '25.3' in l for l in r.stdout.splitlines()), r.stdout
+    assert '1 blind/buried/micro vias with no layer span' in r.stdout, r.stdout
     D = json.load(open(os.path.join(d, 'decoupling.json')))
     assert D['pins'] and all(r['status'] == 'NOT CHECKED: board.json has no connectivity' for r in D['pins']), D['pins']
     w = D['coverage']['warnings']
     assert any('no "connectivity"' in x for x in w) and any('1 blind/buried/micro vias with no layer span' in x for x in w), w
-    code = ('import sys; sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[1:]; from common import copper, LAYERS; '
-            'print(" ".join(L for L in LAYERS if not copper("VBL", L).is_empty))')
+    code = ('import sys; sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[1:]; from common import *; '
+            'print(" ".join(L for L in LAYERS if not copper("VBL", L).is_empty)); '
+            'a = dict(a=[0, 0], m=[5, -5], b=[10, 0], w=0.2, layer="F.Cu", net="X", arc=True); '
+            'print(round(seg_len(a), 3), track_geom(a).contains(Point(5 - 5 * 0.5 ** 0.5, -5 * 0.5 ** 0.5)))')
     r = subprocess.run([PY, '-c', code, HERE, d], capture_output=True, text=True)
-    assert r.stdout.split() == ['F.Cu', 'In1.Cu'], r.stdout + r.stderr[-1500:]
+    out = r.stdout.splitlines()
+    assert out[0].split() == ['F.Cu', 'In1.Cu'], r.stdout + r.stderr[-1500:]
+    n, bulge = out[1].split()                                   # an arc is its arc, not its two chords (14.14 mm)
+    assert abs(float(n) - 5 * math.pi) < 0.005 and bulge == 'True', out
 
 
 def test_diff_pair_coplanar_and_coverage_warnings():
