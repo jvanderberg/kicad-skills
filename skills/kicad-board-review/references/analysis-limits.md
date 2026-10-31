@@ -43,8 +43,12 @@
 - **Same-net isolation** (`islands.py`) is checked only for the islands the config declares, on KiCad's saved fills
   of the copy; an island's pad list must name every pad that belongs to it (any other pad of the net in the piece is a
   merge).
-- **Decoupling paths** (`decoupling.py`) follow the net's own copper: tracks with T-joins, vias as their barrel span,
-  and straight lines across a filled piece (a plane path around a slot is longer than that). Inductance: microstrip
+- **Decoupling paths** (`decoupling.py`) follow the net's own copper: tracks joined where their copper overlaps
+  (T-joins, crossings), vias on the layers they span, and straight lines across a filled piece (a plane path around a
+  slot is longer than that). Not joined, although KiCad joins them: a pad on a pour by thermal-relief spokes whose
+  centre is outside the fill, a track crossing a pour with no vertex in it, overlapping pads with neither centre in
+  the other, copper touching an arc beyond its chords. A FAIL "no capacitor reachable" on such a pin is checked in a
+  render before it is reported. Inductance: microstrip
   per-length value per track (closed form over the nearest copper layer) plus via barrels; plane spreading inductance
   and the capacitor's own mounting are not included. Supply pins are found by pin type, supply-pin name or a power
   class; an imported symbol with every pin "passive" and odd names can hide one.

@@ -26,7 +26,10 @@ orderable part number at one moment**. Before building on any of them:
   page instead of a PDF, means treat the part as discontinued until the manufacturer says otherwise.
 `scripts/part_gate.py <names or C-numbers...>` does the lifecycle (TI product pages; other vendors: check by hand) and
 LCSC stock per exact variant in the project's region in one command; `--from-text` takes pasted text such as a design
-tool's results table.
+tool's results table. A TI page found only by dropping a voltage code (TLV75518PDRVR -> TLV755P), a suffix after a
+"-", "." or "/" (LP5907MFX-3.3/NOPB -> LP5907) or the automotive grade (a plain page for a ...Q1 orderable) counts
+when ti.com lists the orderable under it (part-details); otherwise its status gets a "?" and fails the gate, even an
+"unknown" one, until you confirm it.
 
 Statements in these skills about third-party sites and tools (JLC, LCSC, TI, WEBENCH, jlcimport) carry the date they
 were checked. Treat them as hints about where to look: discover the current behaviour (read the page, run `--help`),
@@ -71,7 +74,10 @@ So:
   [-t basic|extended|both] [--min-stock 1000]` (JLCImport's CLI underneath, `https://github.com/jvanderberg/kicad_jlcimport`,
   with `--region` from `sourcing.json`); `sourcing.py stock C123 C456 --per-board 3` checks exact C-numbers against the
   order need. Basic parts search badly by value; search a family part number (e.g. UNI-ROYAL `0402WGF1003TCE` for 0402 1 %
-  resistors). Many descriptions are Chinese (升降压 = buck-boost, 降压 = buck).
+  resistors). Many descriptions are Chinese (升降压 = buck-boost, 降压 = buck). It matches keywords and part numbers,
+  not phrases (0 results for a sentence is not "no such part"); an MPN query lists that exact MPN first and says when
+  no result is it (the others are often another maker's cross-reference); "JLCPCB Assembly" placeholders (C99000...)
+  are left out.
 - Prefer the plentiful variant when choices are equivalent (an automotive-grade version with many times the stock for
   a small premium is often the better buy). Ask the user when the trade-off is real.
 - Stock counts only **in the region the assembler buys from** (R24 above); the other region is information, not
@@ -176,23 +182,26 @@ the same ~900 JLC parts (JLCImport's production-export work, jvanderberg/kicad_j
 footprints solved 958 of 962 placements at high confidence, with 4 warnings and no polarity guesses; KiCad library
 footprints solved 274 of 852, with 266 warnings and 112 polarity guesses.
 
-A KiCad library footprint is fine for unpolarised chip resistors and capacitors (0402/0603/0805: two symmetric pads,
-so rotation and polarity cannot come out wrong, although the pads differ slightly from JLC's), and for a footprint
-JLCImport's geometry-checked matcher suggests without a polarity caveat. On a board JLCPCB does not assemble, KiCad's
+Use a KiCad library footprint for a JLC-assembled part only on a very strong match: one JLCImport's geometry-checked
+matcher suggests with polarity "same". Chip resistors and capacitors get JLC's footprint too: a KiCad 0402/0603/0805
+cannot come out rotated or reversed (two symmetric pads), but its pads differ from JLC's, and one convention across
+the board keeps one placement-boundary rule (silk outlines, kicad-pcb-workflow `layout-rules.md`). An existing board
+with KiCad chip R/C footprints is not wrong and need not be changed. On a board JLCPCB does not assemble, KiCad's
 library is the better default (one convention, courtyards and fab outlines). Check every footprint you assign:
 `kicad-pcb-workflow/scripts/fpcheck.py FOOTPRINT --package "<LCSC package>" --symbol LIB:NAME` (courtyard, pad count,
 body size, symbol pins vs pads), plus the datasheet land-pattern figure for pad sizes and pitch.
 
-JLCImport's geometry-checked matcher (jvanderberg/kicad_jlcimport PR #122, merged 30 October 2026, on main but not in
-a release yet: v1.6.7 is the latest) suggests a KiCad footprint only when JLC's pad centres fit it within 0.05 mm RMS with the same pad numbers and no
+JLCImport's geometry-checked matcher (jvanderberg/kicad_jlcimport PR #122, released in v1.7.0 on 30 October 2026)
+suggests a KiCad footprint only when JLC's pad centres fit it within 0.05 mm RMS with the same pad numbers and no
 mirrored numbering, and otherwise keeps JLC's; it reports a polarised part's polarity as same, reversed or unknown,
 and only "same" is safe. v1.6.7 matches by name only and offered a wrong pad count for 406 of 963 parts, so check
 what it suggests with `fpcheck.py`. The suggestion is offered in the plugin's and TUI's import dialogs; `jlcimport-cli import` always
 writes JLC's footprint (to use a KiCad one, assign it in the schematic). Treat imported parts as drafts:
 - symbols often have off-grid pins and every pin typed "unspecified" (ERC noise) - fix pin types and grid, or redraw
   with kicad-pcb-workflow's `symgen.py`;
-- most EasyEDA footprints have no courtyard: leave them, and space the parts by rule of thumb at placement
-  (kicad-pcb-workflow `references/layout-rules.md`). Silk may run through pads. Compare the pads with the datasheet
+- most EasyEDA footprints have no courtyard: leave them. Their silk outline is the placement boundary; a part
+  placed tighter on purpose gets a same-named copy without the outline and rule-of-thumb spacing (kicad-pcb-workflow
+  `references/layout-rules.md` "Placement and mechanical"). Silk may run through pads. Compare the pads with the datasheet
   land pattern (render with `kicad-cli fp export svg`); fix a real error in place, keeping the origin, rotation and
   pad numbers JLC places by, rather than swapping in another footprint;
 - a redrawn symbol, or a KiCad footprint, must use the footprint's pad numbers (`fpcheck.py --symbol`): a KiCad
@@ -217,10 +226,11 @@ writes JLC's footprint (to use a KiCad one, assign it in the schematic). Treat i
 
 **Installing jlcimport-cli** (checked 30 October 2026): `pipx install git+https://github.com/jvanderberg/kicad_jlcimport`
 (pipx brings its own recent pip; a system Python 3.9 with pip 21 could not do an editable `pip install -e` of the
-repository). That installs main, which has fixes and the `production` command that v1.6.7 (the latest release, and
-what KiCad's plugin manager installs) lacks; main still reports 1.6.7, so tell them apart by `jlcimport-cli --help`
-listing `production` (`preflight.py` checks it; `pipx install --force ...` updates an older install). Two of main's
-fixes protect your libraries: re-importing with overwrite on v1.6.7 could delete other symbols from a `.kicad_sym`
+repository). That installs v1.7.0 or later (released 30 October 2026), which has the `production` command and the
+fixes below that v1.6.7 (what KiCad's plugin manager may still install) lacks. A build of main from before v1.7.0
+reports 1.6.7 and has `production`, but its order BOM splits one part over several lines (see "Order files"):
+`preflight.py` reports such a build, and `pipx install --force ...` updates it. Two of these fixes protect your
+libraries: re-importing with overwrite on v1.6.7 could delete other symbols from a `.kicad_sym`
 (a description with an unmatched "(") or duplicate them in a library KiCad had re-saved, and a crash mid-write
 truncated it (PR #116) - commit the library before a re-import on an older build. Main also refuses a library name
 with `/ \ : " < > | ? * $`, `.` or `..` (exit 1) instead of writing a broken lib-table (PR #117). The `--region` option the
@@ -261,4 +271,10 @@ kicad-cli. Hand-written Gerber scripts are no longer needed. What to do with its
   (they replace the solver for that part), set on the symbol so `new_board.py` carries them;
 - its stock check reads JLCPCB's international parts library (it has no `--region`): it is not a `cn` warehouse
   check. `bom_check.py` stays the region-correct stock sweep, from the schematic; `production` checks the board, so
-  run both (`partfields.py` keeps their fields equal).
+  run both (`partfields.py` keeps their fields equal);
+- one LCSC number goes on one BOM line: JLC's BOM step matches lines by part number, and when two lines carry the
+  same number it unticks both (quantity 0) and assembles neither. v1.7.0 writes one line per LCSC number whatever
+  the Values (two LEDs named "TX" and "RX"); a build of main from before it grouped by Value too, split such parts,
+  and `--check-only` did not say so. `bom_check.py` flags a number used with different Values when the installed
+  jlcimport-cli is older than v1.7.0 (a note when its version cannot be read, as `preflight.py` reports it), and a
+  number used on different footprints always: one part cannot fit two land patterns.

@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 """Checks KiCad's DRC does not make. Run with KiCad's bundled python ($KICAD_PYTHON, from kicad_env.sh):
-  $KICAD_PYTHON board_lint.py BOARD.kicad_pcb [--no-models] [--no-silk] [--no-courtyard] [--no-via-in-pad]
+  $KICAD_PYTHON board_lint.py BOARD.kicad_pcb [--no-models] [--no-silk] [--no-courtyard] [--no-outline] [--no-via-in-pad]
         [--no-paste] [--vias-filled [REF ...]] [--no-hardware] [--hardware-r MM | --hardware-r REF=MM ...]
 (started with another python it re-runs itself under KiCad's: interp.py)
 
-- footprints without a courtyard: DRC's courtyards_overlap cannot see them, so they can sit on top of other parts;
+- footprints without a courtyard (most EasyEDA imports): DRC's courtyards_overlap cannot see them, so they can sit on
+  top of other parts. Such a part's area is its silkscreen outline (its boundary: layout-rules.md "Placement and
+  mechanical"), its body (F.Fab graphics) and its pads, one rectangle. SILK OUTLINE reports a pair whose areas
+  overlap on the same side when either is bounded by its outline (DRC's silk_overlap only sees crossing lines, not a
+  part sitting inside another's outline); BODY OVERLAP, when neither has an outline: a body or pads on a neighbour's
+  body, pads or courtyard, e.g. a QFN's body overhanging its pads onto the next part. A part without an outline (none
+  drawn, or a strip_outline.py copy, known by its "Silk outline" property whatever inner drawing it kept) is checked by
+  its body and pads and listed in a NOTE as spaced by rule of thumb. Silk deleted on the board itself leaves no such
+  property: what silk is left counts as the outline (shapes; text and text boxes do not). Marks are measured in the
+  footprint's own frame, as strip_outline.py does. Rectangles are axis-aligned, so a part at 45 degrees is checked
+  generously. --no-courtyard drops only the NOTE lines listing the parts without a courtyard; --no-outline skips the
+  SILK OUTLINE / BODY OVERLAP check itself;
 - 3D models whose file does not exist (${KICAD10_3DMODEL_DIR}, ${KIPRJMOD} and other variables expanded from the
   environment and kicad_common.json): the 3D render silently shows bare pads, so a missing model looks like a
   missing part or hides a collision. KiCad's own library references models it does not install for some footprints;
@@ -33,10 +44,11 @@
   potential with --hardware-net GND and it is not mentioned).
 Exit 1 if anything is found (NOTE lines do not count). It does not replace looking at a 3D render and a silk render.
 """
-import argparse, json, os, re, sys
+import argparse, json, math, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from interp import need  # noqa: E402
+from outline_rules import REMOVED, is_mark  # noqa: E402
 need('pcbnew')                                      # started with another python: re-run under KiCad's
 import pcbnew  # noqa: E402
 
@@ -90,15 +102,105 @@ def overlap(a, b, minimum):
     return min(a[2], b[2]) - max(a[0], b[0]) > minimum and min(a[3], b[3]) - max(a[1], b[1]) > minimum
 
 
+def merged(rs):
+    """one rectangle over rectangles rs (None for none)"""
+    return (min(r[0] for r in rs), min(r[1] for r in rs), max(r[2] for r in rs), max(r[3] for r in rs)) if rs else None
+
+
+def drawing(g):
+    """a graphic shape: a PCB_SHAPE that is not a text box (PCB_TEXTBOX derives from PCB_SHAPE; text is not a body or
+    an outline, and strip_outline.py leaves fp_text_box alone too)"""
+    return isinstance(g, pcbnew.PCB_SHAPE) and not isinstance(g, pcbnew.PCB_TEXTBOX)
+
+
 def bodies(f):
     """the part's own area: one rectangle over its F.Fab (B.Fab) graphics and its pads. Imported footprints often
     have nothing on F.Fab but a pin-1 mark, so the pads always count."""
     fab = pcbnew.B_Fab if f.IsFlipped() else pcbnew.F_Fab
-    rs = [box(g.GetBoundingBox()) for g in f.GraphicalItems() if isinstance(g, pcbnew.PCB_SHAPE) and g.GetLayer() == fab]
-    rs += [box(p.GetBoundingBox()) for p in f.Pads()]
-    if not rs:
+    rs = [box(g.GetBoundingBox()) for g in f.GraphicalItems() if drawing(g) and g.GetLayer() == fab]
+    m = merged(rs + [box(p.GetBoundingBox()) for p in f.Pads()])
+    return [m] if m else []
+
+
+def outline_removed(f):
+    """the footprint is a strip_outline.py copy (its hidden REMOVED property came onto the board with it)"""
+    return any(fd.GetName() == REMOVED[0] for fd in f.GetFields())
+
+
+def mark(f, g):
+    """g is a mark such as a pin-1 dot (outline_rules.is_mark), measured in the footprint's own frame as
+    strip_outline.py measures it in the library: a filled 0.8 mm square on a part at 45 degrees has a 1.13 mm board
+    bounding box but is still 0.8 mm. Only a circle or a filled shape can be a mark."""
+    circle = g.GetShape() == pcbnew.SHAPE_T_CIRCLE
+    if not (circle or g.IsSolidFill()):
+        return False
+    if circle or not f.GetOrientationDegrees() % 90 or not g.GetCorners():
+        r = box(g.GetBoundingBox())
+        w, h = r[2] - r[0], r[3] - r[1]
+    else:                       # its corners turned back by the footprint's angle (a flip mirrors: width and height stay)
+        a = math.radians(f.GetOrientationDegrees())
+        pts = [(MM(q.x) * math.cos(a) - MM(q.y) * math.sin(a), MM(q.x) * math.sin(a) + MM(q.y) * math.cos(a)) for q in g.GetCorners()]
+        sw = MM(g.GetWidth())
+        w = max(x for x, _ in pts) - min(x for x, _ in pts) + sw
+        h = max(y for _, y in pts) - min(y for _, y in pts) + sw
+    return is_mark('circle' if circle else 'other', g.IsSolidFill(), w, h)
+
+
+def silk_outline(f):
+    """rectangles of the footprint's silkscreen outline on its own side: graphics, not text or text boxes, without
+    marks such as a pin-1 dot (``mark``); none for a strip_outline.py copy, whatever inner drawing it kept"""
+    if outline_removed(f):
         return []
-    return [(min(r[0] for r in rs), min(r[1] for r in rs), max(r[2] for r in rs), max(r[3] for r in rs))]
+    silk = pcbnew.B_SilkS if f.IsFlipped() else pcbnew.F_SilkS
+    return [box(g.GetBoundingBox()) for g in f.GraphicalItems()
+            if drawing(g) and g.GetLayer() == silk and not mark(f, g)]
+
+
+def courtyard(f):
+    """this footprint's own courtyard on its side (computed per footprint: references can repeat)"""
+    f.BuildCourtyardCaches()
+    return f.GetCourtyard(pcbnew.B_CrtYd if f.IsFlipped() else pcbnew.F_CrtYd)
+
+
+def outline_overlaps(fps, minimum):
+    """SILK OUTLINE and BODY OVERLAP problems, and the NOTEs listing the parts without a courtyard. Each part's area is
+    its courtyard's rectangle when it has one, else one rectangle over its silk outline, body (F.Fab) and pads; a pair
+    is reported when one of them has no courtyard (two courtyards are DRC's) and the rectangles overlap by more than
+    `minimum` both ways: SILK OUTLINE when either is bounded by its outline, else BODY OVERLAP"""
+    area, outlined, bare = [], [], []          # area: (ref, flipped, by courtyard, by silk outline, rectangle)
+    for f in fps:
+        if not f.Pads():
+            continue
+        cy = courtyard(f)
+        if cy.OutlineCount():
+            area.append((f.GetReference(), f.IsFlipped(), True, False, box(cy.BBox())))
+            continue
+        silk = silk_outline(f)
+        (outlined if silk else bare).append(f.GetReference())
+        area.append((f.GetReference(), f.IsFlipped(), False, bool(silk), merged(silk + bodies(f))))
+    probs = []
+    for i, (ra, fa, ca, sa, a) in enumerate(area):
+        for rb, fb, cb, sb, b in area[i + 1:]:
+            if fa != fb or (ca and cb):
+                continue
+            ox, oy = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+            if ox <= minimum or oy <= minimum:
+                continue
+            at = (ra, rb, ox, oy, (max(a[0], b[0]) + min(a[2], b[2])) / 2, (max(a[1], b[1]) + min(a[3], b[3])) / 2,
+                  ' (%s by its courtyard)' % (ra if ca else rb) if ca or cb else '')
+            if sa or sb:
+                probs.append('SILK OUTLINE  %s and %s overlap by %.2f x %.2f mm at (%.2f, %.2f)%s: move them apart, or '
+                             'place them tighter on purpose (remove the outline, space by rule of thumb: layout-rules.md)' % at)
+            else:
+                probs.append('BODY OVERLAP  %s and %s overlap by %.2f x %.2f mm at (%.2f, %.2f)%s: a body (F.Fab outline) '
+                             'or pads on the other part; move them apart' % at)
+    notes = []
+    if outlined:
+        notes.append('NOTE  no courtyard, silk outline checked as the boundary (DRC cannot see these): %s' % ' '.join(outlined))
+    if bare:
+        notes.append('NOTE  no courtyard and no silk outline, spaced by rule of thumb (layout-rules.md; check the gaps): %s'
+                     % ' '.join(bare))
+    return probs, notes
 
 
 def vias_in_pads(b, fps):
@@ -122,14 +224,14 @@ def vias_in_pads(b, fps):
                 if p.HitTest(v.GetPosition(), int(v.GetWidth(pcbnew.F_Cu) / 2) if hasattr(v, 'GetWidth') else 0):
                     x, y = MM(v.GetPosition().x), MM(v.GetPosition().y)
                     if exposed:
-                        inexp.setdefault((f.GetReference(), p.GetNumber()), []).append((x, y))
+                        inexp.setdefault((id(f), f.GetReference(), p.GetNumber()), []).append((x, y))
                     else:
                         where = 'centre on' if p.HitTest(v.GetPosition(), 0) else 'annular ring overlaps'
                         probs.append('VIA IN PAD    via (%s) at (%.2f, %.2f): %s pad %s.%s of its own net - no solder-mask web '
                                      'between them, the open barrel wicks solder from the joint; move it off the pad (or make it '
                                      'a filled via-in-pad on purpose)' % (v.GetNetname(), x, y, where, f.GetReference(), p.GetNumber()))
     notes = ['NOTE          %d via(s) in exposed pad %s.%s (thermal vias?): order them filled or tented, or the paste wicks away' % (
-        len(v), r, n) for (r, n), v in sorted(inexp.items())]
+        len(v), r, n) for (_, r, n), v in sorted(inexp.items(), key=lambda kv: kv[0][1:])]
     return probs, notes
 
 
@@ -177,8 +279,8 @@ def paste_on_holes(b, fps, filled):
         for p in f.Pads():
             if p.GetDrillSize().x > 0:
                 holes.append((MM(p.GetPosition().x), MM(p.GetPosition().y), MM(min(p.GetDrillSize().x, p.GetDrillSize().y)) / 2,
-                              'drill of pad %s.%s' % (f.GetReference(), p.GetNumber()), f.GetReference()))
-    probs, notes, cover = [], [], {}
+                              'drill of pad %s.%s' % (f.GetReference(), p.GetNumber()), f))
+    probs, notes = [], []
     for f in fps:
         ref = f.GetReference()
         pads = list(f.Pads())
@@ -192,13 +294,10 @@ def paste_on_holes(b, fps, filled):
                 m = min(m.x, m.y) if hasattr(m, 'x') else (min(m[0], m[1]) if isinstance(m, (tuple, list)) else int(m))
                 shp = pcbnew.SHAPE_POLY_SET()
                 p.TransformShapeToPolygon(shp, L, int(m), pcbnew.FromMM(0.005), pcbnew.ERROR_OUTSIDE)
-                rs = _rings(shp)
-                rings += rs
-                if p.GetNumber():
-                    cover.setdefault((ref, p.GetNumber(), side), [0.0, 0.0, []])
+                rings += _rings(shp)
             for x, y, r, what, owner in holes:
                 # declared filled and capped: board vias, and the part's own thermal-via pads
-                if (what.startswith('via') or owner == ref) and (filled is True or (filled and ref in filled)):
+                if (what.startswith('via') or owner is f) and (filled is True or (filled and ref in filled)):
                     continue
                 if ring_dist((x, y), rings) < r:
                     probs.append('PASTE ON HOLE %s paste (%s.Paste) covers the %s at (%.2f, %.2f), drill %.2f mm: reflow pulls the '
@@ -230,7 +329,7 @@ def paste_on_holes(b, fps, filled):
 
 
 def mounting_holes(fps):
-    """[(ref, x, y, drill, net)]: footprints whose pads are all holes of 2 mm or more, or named MountingHole"""
+    """[(footprint, ref, x, y, drill, net)]: footprints whose pads are all holes of 2 mm or more, or named MountingHole"""
     out = []
     for f in fps:
         pads = list(f.Pads())
@@ -239,7 +338,7 @@ def mounting_holes(fps):
         big = [p for p in drilled if MM(p.GetDrillSize().x) >= 2.0]
         if big and (named or len(big) == len(pads)):
             p = max(big, key=lambda q: q.GetDrillSize().x)
-            out.append((f.GetReference(), MM(p.GetPosition().x), MM(p.GetPosition().y), MM(p.GetDrillSize().x), p.GetNetname()))
+            out.append((f, f.GetReference(), MM(p.GetPosition().x), MM(p.GetPosition().y), MM(p.GetDrillSize().x), p.GetNetname()))
     return out
 
 
@@ -248,7 +347,7 @@ def under_hardware(b, fps, radius, hw_nets=()):
     Tracks, vias and pads are problems; a pour is a note (often deliberate); copper of hw_nets is not reported"""
     probs, notes = [], []
     outer = (pcbnew.F_Cu, pcbnew.B_Cu)
-    for ref, x, y, drill, net in mounting_holes(fps):
+    for hole, ref, x, y, drill, net in mounting_holes(fps):
         R = radius.get(ref, radius.get('*')) if radius else None
         R = R if R is not None else drill + 0.5
         found = {}
@@ -281,7 +380,7 @@ def under_hardware(b, fps, radius, hw_nets=()):
                         k = (z.GetNetname(), L, 'pour')
                         found[k] = min(found.get(k, 9e9), d)
         for f in fps:
-            if f.GetReference() == ref:
+            if f is hole:
                 continue
             for p in f.Pads():
                 if (net and p.GetNetname() == net) or not any(p.IsOnLayer(L) for L in outer):
@@ -311,7 +410,9 @@ def under_hardware(b, fps, radius, hw_nets=()):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('board'); ap.add_argument('--no-models', action='store_true'); ap.add_argument('--no-silk', action='store_true')
-    ap.add_argument('--no-courtyard', action='store_true'); ap.add_argument('--min-overlap', type=float, default=0.1)
+    ap.add_argument('--no-courtyard', action='store_true', help='do not list the parts without a courtyard (NOTE lines)')
+    ap.add_argument('--no-outline', action='store_true', help='skip the SILK OUTLINE / BODY OVERLAP check')
+    ap.add_argument('--min-overlap', type=float, default=0.1)
     ap.add_argument('--no-via-in-pad', action='store_true')
     ap.add_argument('--no-paste', action='store_true')
     ap.add_argument('--vias-filled', nargs='*', help="vias are ordered filled and capped: all (no refs) or in these parts' pads "
@@ -322,16 +423,13 @@ def main():
     a = ap.parse_args()
     b = load_board(a.board)
     fps = list(b.GetFootprints())
-    probs = []
-    crt = {}
-    for f in fps:
-        f.BuildCourtyardCaches()
-        side = pcbnew.B_CrtYd if f.IsFlipped() else pcbnew.F_CrtYd
-        cy = f.GetCourtyard(side)
-        crt[f.GetReference()] = (cy, f.IsFlipped())
-        if not a.no_courtyard and cy.OutlineCount() == 0 and f.Pads():
-            probs.append('NO COURTYARD  %s (%s): DRC cannot report overlaps with it (check its spacing: layout-rules.md)' %
-                         (f.GetReference(), f.GetFPID().GetUniStringLibId()))
+    probs, notes = [], []
+    if not (a.no_outline and a.no_courtyard):
+        probs, notes = outline_overlaps(fps, a.min_overlap)    # one pass gives the overlaps and the courtyard NOTEs
+        if a.no_outline:
+            probs = []
+        if a.no_courtyard:
+            notes = []
     if not a.no_models:
         env = kicad_vars(a.board)
         for f in fps:
@@ -348,23 +446,22 @@ def main():
         texts = []                                     # (owner ref or None, text, layer, box)
         for d in b.GetDrawings():
             if isinstance(d, pcbnew.PCB_TEXT) and d.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS):
-                texts.append((None, d.GetShownText(True), d.GetLayer(), box(d.GetBoundingBox())))
+                texts.append((None, None, d.GetShownText(True), d.GetLayer(), box(d.GetBoundingBox())))
         for f in fps:
             for t in list(f.GetFields()) + [g for g in f.GraphicalItems() if isinstance(g, pcbnew.PCB_TEXT)]:
                 if t.IsVisible() and t.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS) and t.GetShownText(True):
-                    texts.append((f.GetReference(), t.GetShownText(True), t.GetLayer(), box(t.GetBoundingBox())))
-        body = {f.GetReference(): (bodies(f), f.IsFlipped()) for f in fps}
-        for owner, s, layer, tb in texts:
-            for ref, (bxs, flipped) in body.items():
-                if ref == owner or flipped != (layer == pcbnew.B_SilkS):
+                    texts.append((f, f.GetReference(), t.GetShownText(True), t.GetLayer(), box(t.GetBoundingBox())))
+        body = [(f, f.GetReference(), bodies(f), f.IsFlipped()) for f in fps]      # per footprint: references can repeat
+        for ownf, owner, s, layer, tb in texts:
+            for f, ref, bxs, flipped in body:
+                if f is ownf or flipped != (layer == pcbnew.B_SilkS):
                     continue
                 if any(overlap(tb, bx, a.min_overlap) for bx in bxs):
                     probs.append('SILK ON PART  "%s"%s on %s at (%.2f, %.2f) lies on the body of %s' % (
                         s, ' (of %s)' % owner if owner else '', b.GetLayerName(layer), (tb[0] + tb[2]) / 2, (tb[1] + tb[3]) / 2, ref))
-    notes = []
     if not a.no_via_in_pad:
-        vp, notes = vias_in_pads(b, fps)
-        probs += vp
+        vp, vn = vias_in_pads(b, fps)
+        probs += vp; notes += vn
     if not a.no_paste:
         filled = None if a.vias_filled is None else (True if not a.vias_filled else set(a.vias_filled))
         pp, pn = paste_on_holes(b, fps, filled)

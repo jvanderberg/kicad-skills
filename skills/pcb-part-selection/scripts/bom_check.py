@@ -12,6 +12,9 @@ approved. The first line of the output says which context was used.
 It exports the netlist with kicad-cli, groups parts by LCSC number, looks each one up with JLCImport's CLI
 (https://github.com/jvanderberg/kicad_jlcimport, always with an explicit --region), and flags:
   - parts with no LCSC number (JLC will not place them; may be intentional for hand-fit parts)
+  - one LCSC number on parts with different Values or footprints: JLCImport's order BOM has a line per value +
+    footprint + LCSC number, JLC's BOM step then matches two lines to one part, unticks both and fits neither (two
+    red LEDs valued "TX (red)" and "RX (red)", October 2026): give the parts one Value and footprint
   - LCSC numbers not listed in the region, or with stock below what the order needs (count per board x boards, plus
     attrition); a short part is also looked up in the other region and shown as not counting
   - stock below the project's policy (min_stock), unless a named exception in sourcing.json covers the part
@@ -31,7 +34,7 @@ import argparse, collections, json, os, re, shutil, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import sourcing  # noqa: E402
+import jlcversion, sourcing  # noqa: E402
 
 SIZES = ['01005', '0201', '0402', '0603', '0805', '1206']
 
@@ -50,7 +53,8 @@ def export_netlist(sch, kicad_cli):
 
 
 def bom_groups(xmlp):
-    """(groups by LCSC number, parts without one). A group: lcsc, refs, value, fp, size, no_ds (refs without a link)"""
+    """(groups by LCSC number, parts without one). A group: lcsc, refs, value, fp, size, no_ds (refs without a link),
+    lines ({(value, footprint): refs}: the order BOM's lines for this number)"""
     root = ET.parse(xmlp).getroot()
     groups = collections.OrderedDict(); missing = []
     for c in root.find('components'):
@@ -65,8 +69,10 @@ def bom_groups(xmlp):
         fp = (c.findtext('footprint') or '').split(':')[-1]; val = c.findtext('value') or ''
         if not re.match(r'^C\d+$', lc):
             missing.append((ref, val, fp)); continue
-        g = groups.setdefault(lc, dict(lcsc=lc, refs=[], value=val, fp=fp, size=pkg_size(fp, val), no_ds=[]))
+        g = groups.setdefault(lc, dict(lcsc=lc, refs=[], value=val, fp=fp, size=pkg_size(fp, val), no_ds=[],
+                                       lines=collections.OrderedDict()))
         g['refs'].append(ref)
+        g['lines'].setdefault((val, fp), []).append(ref)
         if (f.get('Datasheet') or c.findtext('datasheet') or '').strip() in ('', '~'):
             g['no_ds'].append(ref)
     return groups, missing
@@ -107,10 +113,38 @@ def local_datasheets(xmlp, ddir):
     return out
 
 
+def split_lines(g, version=None):
+    """(flag, note) for one LCSC number on parts with different footprints or Values. Different footprints: a flag,
+    whatever the BOM (one part cannot fit two land patterns). Different Values: jlcimport-cli older than v1.7.0
+    (`version`) groups its order BOM by Value too, so the part lands on several lines and JLC fits none of them: a
+    flag; v1.7.0 and later: nothing; a version that cannot be read (jlcversion.py): a note, as preflight.py says it"""
+    lines = g.get('lines') or {}
+    if len(lines) < 2:
+        return None, None
+    parts = ' / '.join('%s "%s" %s' % (' '.join(refs), val, fp) for (val, fp), refs in lines.items())
+    nfp = len({fp for _, fp in lines})
+    if nfp > 1:
+        return ('SPLIT: one LCSC number on %d footprints (%s) - one part cannot fit two land patterns: one is the wrong '
+                'part or the wrong footprint' % (nfp, parts)), None
+    if version is None:
+        return None, ('one LCSC number on %d Values (%s): one order-BOM line with jlcimport-cli v1.7.0 or later, %d '
+                      '(JLC fits none) with an older one, and its version could not be read' % (len(lines), parts, len(lines)))
+    if version >= jlcversion.ONE_BOM_LINE:
+        return None, None
+    return ('SPLIT: %d BOM lines for one part (%s) with jlcimport-cli %s (older than v1.7.0) - JLC unticks both and '
+            'fits neither: update it (pipx install --force git+https://github.com/jvanderberg/kicad_jlcimport), or give '
+            'them one Value' % (len(lines), parts, jlcversion.text(version))), None
+
+
 def check(groups, ctx, cli, min_pkg='0402'):
     rows = []
+    version = jlcversion.cli_version(cli) if any(len(g.get('lines') or {}) > 1 for g in groups.values()) else None
     for lc, g in groups.items():
         info, flags, note = sourcing.check_part(lc, ctx, len(g['refs']), cli)
+        split, snote = split_lines(g, version)
+        if split:
+            flags.append(split)
+        note = '; '.join(n for n in (note, snote) if n)
         order, policy, exc = sourcing.need_for(ctx, len(g['refs']), lc)
         if info is not None and info.get('type', '').lower().startswith('ext'):
             flags.append('extended')

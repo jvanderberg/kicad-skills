@@ -4,11 +4,14 @@
 # for the analysis scripts, which run in a normal venv (numpy, scipy, shapely>=2, matplotlib).
 # It never refills zones: refill first with `kicad-cli pcb drc --refill-zones --save-board` on a COPY, so the analysis sees
 # exactly the copper KiCad would plot.
-import json, sys, re, os
+import argparse, json, sys, re, os
+ap = argparse.ArgumentParser(description='Dump a board\'s copper geometry to PACK_DIR/board.json for the analysis scripts.')
+ap.add_argument('board', help='the .kicad_pcb (zones refilled on a copy first)'); ap.add_argument('pack', metavar='PACK_DIR')
+args = ap.parse_args()                              # before the re-exec: --help and a missing argument need no KiCad
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from interp import need; need('pcbnew')            # started with another python: re-run under KiCad's
 import pcbnew
-src, pack = sys.argv[1], sys.argv[2]
+src, pack = args.board, args.pack
 os.makedirs(pack, exist_ok=True)
 # pcbnew.LoadBoard prints wx's "assert traits failed ... create wxApp before calling this" on every run (KiCad 10.0.x,
 # harmless). Drop exactly that line and pass every other stderr line through: never filter a whole category.
@@ -78,7 +81,8 @@ _VT = {getattr(pcbnew, 'VIATYPE_' + k): k.lower() for k in ('THROUGH', 'BLIND', 
 for t in b.GetTracks():
     if t.GetClass() == 'PCB_VIA':
         D['vias'].append(dict(x=mm(t.GetPosition().x), y=mm(t.GetPosition().y), net=t.GetNetname(), size=mm(t.GetWidth(pcbnew.F_Cu)),
-                              drill=mm(t.GetDrillValue()), type=int(t.GetViaType()), type_name=_VT.get(t.GetViaType(), 'unknown')))
+                              drill=mm(t.GetDrillValue()), type=int(t.GetViaType()), type_name=_VT.get(t.GetViaType(), 'unknown'),
+                              layers=[LN[t.TopLayer()], LN[t.BottomLayer()]]))   # the span: blind / buried vias join only these
     elif t.GetClass() == 'PCB_ARC':
         D['tracks'].append(dict(a=(mm(t.GetStart().x), mm(t.GetStart().y)), m=(mm(t.GetMid().x), mm(t.GetMid().y)), b=(mm(t.GetEnd().x), mm(t.GetEnd().y)),
                                 w=mm(t.GetWidth()), layer=pcbnew.BOARD.GetStandardLayerName(t.GetLayer()), net=t.GetNetname(), arc=True))

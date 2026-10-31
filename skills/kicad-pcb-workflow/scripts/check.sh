@@ -10,9 +10,11 @@
 # `git archive HEAD | tar -x -C base/`). Then every run lists exactly what the change added.
 # --accept: specific known DRC items exempted by name with a reason (drc_summary.py); they are listed as Accepted.
 # Never filter a whole violation type: that is how real problems of the same type get hidden.
-# Also runs board_lint.py (no courtyard, missing 3D models, silk on part bodies, vias on same-net pads, paste over
-# drilled holes, other-net copper under mounting hardware: things DRC does not check), nc_audit.py (unused and strapped pins, written to OUT_DIR/nc.md for the record) and partfields.py (every BOM part
-# has a datasheet link and a sourcing field, and every schematic field matches the board; exit 1 if not).
+# Also runs board_lint.py (silk outlines and bodies of courtyard-less parts overlapping, missing 3D models, silk on
+# part bodies, vias on same-net pads, paste over drilled holes, other-net copper under mounting hardware: things DRC
+# does not check), nc_audit.py (unused and strapped pins, written to OUT_DIR/nc.md for the record) and partfields.py
+# (every BOM part has a datasheet link and a sourcing field, and every schematic field matches the board; exit 1 if
+# not).
 # --save-fill copies the refilled board back over the project's board. Only do that when KiCad is closed, and say so.
 # Every stage's output is deleted before it runs and required after it (R28): a missing one stops the script (exit 3).
 set -euo pipefail

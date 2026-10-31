@@ -16,12 +16,13 @@ so a generator describes the design and never formats KiCad text itself:
 | Draw the schematic as wired blocks; geometry checks; locate shorts | `schgen.py` (library) | python3 |
 | Footprint facts: courtyard, pad count / body vs package, pins vs pads | `fpcheck.py` | python3 |
 | Add missing courtyards to imported footprints | `add_courtyard.py` | python3 |
+| Same-named footprint copy without its silk outline (a part placed tighter on purpose) | `strip_outline.py` | python3 |
 | Thermal-via footprint with paste windows clear of the drills (and 0.3 mm drills) | `paste_clear.py` | python3 |
 | JLCPCB order files (Gerbers, drill, BOM, CPL with solved rotations) and the placement / stock check | `jlcimport-cli production` (JLCImport main; pcb-part-selection "Order files") | pipx |
 | Board from the netlist: footprints, symbol links, nets, fields, assembly attributes (DNP, BOM, position file), outline, placement, pad labels | `new_board.py` | python3 |
 | JLC stackup block, design rules, net classes | `board_setup.py` | python3 |
 | Tracks, vias, zones, keepouts as data, checked before writing | `router.py` | `$PY` (shapely; re-runs itself there) |
-| What DRC misses (courtyards, models, silk on bodies, vias in pads, paste on holes, copper under hardware) | `board_lint.py` | `$KICAD_PYTHON` (pcbnew; re-runs itself there) |
+| What DRC misses (courtyards and silk-outline overlaps, models, silk on bodies, vias in pads, paste on holes, copper under hardware) | `board_lint.py` | `$KICAD_PYTHON` (pcbnew; re-runs itself there) |
 | Is KiCad holding the project? (lock file vs a running editor) | `kicad_locks.py`, `kicad_open.sh` | python3 |
 | Which interpreter has what; run a script that needs pcbnew and shapely | `interp.py which`, `interp.py run` | python3 |
 | Unused and strapped pins as decisions | `nc_audit.py` | python3 |
@@ -79,7 +80,8 @@ it. Pin numbers are the footprint's pad numbers, so pick the footprints now (`fp
 - Library symbols are fine where they read well. Redraw a symbol when it does not: an imported one with pins in package
   order, "unspecified" pin types, off-grid pins. `symgen.ic()` groups pins by function (inputs and supplies left,
   outputs right, supply pins top, ground bottom, related pins adjacent) with real types from the datasheet pin table,
-  and stacks duplicate pins (several GND or SW pins) on one point.
+  and stacks duplicate pins (several GND or SW pins) on one point: the first number visible with its type, the others
+  hidden and passive, as KiCad's libraries do (a hidden power_in pin would be a global net named after the pin).
 - **Number pins for the footprint you will use**, and prove it: `fpcheck.py FOOTPRINT --symbol LIB.kicad_sym:NAME`
   lists symbol pins with no pad and pads with no pin. Example: KiCad's NexFET VSON-8 footprint merges source pins 5-8
   into one pad "5", so a FET symbol numbered 1-8 leaves pads unconnected; `symgen.fet()` renumbers a Device FET
@@ -140,14 +142,17 @@ through bodies, overlapping bodies) must be empty and `find_merges(s, NETS)` mus
 
 - **Parts JLCPCB assembles use JLC's own EasyEDA footprint** (`jlcimport-cli import`, pcb-part-selection "Importing
   into KiCad"): JLC places each part with that footprint at the CPL position and rotation, so rotation and polarity
-  come out right without a bridge between two conventions. A KiCad library footprint is fine for unpolarised chip
-  resistors and capacitors (symmetric pads) and for a geometry-checked match without a polarity caveat, and is the
-  default for a board JLCPCB does not assemble.
+  come out right without a bridge between two conventions. Chip resistors and capacitors included; a KiCad library
+  footprint only for a geometry-checked match with polarity "same". KiCad's library is the default for a board JLCPCB
+  does not assemble.
 - Check every assignment, library or imported: `fpcheck.py FOOTPRINT --package "<LCSC package string>" --symbol ...`
   (pad count, body size, numbering; it reads EasyEDA package names such as `SOT-23-3_L2.9-W1.3-...` too). The
-  datasheet's land-pattern figure decides pad sizes and pitch.
+  datasheet's land-pattern figure decides pad sizes and pitch; `--pads` lists them (a custom pad, such as an EasyEDA
+  USB-C's VBUS/GND, shows its copper extent and "custom", not its 0.1 mm anchor).
 - Most EasyEDA footprints have no courtyard, so DRC cannot report them overlapping their neighbours. Leave them as
-  they are and space parts by the rules of thumb in `layout-rules.md` "Placement and mechanical".
+  they are: the silk outline is each one's placement boundary (`layout-rules.md` "Placement and mechanical";
+  `board_lint.py` SILK OUTLINE). A part placed tighter on purpose gets a recorded reason and a same-named copy without
+  the outline (`strip_outline.py`), and is spaced by the rules of thumb there.
 
 ## 6. The board
 
@@ -160,6 +165,10 @@ python3 scripts/board_setup.py proj.kicad_pro --stackup JLC04161H-7628 --class P
 ```
 - Run `new_board.py` before `board_setup.py`: new_board writes a minimal `.kicad_pro` next to a new board if there is
   none (KiCad fills in its defaults), and board_setup then edits it.
+- board_setup's `--assign` / `--pattern` are the project's complete set: a run that gives either replaces every
+  existing assignment and pattern (KiCad-made ones too) and warns what it dropped (`--keep-assignments` to add
+  instead); a run with neither (`--stackup` only) leaves them untouched. It warns for a name that is not a net of the
+  board (an unlabelled net is `Net-(U3-SW)`, not `SW`): label the net in the schematic or use its name.
 - Regenerating over an existing board keeps every footprint's uuid (new_board reads OUT first; `--previous FILE` to
   read another, `--previous none` for none). Routing comes from `router.py apply ... --previous <the routed board
   before regeneration>` (e.g. a copy of HEAD's board), so tracks, vias and zones keep theirs too. Then `board_diff.py
