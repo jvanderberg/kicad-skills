@@ -40,7 +40,7 @@ and flips footprints the way pcbnew does, checked item by item against pcbnew in
 Then: board_setup.py (stackup, rules, net classes), placement, routing (router.py), check.sh.
 Regenerating overwrites OUT: GUI edits made since are lost unless folded into the placement file first.
 """
-import argparse, collections, json, os, re, sys, xml.etree.ElementTree as ET
+import argparse, collections, json, math, os, re, sys, xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kicad_sexpr import Board, Node, Project, Sym, board_net_name, resolve_libraries  # noqa: E402
@@ -103,17 +103,39 @@ MIN_TEXT = 1.0                 # mm: layout-rules.md "Silkscreen"; smaller is no
 OPTIONS = '"rot", "size" (mm, default 1.0), "sides": "F" / "B" / "FB" (default)'
 
 
-def text_options(what, spec, keys):
-    """(rot, size, sides) of a --labels dict whose own keys are `keys`; exits on unknown keys or bad values"""
-    extra = sorted(set(spec) - set(keys) - {'rot', 'size', 'sides'})
+FORMS = {'text': '{"text": "TX", "dx": 0, "dy": 1.1}', 'pads': '{"pads": {"1": "GND", ...}, "dx": 0, "dy": 2.35}',
+         'free': '{"text": "...", "at": [x, y]} (mm from --origin)',
+         'list': '["TEXT", dx, dy] or ["TEXT", dx, dy, rot] (mm, degrees)'}
+UNITS = {'dx': 'mm', 'dy': 'mm', 'rot': 'degrees'}
+
+
+def is_num(v):
+    """a JSON number (not a bool, not NaN or infinite)"""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def shown(v):
+    """a --labels value as the user wrote it, for an error message"""
+    return json.dumps(v)[:80]
+
+
+def text_options(what, spec, keys, form):
+    """(rot, size, sides) of a --labels dict whose own keys are `keys` (FORMS[form] is its shape); exits on a spec that
+    is not a dict, unknown keys or a bad dx, dy, rot, size or sides"""
+    if not isinstance(spec, dict):
+        sys.exit('--labels %s: expected %s (optional %s), not %s' % (what, FORMS[form], OPTIONS, shown(spec)))
+    extra = sorted(str(k) for k in set(spec) - set(keys) - {'rot', 'size', 'sides'})
     if extra:
         sys.exit('--labels %s: unknown keys: %s (expected %s; optional %s)' % (
             what, ', '.join(extra), ', '.join('"%s"' % k for k in sorted(keys)), OPTIONS))
+    for k in ('dx', 'dy', 'rot'):
+        if k in spec and not is_num(spec[k]):
+            sys.exit('--labels %s: "%s" is a number (%s), not %s' % (what, k, UNITS[k], shown(spec[k])))
     rot, size, sides = spec.get('rot', 0), spec.get('size', 1.0), spec.get('sides', 'FB')
     if not isinstance(sides, str) or not sides or set(sides) - set('FB') or len(set(sides)) != len(sides):
-        sys.exit('--labels %s: "sides" is "F", "B" or "FB", not %s' % (what, json.dumps(sides)))
-    if isinstance(size, bool) or not isinstance(size, (int, float)) or size <= 0:
-        sys.exit('--labels %s: "size" is the text height in mm, not %s' % (what, json.dumps(size)))
+        sys.exit('--labels %s: "sides" is "F", "B" or "FB", not %s' % (what, shown(sides)))
+    if not is_num(size) or size <= 0:
+        sys.exit('--labels %s: "size" is the text height in mm, not %s' % (what, shown(size)))
     return rot, size, sides
 
 
@@ -208,17 +230,19 @@ def main():
             if a.refs == 'fab':
                 show_fab_reference(fp)
     small = []                                     # (reference or "free text", size) of each text under MIN_TEXT
+    if not isinstance(labels, dict):
+        sys.exit('--labels: expected an object {"REF": %s, ...}, not %s' % (FORMS['list'], shown(labels)))
     for ref, spec in labels.items():
         if ref == FREE_TEXTS:
             if not isinstance(spec, list):
-                sys.exit('--labels %s: expected a list of {"text": "...", "at": [x, y]} (optional %s)' % (FREE_TEXTS, OPTIONS))
+                sys.exit('--labels %s: expected a list of %s (optional %s)' % (FREE_TEXTS, FORMS['free'], OPTIONS))
             for k, t in enumerate(spec):
                 what = '%s[%d]' % (FREE_TEXTS, k)
-                rot, size, sides = text_options(what, t, {'text', 'at'})
+                rot, size, sides = text_options(what, t, {'text', 'at'}, 'free')
                 at = t.get('at')
                 if not isinstance(t.get('text'), str) or not (isinstance(at, list) and len(at) == 2 and
-                                                              all(isinstance(v, (int, float)) for v in at)):
-                    sys.exit('--labels %s: expected {"text": "...", "at": [x, y]} (mm from --origin; optional %s)' % (what, OPTIONS))
+                                                              all(is_num(v) for v in at)):
+                    sys.exit('--labels %s: expected %s (optional %s)' % (what, FORMS['free'], OPTIONS))
                 write_label(b, t['text'], (ox + at[0], oy + at[1]), rot, size, sides)
                 if size < MIN_TEXT:
                     small.append(('"%s"' % t['text'], size))
@@ -228,26 +252,29 @@ def main():
         except KeyError:
             sys.exit('--labels: no footprint %s' % ref)
         if isinstance(spec, dict) and 'pads' in spec:                 # one label per pad
-            rot, size, sides = text_options(ref, spec, {'pads', 'dx', 'dy'})
+            rot, size, sides = text_options(ref, spec, {'pads', 'dx', 'dy'}, 'pads')
             if not isinstance(spec['pads'], dict):
-                sys.exit('--labels %s: expected {"pads": {"1": "GND", ...}, "dx": 0, "dy": 2.35} (optional %s)' % (ref, OPTIONS))
+                sys.exit('--labels %s: expected %s (optional %s)' % (ref, FORMS['pads'], OPTIONS))
             texts = []
             for num, text in spec['pads'].items():
+                if not isinstance(text, str):
+                    sys.exit('--labels %s: pad %s\'s label is a string, not %s' % (ref, num, shown(text)))
                 try:
                     x, y = fp.pad_position(num)
                 except KeyError:
                     sys.exit('--labels %s: no pad %s' % (ref, num))
                 texts.append((text, x + spec.get('dx', 0), y + spec.get('dy', 0)))
         elif isinstance(spec, dict):                                  # one label for the part, with options
-            rot, size, sides = text_options(ref, spec, {'text', 'dx', 'dy'})
+            rot, size, sides = text_options(ref, spec, {'text', 'dx', 'dy'}, 'text')
             if not isinstance(spec.get('text'), str):
-                sys.exit('--labels %s: expected {"text": "TX", "dx": 0, "dy": 1.1} or {"pads": {...}} (optional %s)' % (ref, OPTIONS))
+                sys.exit('--labels %s: expected %s or %s (optional %s)' % (ref, FORMS['text'], FORMS['pads'], OPTIONS))
             fp.set_field('Reference', ref, hide=True)
             texts = [(spec['text'], fp.at[0] + spec.get('dx', 0), fp.at[1] + spec.get('dy', 0))]
         else:
-            if not isinstance(spec, list) or len(spec) not in (3, 4):
-                sys.exit('--labels %s: expected ["TEXT", dx, dy] or ["TEXT", dx, dy, rot]; for a size or side use '
-                         '{"text": "TEXT", "dx": 0, "dy": 0, "size": 1.0, "sides": "F"}' % ref)
+            if not (isinstance(spec, list) and len(spec) in (3, 4) and isinstance(spec[0], str) and
+                    all(is_num(v) for v in spec[1:])):
+                sys.exit('--labels %s: expected %s, not %s; for a size or side use '
+                         '{"text": "TEXT", "dx": 0, "dy": 0, "size": 1.0, "sides": "F"}' % (ref, FORMS['list'], shown(spec)))
             fp.set_field('Reference', ref, hide=True)
             texts = [(spec[0], fp.at[0] + spec[1], fp.at[1] + spec[2])]
             rot, size, sides = spec[3] if len(spec) > 3 else 0, 1.0, 'FB'

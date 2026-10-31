@@ -13,14 +13,18 @@ For each device name it prints:
 - lifecycle from the manufacturer's product page, where that can be read automatically (TI: ti.com/product/<NAME>,
   the page's status tag: ACTIVE / NRND / LAST TIME BUY / OBSOLETE / PREVIEW). An orderable number is cut back to its
   device page (TPS61089RNRR -> TPS61089, TLV75518PDRVR -> TLV755P: a fixed-voltage code is taken out of the middle)
-  and the page used is printed. No product page for any of those (HTTP 404) is reported as SUSPECT: treat the part as
-  discontinued until the manufacturer says otherwise. Other vendors: "check by hand" (open the product page and
+  and the page used is printed. A page found only by taking a voltage code out may be another device: it counts only
+  when ti.com lists the orderable number under it (ti.com/product/TLV755P/part-details/TLV75518PDRVR answers 200);
+  otherwise its status gets a "?" (ACTIVE? (as TLV755P, found only by dropping '18' ...)) and fails the gate until
+  the device is confirmed by hand. No product page for any of those (HTTP 404) is reported as SUSPECT: treat the part as discontinued until
+  the manufacturer says otherwise. Other vendors: "check by hand" (open the product page and
   record the status);
 - every orderable LCSC variant of that exact device in the project's region, with stock (an LCSC C-number is looked
   up as exactly that part).
   Variants are kept apart: an automotive "-Q1" device is a different part with its own datasheet (equations, limits,
   Rds(on) can differ), so a "-Q1" query only matches orderable numbers ending in Q1, and a plain query excludes them.
-Exit 1 if any part is SUSPECT/NRND/OBSOLETE/LAST TIME BUY or has less stock than --need.
+Exit 1 if any part is SUSPECT/NRND/OBSOLETE/LAST TIME BUY, has an unconfirmed ("?") status, or has less stock than
+--need.
 
 Why: distributor stock is not evidence a part is still made (a discontinued part showed 7,130 units at LCSC), and a
 design tool's top picks may have no stock at all. Run this on every candidate before customising a design around it,
@@ -53,59 +57,113 @@ def ti_lifecycle(name):
     return m.group(1).upper() if m else 'unknown (no status tag on %s)' % url
 
 
+MAX_TI_REQUESTS = 13   # ti.com requests per part at most: up to 12 product pages (TLV75518PDRVR needs 11, TPS7A2033PDBVR
+                       # 12; a SUSPECT part tries them all), then one part-details confirmation (ti_orderable_confirmed)
+# two-digit output-voltage codes taken for one in a fixed-voltage order code: 0.8-3.6 V, 4.5 V, 5.0 V. Not 40, 60, 89
+# and the like, which end ordinary device numbers (TPS62840, TPS54360, TPS61089)
+VOLTAGE_CODES = {'%02d' % v for v in range(8, 37)} | {'45', '50'}
+
+
+def _core(name):
+    """an orderable automotive number without its trailing Q1 (TPS61088QRHLRQ1 -> TPS61088QRHLR)"""
+    return name[:-2] if name.endswith('Q1') and not name.endswith('-Q1') else name
+
+
 def _trims(name):
-    """name, its -Q1 device form, then name shortened from the end, never below prefix + digits (+ one letter, as in
-    TPS61230A), then prefix + digits"""
+    """name, its -Q1 device forms, then name cut back letter by letter from the end, never past its last digit
+    (TPS61089RNRR -> TPS61089RNR ... TPS61089; TPS61230ADRRR -> ... TPS61230A, TPS61230): dropping a digit names
+    another device, which only _without_voltage does, and says so"""
     out = [name]
-    m = re.match(r'(%s\d+[A-Z]?)' % TI_PREFIX, name)
-    floor = m.group(1) if m else name
-    if name.endswith('Q1') and not name.endswith('-Q1'):
+    core = _core(name)
+    if core != name:
         q = re.match(r'(%s\d+[A-Z]?)Q' % TI_PREFIX, name)
         if q:
             out.append(q.group(1) + '-Q1')
             out.append(re.match(r'%s\d+' % TI_PREFIX, name).group(0) + '-Q1')
-    s = name
-    while len(s) > len(floor):
-        s = s[:-1]
-        out.append(s)
-    if re.match(r'%s\d+' % TI_PREFIX, name):
-        out.append(re.match(r'%s\d+' % TI_PREFIX, name).group(0))
+    digits = [m.end() for m in re.finditer(r'\d', core)]
+    floor = digits[-1] if digits else len(core)
+    out += [core[:i] for i in range(len(core), floor - 1, -1)]
     return out
 
 
 def _without_voltage(name):
-    """the name with a two-digit voltage code taken out of the middle: TI's fixed-voltage order codes insert it
-    after the device name (TLV755+18+P+DRVR, TLV767+18+DRVR, TPS7A20+33+PDBVR, TLV1117LV+33+DCYR). Tried for every
-    digit group followed by a letter; the first group keeps at least three digits (TLV755, not TLV7)."""
-    p = re.match(TI_PREFIX, name)
+    """[(name with a voltage code taken out of the middle, the code)]: TI's fixed-voltage order codes insert a
+    two-digit code after the device name (TLV755+18+P+DRVR, TLV767+18+DRVR, TPS7A20+33+PDBVR, TLV1117LV+33+DCYR).
+    Only a digit group followed by a letter, ending in a VOLTAGE_CODES code; the first digit group keeps at least three
+    digits (TLV755, not TLV7) and a later one none or at least two (TPS7A20, TLV1117LV; not LMG3410R0)."""
+    core = _core(name)
     out = []
-    for m in re.finditer(r'\d+(?=[A-Z])', name):
+    for i, m in enumerate(re.finditer(r'\d+(?=[A-Z])', core)):
         run = m.group(0)
-        if len(run) < 2 or (p and m.start() == p.end() and len(run) - 2 < 3):
+        if len(run) < 2 or run[-2:] not in VOLTAGE_CODES:
             continue
-        out.append(name[:m.end() - 2] + name[m.end():])
+        left = len(run) - 2
+        if (i == 0 and left < 3) or (i > 0 and left == 1):
+            continue
+        out.append((core[:m.end() - 2] + core[m.end():] + name[len(core):], run[-2:]))
     return out
 
 
 def ti_candidates(name):
-    """device-name guesses for a TI name that may be an orderable number, in the order tried: the name trimmed from
-    the end (TPS61089RNRR -> TPS61089RNR ... TPS61089; TPS61088QRHLRQ1 -> TPS61088-Q1), then the same for the name
-    without a mid-name voltage code (TLV75518PDRVR -> TLV755PDRVR ... TLV755P; TLV76718DRVR -> ... TLV767)."""
-    out = _trims(name)
-    for v in _without_voltage(name):
-        out += _trims(v)
-    return list(dict.fromkeys(out))
+    """[(device-name guess, voltage code dropped or None)] for a TI name that may be an orderable number, in the order
+    tried, at most MAX_TI_REQUESTS - 1 (the last request is kept for the part-details confirmation): the name trimmed from the end (TPS61089RNRR -> TPS61089RNR ... TPS61089;
+    TPS61088QRHLRQ1 -> TPS61088-Q1), then the same for the name without a mid-name voltage code (TLV75518PDRVR ->
+    TLV755PDRVR ... TLV755P; TLV76718DRVR -> ... TLV767)."""
+    out = {c: None for c in _trims(name)}
+    for v, code in _without_voltage(name):
+        for c in _trims(v):
+            out.setdefault(c, code)
+    return list(out.items())[:MAX_TI_REQUESTS - 1]
+
+
+def ti_orderable_confirmed(page, order):
+    """True when ti.com lists the orderable number under that device page: ti.com/product/PAGE/part-details/ORDER
+    answers 200 at that same URL and the page names ORDER. Checked 2026-10-30: TLV755P/TLV75518PDRVR,
+    TLV767/TLV76718DRVR, TPS7A20/TPS7A2033PDBVR are 200; mismatched pairs (TLV755P/TPS61089RNRR,
+    TLV767/TLV75518PDRVR, TPS7A20/TLV76718DRVR, TLV755P/TLV75599PDRVR, ...) are a plain 404 with no redirect.
+    Any failure is False."""
+    url = 'https://www.ti.com/product/%s/part-details/%s' % (page, order)
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        r = urllib.request.urlopen(req, timeout=20)
+        html = r.read(400000).decode('utf-8', 'replace')
+    except (urllib.error.URLError, OSError):       # HTTPError (404) is a URLError
+        return False
+    return r.geturl().rstrip('/').upper().endswith('/PART-DETAILS/' + order.upper()) and order.upper() in html.upper()
 
 
 def ti_resolve(name):
-    """(status, device page name). The first candidate with a product page wins; none -> SUSPECT."""
-    last = None
-    for c in ti_candidates(name):
+    """(status, device page name, voltage code dropped to find it or None, orderable confirmed on that page). The first
+    candidate with a product page wins; none -> SUSPECT. A page found only by dropping a voltage code is checked with
+    ti_orderable_confirmed(page, name), within MAX_TI_REQUESTS."""
+    last, asked = None, 0
+    for c, code in ti_candidates(name):
         st = ti_lifecycle(c)
+        asked += 1
         if not st.startswith('SUSPECT'):
-            return st, c
+            return st, c, code, bool(code) and asked < MAX_TI_REQUESTS and ti_orderable_confirmed(c, name)
         last = st
-    return last, name
+    return last, name, None, False
+
+
+def lifecycle_text(name, status, page, code, confirmed=False):
+    """the lifecycle column. A page found only by dropping a voltage code may be another device: unless ti.com lists
+    the orderable number under it (confirmed), its status gets a "?" and does not pass the gate (gate_flag) until the
+    device is confirmed by hand"""
+    if code and confirmed:
+        return '%s (as %s; ti.com lists %s under it)' % (status, page, name)
+    if code:
+        return "%s? (as %s, found only by dropping '%s' as a voltage code: confirm the device)" % (status, page, code)
+    return status + (' (as %s)' % page if page != name else '')
+
+
+def gate_flag(life):
+    """the flag a lifecycle text raises, or None when it passes"""
+    if re.match(r'SUSPECT|NRND|OBSOLETE|LAST TIME', life):
+        return 'LIFECYCLE'
+    if re.match(r'[A-Z ]+\?', life):
+        return 'LIFECYCLE UNCONFIRMED'
+    return None
 
 
 def is_ti(name):
@@ -169,9 +227,7 @@ def main():
         elif a.no_lifecycle:
             life = '-'
         else:
-            life, page = ti_resolve(n)
-            if page != n:
-                life += ' (as %s)' % page
+            life = lifecycle_text(n, *ti_resolve(n))
         try:
             rows = lcsc_variants(n, reg, a.cli)
             err = None
@@ -179,8 +235,8 @@ def main():
             rows, err = [], str(e)
         best = rows[0]['stock'] if rows else 0
         flags = []
-        if re.match(r'SUSPECT|NRND|OBSOLETE|LAST TIME', life):
-            flags.append('LIFECYCLE')
+        if gate_flag(life):
+            flags.append(gate_flag(life))
         if best < need:
             flags.append('STOCK %d < %d in %s' % (best, need, reg))
         other = ''

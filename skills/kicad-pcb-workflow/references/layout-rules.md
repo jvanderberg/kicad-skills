@@ -75,7 +75,7 @@ plane), not the free-wire ~1 nH/mm, and compute the before/after of a relocation
   DRC cannot report them overlapping, and DRC's `silk_overlap` sees only crossing lines, not a part sitting inside
   another's outline. Place them so no two outlines overlap and no part sits inside another's outline (a footprint with
   a courtyard counts by its courtyard). The outline is generous, but it is what the part's author drew, and it keeps
-  the silk readable. `board_lint.py` checks it (SILK OUTLINE, from each part's outline-and-pads rectangle). A silk
+  the silk readable. `board_lint.py` checks it (SILK OUTLINE, from each part's outline, body and pads rectangle). A silk
   overlap is a placement problem: never exempt `silk_overlap` items or SILK OUTLINE lines to get a clean report.
 - **Tighter than the outline only with a reason** (a decoupling capacitor at its pin, an LED resistor squeezed
   between its parts, a board size the user fixed), recorded in the layout compliance file with the part, its
@@ -89,7 +89,8 @@ plane), not the free-wire ~1 nH/mm, and compute the before/after of a relocation
   Do not delete silk on the board itself: regenerating the board brings it back, and DRC reports the footprint as
   differing from its library.
 - Spacing without an outline (and around parts whose courtyard you do not trust), by rule of thumb; check the gaps
-  yourself at placement, edge to edge of pads and bodies (`board_lint.py` lists these parts in a NOTE). Starting
+  yourself at placement, edge to edge of pads and bodies (`board_lint.py` lists these parts in a NOTE, and reports a
+  body or pads on a neighbour as BODY OVERLAP). Starting
   points, from IPC-7351B's nominal courtyard allowance per part (as KiCad's KLC F5.3 applies it) on both neighbours:
   - about 0.5 mm between ordinary SMD parts (SOT, SOIC, QFN, chips 0603 and up) and around through-hole bodies;
   - down to about 0.3 mm between 0402 and smaller passives;

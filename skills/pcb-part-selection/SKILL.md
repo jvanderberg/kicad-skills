@@ -26,7 +26,8 @@ orderable part number at one moment**. Before building on any of them:
   page instead of a PDF, means treat the part as discontinued until the manufacturer says otherwise.
 `scripts/part_gate.py <names or C-numbers...>` does the lifecycle (TI product pages; other vendors: check by hand) and
 LCSC stock per exact variant in the project's region in one command; `--from-text` takes pasted text such as a design
-tool's results table.
+tool's results table. A TI page found only by dropping a voltage code (TLV75518PDRVR -> TLV755P) counts when ti.com
+lists the orderable under it (part-details); otherwise its status gets a "?" and fails the gate until you confirm it.
 
 Statements in these skills about third-party sites and tools (JLC, LCSC, TI, WEBENCH, jlcimport) carry the date they
 were checked. Treat them as hints about where to look: discover the current behaviour (read the page, run `--help`),

@@ -106,6 +106,41 @@ def test_label_errors():
         assert r.returncode == 1 and msg in r.stderr, (labels, r.stderr)
 
 
+def test_label_wrong_types_are_clean_errors():
+    """a wrong JSON type anywhere in --labels is a message and exit 1, never a traceback"""
+    cases = (
+        ({'_texts': [['X', 1, 2]]}, '_texts[0]: expected {"text"'),         # was TypeError in sorted()
+        ({'_texts': ['X']}, '_texts[0]: expected {"text"'),                 # was "unknown keys: X"
+        ({'_texts': [{'text': 5, 'at': [1, 2]}]}, '_texts[0]: expected {"text"'),
+        ({'_texts': [{'text': 'X', 'at': [1, '2']}]}, '_texts[0]: expected {"text"'),
+        ({'_texts': [{'text': 'X', 'at': [True, 2]}]}, '_texts[0]: expected {"text"'),
+        ({'_texts': [{'text': 'X', 'at': [1, 2], 'rot': '90'}]}, '_texts[0]: "rot" is a number (degrees), not "90"'),
+        ({'_texts': [{'text': 'X', 'at': [1, 2], 'size': '1'}]}, '_texts[0]: "size" is the text height'),
+        ({'_texts': [{'text': 'X', 'at': [1, 2], 'sides': ['F']}]}, '_texts[0]: "sides" is "F", "B" or "FB"'),
+        ({'J4': {'text': 'A', 'dx': '1'}}, 'J4: "dx" is a number (mm), not "1"'),   # was TypeError in fp.at[0] + '1'
+        ({'J4': {'text': 'A', 'dy': None}}, 'J4: "dy" is a number (mm), not null'),
+        ({'J4': {'text': 'A', 'rot': [90]}}, 'J4: "rot" is a number (degrees)'),
+        ({'J4': {'text': 'A', 'size': True}}, 'J4: "size" is the text height'),
+        ({'J4': {'text': 7}}, 'J4: expected {"text"'),
+        ({'J3': {'pads': {'1': 'GND'}, 'dx': '0'}}, 'J3: "dx" is a number (mm)'),
+        ({'J3': {'pads': {'1': 'GND'}, 'rot': 'up'}}, 'J3: "rot" is a number (degrees)'),
+        ({'J3': {'pads': {'1': 'GND'}, 'sides': 'X'}}, 'J3: "sides" is "F", "B" or "FB"'),
+        ({'J3': {'pads': {'1': 'GND'}, 'size': -1}}, 'J3: "size" is the text height'),
+        ({'J3': {'pads': {'1': 3}}}, "J3: pad 1's label is a string, not 3"),
+        ({'J3': {'pads': ['GND']}}, 'J3: expected {"pads"'),
+        ({'J4': ['PWR', '0', -3]}, 'J4: expected ["TEXT", dx, dy]'),
+        ({'J4': ['PWR', 0, -3, '90']}, 'J4: expected ["TEXT", dx, dy]'),
+        ({'J4': [5, 0, -3]}, 'J4: expected ["TEXT", dx, dy]'),
+        ({'J4': 'PWR'}, 'J4: expected ["TEXT", dx, dy]'),
+        (['J4', 'PWR'], '--labels: expected an object'),
+    )
+    for labels, msg in cases:
+        r, _ = build(labels)
+        if r.returncode and ('fp-lib-table' in r.stderr or 'not found (' in r.stderr):
+            print('skip: no KiCad footprint library (%s)' % r.stderr.strip()); return
+        assert r.returncode == 1 and 'Traceback' not in r.stderr and msg in r.stderr, (labels, r.stderr)
+
+
 if __name__ == '__main__':
     for k, f in list(globals().items()):
         if k.startswith('test_'):

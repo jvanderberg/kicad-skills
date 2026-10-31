@@ -122,6 +122,7 @@ def header(ctx):
 
 
 FETCH = 30   # rows asked of the catalogue whatever -n is: the exact part can sit below the first few
+LOOKUP_FETCH = 5   # rows asked for an exact C-number lookup (lookup)
 
 
 def is_placeholder(row):
@@ -136,6 +137,11 @@ def is_part_number(q):
             and re.search(r'\d', q) is not None and not re.match(r'^\d+(\.\d+)?[A-Za-z\u00b5\u03a9]{0,3}$', q))
 
 
+def _is_exact(row, q):
+    """row's MPN or C-number is exactly q (q upper-cased)"""
+    return (row.get('part') or '').upper() == q or (row.get('lcsc') or '').upper() == q
+
+
 def rank(rows, query, placeholders=False):
     """(rows, placeholders dropped): exact MPN or C-number matches first, then MPNs starting with the query, then the
     rest in the CLI's order (stock); placeholders dropped unless asked for or named by the query"""
@@ -143,20 +149,25 @@ def rank(rows, query, placeholders=False):
     kept = [r for r in rows if placeholders or not is_placeholder(r) or (r.get('lcsc') or '').upper() == q]
 
     def key(r):
-        part = (r.get('part') or '').upper()
-        return 0 if part == q or (r.get('lcsc') or '').upper() == q else 1 if part.startswith(q) else 2
+        return 0 if _is_exact(r, q) else 1 if (r.get('part') or '').upper().startswith(q) else 2
     return sorted(kept, key=key), len(rows) - len(kept)
 
 
 def exact(rows, query):
     """rows whose MPN or C-number is exactly the query (case-insensitive)"""
     q = query.strip().upper()
-    return [r for r in rows if (r.get('part') or '').upper() == q or (r.get('lcsc') or '').upper() == q]
+    return [r for r in rows if _is_exact(r, q)]
+
+
+def search_ranked(keyword, region, cli=None, n=10, kind='both', min_stock=0, placeholders=False):
+    """(up to n rows ranked by rank(), number of placeholder rows left out): fetched FETCH deep whatever n is"""
+    rows, hidden = rank(cli_search(keyword, region, cli, max(n, FETCH), kind, min_stock), keyword, placeholders)
+    return rows[:n], hidden
 
 
 def search(keyword, region, cli=None, n=10, kind='both', min_stock=0, placeholders=False):
-    """up to n rows for a keyword or part number, ranked by rank(); see cli_search"""
-    return rank(cli_search(keyword, region, cli, max(n, FETCH), kind, min_stock), keyword, placeholders)[0][:n]
+    """up to n rows for a keyword or part number, ranked by rank(); see search_ranked and cli_search"""
+    return search_ranked(keyword, region, cli, n, kind, min_stock, placeholders)[0]
 
 
 def cli_search(keyword, region, cli=None, n=10, kind='both', min_stock=0):
@@ -189,8 +200,9 @@ def cli_search(keyword, region, cli=None, n=10, kind='both', min_stock=0):
 
 
 def lookup(lcsc, region, cli=None):
-    """the row for exactly this C-number in this region, or None (not listed there)"""
-    for row in search(lcsc, region, cli, n=5):
+    """the row for exactly this C-number in this region, or None (not listed there). A C-number needs no ranking
+    depth: the catalogue returns it among the first few rows, so only LOOKUP_FETCH rows are asked for."""
+    for row in cli_search(lcsc, region, cli, n=LOOKUP_FETCH):
         if row['lcsc'] == lcsc:
             return row
     return None
@@ -265,8 +277,7 @@ def main():
             print('  note: ' + n)
         if a.cmd == 'search':
             for kw in a.items:
-                rows, hidden = rank(cli_search(kw, ctx['region'], a.cli, max(a.n, FETCH), a.t, a.min_stock), kw, a.placeholders)
-                rows = rows[:a.n]
+                rows, hidden = search_ranked(kw, ctx['region'], a.cli, a.n, a.t, a.min_stock, a.placeholders)
                 print('\n"%s" in %s: %d result(s)%s' % (kw, ctx['region'], len(rows), ' (%d "JLCPCB Assembly" placeholder '
                       'part(s) left out: --placeholders shows them)' % hidden if hidden else ''))
                 if not rows:

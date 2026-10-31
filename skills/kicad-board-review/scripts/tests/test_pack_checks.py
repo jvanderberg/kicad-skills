@@ -5,6 +5,9 @@
 - each IC supply pin gets its nearest capacitor by copper path, with an inductance estimate from microstrip per-length
   inductance (not the free-wire 1 nH/mm); a cap 18 mm of track away is flagged;
 - the path joins a via dropped mid-way on a track and a pad a track runs straight across (no vertex there), as KiCad does;
+- copper joins where the shapes overlap (centre distance under the sum of half-widths, KiCad 10's boundary) for a via
+  beside a track, a wide track ending beside a thin one and a track ending short of a pad; a blind via joins only
+  the layers it spans;
 - a differential pair with the ground pour 0.15 mm from it is flagged as partly coplanar;
 - a net_classes pattern that matches nothing, and a connector net that falls through to "slow", are warnings."""
 import json, os, subprocess, sys, tempfile
@@ -150,6 +153,74 @@ def test_decoupling_joins_mid_segment_vias_and_pads():
     assert a['status'] == 'ok' and a['cap'] == 'C2' and abs(a['track_mm'] - 18.0) < 0.05 and a['via_hops'] > 0, a
     assert b['status'] == 'ok' and b['cap'] == 'C3' and abs(b['track_mm'] - 10.0) < 0.05, b
     assert 'no capacitor reachable' not in out, out
+
+
+def test_decoupling_joins_where_copper_overlaps_and_vias_only_on_their_span():
+    """KiCad joins copper whose shapes overlap - centre distance under the sum of the half-widths (KiCad 10
+    BuildConnectivity, measured: a 0.6 mm via 0.449 mm off a 0.3 mm track joins, 0.45 does not; a 1.0 mm track ending
+    0.649 mm from a 0.3 mm one joins, 0.65 does not; a 0.3 mm track ending 0.149 mm outside a pad joins, 0.15 does not)
+    - and a blind via joins only the layers it spans. Each pair of nets is the same layout just inside / just outside
+    the boundary; U1's pin reaches its capacitor only through that join."""
+    d = tempfile.mkdtemp()
+    u1, caps, tracks, vias = [], [], [], []
+
+    def cap(ref, net, x, y, layer):
+        caps.append(dict(ref=ref, value='1uF', fp='C_0402', lib='', x=x, y=y + 0.5, rot=0, side=layer[0],
+                         pads=[pad('1', net, x, y, layer=layer), pad('2', 'GND', x, y + 1, layer=layer)]))
+
+    def via(net, x, y, size=0.6, **kw):
+        vias.append(dict(x=x, y=y, net=net, size=size, drill=0.3, type=4, type_name='through', **kw))
+    for i, (net, off) in enumerate((('VA', 0.44), ('VAX', 0.46))):   # a 0.6 via beside a 0.3 track, on to B.Cu
+        x = 25 * i
+        u1.append(pad(str(1 + i), net, x + 5, 5))
+        tracks += [dict(a=[x + 5, 5], b=[x + 15, 5], w=0.3, layer='F.Cu', net=net),
+                   dict(a=[x + 10, 5 + off], b=[x + 10, 9], w=0.3, layer='B.Cu', net=net)]
+        via(net, x + 10, 5 + off); cap('C%d' % (1 + i), net, x + 10, 9, 'B.Cu')
+    for i, (net, off) in enumerate((('VT', 0.64), ('VTX', 0.66))):   # a 1.0 track ending beside a 0.3 one
+        x = 25 * i
+        u1.append(pad(str(3 + i), net, x + 5, 15))
+        tracks += [dict(a=[x + 5, 15], b=[x + 15, 15], w=0.3, layer='F.Cu', net=net),
+                   dict(a=[x + 10, 15 + off], b=[x + 10, 19], w=1.0, layer='F.Cu', net=net)]
+        cap('C%d' % (3 + i), net, x + 10, 19, 'F.Cu')
+    for i, (net, gap) in enumerate((('VP', 0.10), ('VPX', 0.16))):   # a 0.3 track ending short of a 0.6 pad
+        x = 25 * i
+        u1.append(pad(str(5 + i), net, x + 5, 25))
+        tracks.append(dict(a=[x + 5, 25], b=[x + 14.7 - gap, 25], w=0.3, layer='F.Cu', net=net))
+        cap('C%d' % (5 + i), net, x + 15, 25, 'F.Cu')
+    # a blind F.Cu-In1.Cu via the F.Cu track ends on: a B.Cu track under it does not join (VB), an In1.Cu one does (VBI)
+    for i, (net, layer) in enumerate((('VB', 'B.Cu'), ('VBI', 'In1.Cu'))):
+        x = 25 * i
+        u1.append(pad(str(7 + i), net, x + 5, 35))
+        tracks += [dict(a=[x + 5, 35], b=[x + 10, 35], w=0.3, layer='F.Cu', net=net),
+                   dict(a=[x + 8, 35], b=[x + 15, 35], w=0.3, layer=layer, net=net)]
+        vias.append(dict(x=x + 10, y=35, net=net, size=0.6, drill=0.3, type=1, type_name='blind', layers=['F.Cu', 'In1.Cu']))
+        if layer == 'In1.Cu': via(net, x + 15, 35)
+        cap('C%d' % (7 + i), net, x + 15, 35, 'B.Cu')
+    vias.append(dict(x=40, y=42, net='GND', size=0.4, drill=0.2, type=2, type_name='microvia'))   # no span recorded
+    fps = [dict(ref='U1', value='PMIC', fp='QFN', lib='', x=20, y=20, rot=0, side='F', pads=u1)] + caps
+    edge = rect(0, 0, 45, 45)
+    board = dict(source='synthetic', layers=['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu'], stackup=STACK, netclass={}, vias=vias,
+                 edge=[[edge, []]], edge_bbox=[0, 0, 45, 45], footprints=fps, tracks=tracks, zones=[])
+    comps, nets = {}, {}
+    for f in fps:
+        comps[f['ref']] = dict(ref=f['ref'], value=f['value'], fp=f['fp'], pins={})
+        for p in f['pads']:
+            pt = 'power_in' if f['ref'] == 'U1' else 'passive'
+            comps[f['ref']]['pins'][p['num']] = [p['net'], '', pt]
+            nets.setdefault(p['net'], []).append([f['ref'], p['num'], '', pt])
+    cfg = dict(ground_nets=['GND'], decoupling=dict(max_mm=20))
+    for n, v in (('board.json', board), ('netlist.json', dict(components=comps, nets=nets)), ('review_config.json', cfg)):
+        json.dump(v, open(os.path.join(d, n), 'w'))
+    out = run(d, 'decoupling.py')
+    D = json.load(open(os.path.join(d, 'decoupling.json')))
+    rows = {r['net']: r for r in D['pins']}
+    # via hops count layer pairs: a through via is 3, the blind F.Cu-In1.Cu via 1 plus 2 down the through via
+    for net, mm, hops in (('VA', 9.0, 3), ('VT', 9.0, 0), ('VP', 10.0, 0), ('VBI', 10.0, 3)):
+        r = rows[net]
+        assert 'cap' in r and abs(r['track_mm'] - mm) < 0.05 and r['via_hops'] == hops, r   # (FLAG: no ground vias)
+    for net in ('VAX', 'VTX', 'VPX', 'VB'):
+        assert rows[net]['status'].startswith('FAIL: no capacitor reachable'), rows[net]
+    assert any('1 blind/buried/micro vias with no layer span' in w for w in D['coverage']['warnings']), out
 
 
 def test_diff_pair_coplanar_and_coverage_warnings():

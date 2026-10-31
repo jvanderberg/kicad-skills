@@ -1,6 +1,7 @@
 """board_setup.py net class assignments:  python3 tests/test_board_setup_assign.py
-- the --assign / --pattern of a run are the complete set: a net taken out of a class on a re-run leaves it, a pattern
-  no longer given is dropped, and the run lists what it dropped; --keep-assignments adds to the existing ones
+- a run with --assign / --pattern replaces the complete set: a net taken out of a class on a re-run leaves it, a
+  pattern no longer given is dropped, and the run warns (stderr) what it dropped; --keep-assignments adds to the
+  existing ones; a run with neither (--stackup only) leaves them untouched, KiCad-made ones included
 - an assigned name that is not a net of the board next to the .kicad_pro (SW for Net-(U3-SW)) and a pattern that
   matches no net are warnings, as is a missing board."""
 import os, subprocess, sys, tempfile
@@ -39,14 +40,34 @@ def test_rerun_replaces_assignments_and_patterns():
     out, err, p = run(d, '--assign', 'Power=VBUS,3V3')                       # GND and the pattern taken out
     assert p.assignments() == {'VBUS': ['Power'], '3V3': ['Power']}, p.assignments()
     assert p.data['net_settings']['netclass_patterns'] == []
-    assert 'dropped (not given on this run): GND (Power), pattern /USB_D* (USB)' in out, out
+    assert 'WARNING: dropped 2 existing' in err and ': GND (Power), pattern /USB_D* (USB)' in err, err
     out, err, p = run(d, '--assign', 'Power=VBUS,3V3')                       # same command: same file, nothing dropped
-    assert 'dropped' not in out, out
+    assert 'dropped' not in out + err, (out, err)
     out, err, p = run(d, '--keep-assignments', '--assign', 'Power=GND')      # one-off addition
     assert p.assignments() == {'VBUS': ['Power'], '3V3': ['Power'], 'GND': ['Power']}, p.assignments()
-    assert 'existing ones kept' in out and 'dropped' not in out, out
-    out, err, p = run(d)                                                      # none given: none left
-    assert p.assignments() == {} and 'dropped' in out, (p.assignments(), out)
+    assert 'existing ones kept' in out and 'dropped' not in out + err, (out, err)
+    out, err, p = run(d)                                                      # none given: all kept
+    assert p.assignments() == {'VBUS': ['Power'], '3V3': ['Power'], 'GND': ['Power']}, p.assignments()
+    assert 'untouched' in out and 'dropped' not in out + err, (out, err)
+
+
+def test_stackup_only_run_keeps_assignments():
+    """board_setup.py PROJ --stackup X (kicad-new-board's proposed form) must not wipe what was set in KiCad"""
+    d = project()
+    pro = os.path.join(d, 'p.kicad_pro')
+    p = Project.load(pro)                                     # as KiCad's Net Classes panel would leave it
+    p.netclass('Power', track_width=0.8)
+    p.assign('VBUS', 'Power')
+    p.add_pattern('/USB_D*', 'Power')
+    p.save()
+    out, err, p = run(d, '--stackup', 'JLC-2L-1.6')
+    assert p.assignments() == {'VBUS': ['Power']}, p.assignments()
+    assert p.data['net_settings']['netclass_patterns'] == [{'netclass': 'Power', 'pattern': '/USB_D*'}]
+    assert 'dropped' not in out + err and 'untouched' in out, (out, err)
+    out, err, p = run(d, '--assign', 'Power=GND')                             # an --assign run still replaces
+    assert p.assignments() == {'GND': ['Power']}, p.assignments()
+    assert p.data['net_settings']['netclass_patterns'] == []
+    assert 'WARNING: dropped 2 existing' in err and 'VBUS (Power), pattern /USB_D* (Power)' in err, err
 
 
 def test_assigned_names_that_are_not_nets_warn():
@@ -57,7 +78,8 @@ def test_assigned_names_that_are_not_nets_warn():
     assert 'WARNING: --pattern USB_D*: matches no net on the board' in err, err   # the nets are /USB_D+, /USB_D-
     assert 'WARNING: --pattern +*V*' in err and 'VBUS' not in err and 'GND' not in err, err
     out, err, p = run(d, '--assign', 'Power=VBUS,GND,3V3,Net-(U3-SW)', '--pattern', 'USB=/USB_D*')
-    assert not err, err
+    assert 'no net' not in err and 'matches no net' not in err, err             # only the dropped SW and patterns
+    assert [l for l in err.splitlines() if l.startswith('WARNING:')] == [l for l in err.splitlines() if 'dropped' in l], err
 
 
 def test_missing_board_warns():

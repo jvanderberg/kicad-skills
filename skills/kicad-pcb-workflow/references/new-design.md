@@ -165,9 +165,10 @@ python3 scripts/board_setup.py proj.kicad_pro --stackup JLC04161H-7628 --class P
 ```
 - Run `new_board.py` before `board_setup.py`: new_board writes a minimal `.kicad_pro` next to a new board if there is
   none (KiCad fills in its defaults), and board_setup then edits it.
-- board_setup's `--assign` / `--pattern` are the project's complete set: a re-run replaces every existing assignment
-  and pattern and lists what it dropped (`--keep-assignments` to add instead), and it warns for a name that is not a
-  net of the board (an unlabelled net is `Net-(U3-SW)`, not `SW`): label the net in the schematic or use its name.
+- board_setup's `--assign` / `--pattern` are the project's complete set: a run that gives either replaces every
+  existing assignment and pattern (KiCad-made ones too) and warns what it dropped (`--keep-assignments` to add
+  instead); a run with neither (`--stackup` only) leaves them untouched. It warns for a name that is not a net of the
+  board (an unlabelled net is `Net-(U3-SW)`, not `SW`): label the net in the schematic or use its name.
 - Regenerating over an existing board keeps every footprint's uuid (new_board reads OUT first; `--previous FILE` to
   read another, `--previous none` for none). Routing comes from `router.py apply ... --previous <the routed board
   before regeneration>` (e.g. a copy of HEAD's board), so tracks, vias and zones keep theirs too. Then `board_diff.py

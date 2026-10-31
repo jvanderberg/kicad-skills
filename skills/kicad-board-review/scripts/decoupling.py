@@ -7,12 +7,17 @@
 # with the length on tracks, across planes and through vias, an inductance estimate (tracks: microstrip Z0 x
 # sqrt(eps_eff) / c on their own layer and width; vias: 0.2 h (ln(4h/d) + 1); plane spreading not included), how many
 # capacitors lie within the limit, and the distance from that capacitor's ground pad to the nearest ground via.
-# A track joins what KiCad's connectivity joins, at its ends or mid-way along it: another track ending on its
-# copper (T-join), a via its centreline passes within (a via dropped on a straight run, with no vertex there, still
-# joins) and a pad its centreline crosses.
+# Copper joins where KiCad's connectivity joins it: wherever the copper shapes overlap, at a track's ends or mid-way
+# along it (a via dropped on a straight run, with no vertex there, still joins). A track (its centreline swept by half
+# its width, round ends), a via (a disc of its size) and a pad (its polygon) join when the distance between them is
+# under the sum of their half-widths - strictly: KiCad 10's BuildConnectivity leaves two shapes that only touch at
+# exactly that distance apart. So a track end within w/2 + w2/2 of another track (T-join), a via within w/2 + size/2
+# of a track's centreline or within size1/2 + size2/2 of another via, and a track or via closer than its half-width
+# to a pad. A via joins only the layers it spans: a through via all of them; a blind, buried or micro via the run
+# between the layers board.json records for it ("layers"; one without them is treated as through, with a warning).
 # A rail that reaches its pins by tracks only (no plane) is where this matters most: allocate a decoupling site at each
 # power pin at placement. review_config.json "decoupling": {"max_mm": 5, "ignore": ["U7"]} (defaults shown, none ignored).
-import heapq
+import heapq, itertools
 from common import *
 from shapely.ops import nearest_points
 
@@ -25,6 +30,23 @@ ZL = {L: STACK[L]['z'] for L in LAYERS}
 
 def fnname(pf, pin): return re.sub(r'~\{([^}]*)\}', r'\1', re.sub(r'_%s$' % re.escape(pin), '', pf or ''))
 
+TOUCH = 5e-7    # mm: half KiCad's 1 nm grid. Shapes exactly r1 + r2 apart only touch, and KiCad does not join them
+
+def touches(d, reach):
+    """copper reach mm apart (the sum of the two half-widths) overlaps at distance d, as KiCad's connectivity has it"""
+    return d < reach - TOUCH
+
+SPANLESS = [v for v in B['vias'] if v.get('type_name') not in (None, 'through') and not v.get('layers')]
+if SPANLESS:
+    WARN.append('%d blind/buried/micro vias with no layer span in board.json, treated as through vias (they may join '
+                'layers they do not reach)' % len(SPANLESS))
+
+def via_span(v):
+    """the copper layers a via joins, top to bottom: the run between the outermost layers board.json records for it
+    (all of them for a through via, or one without a record)"""
+    ix = sorted(LAYERS.index(L) for L in v.get('layers') or () if L in LAYERS)
+    return LAYERS[ix[0]:ix[-1] + 1] if ix else list(LAYERS)
+
 class NetGraph:
     """the copper of one net as a graph: nodes are points on a layer; edges carry (mm, kind, layer, width)"""
     def __init__(self, net):
@@ -35,53 +57,77 @@ class NetGraph:
             if t['net'] != net or t['a'] == t['b']: continue
             pts = [t['a'], t['m'], t['b']] if t.get('arc') else [t['a'], t['b']]
             for a, b in zip(pts, pts[1:]): segs[t['layer']].append((tuple(a), tuple(b), t['w']))
-        vias = [v for v in B['vias'] if v['net'] == net]
+        vias = [(v, via_span(v)) for v in B['vias'] if v['net'] == net]
         pads = [(f, p, unary_union(polys(p['poly'])) if p['poly'] else Point(p['x'], p['y']).buffer(0.1))
                 for f in B['footprints'] for p in f['pads'] if p['net'] == net]
-        # Each segment is split wherever something joins it, as KiCad's connectivity does: a track end on its copper
-        # (T-join), a via whose copper its centreline passes through and a pad its centreline crosses - at its ends or
-        # mid-way along it (a via dropped on a straight run has no vertex there).
+        self.rad = {}                                            # node -> half-width of the copper there (pad joins)
+        padjoin = collections.defaultdict(list)                  # pad index -> split points of tracks that touch it
+        # Each segment is split wherever something's copper overlaps its own, as KiCad's connectivity does: a track
+        # end (T-join), a via on a layer it spans and a pad - at its ends or mid-way along it (a via dropped on a
+        # straight run has no vertex there).
         for L, ss in segs.items():
-            ends = {}
+            ends = {}                                            # point copper on L: track ends and vias, by half-width
             for a, b, w in ss:
                 for q in (a, b):
-                    k = self.key(L, q); ends[k] = max(ends.get(k, 0.0), w)
+                    k = self.key(L, q); ends[k] = max(ends.get(k, 0.0), w / 2)
+            for v, span in vias:
+                if L in span:
+                    k = self.key(L, (v['x'], v['y'])); ends[k] = max(ends.get(k, 0.0), v['size'] / 2)
+            for k, r in ends.items(): self.rad[k] = max(self.rad.get(k, 0.0), r)
             for a, b, w in ss:
-                line = LineString([a, b]); cut = [0.0, line.length]; joins = []
-                for k, we in ends.items():                       # T-joins: a track end on this one's copper
+                line = LineString([a, b]); cut = [0.0, line.length]; joins = []; touched = []
+                for k, r in ends.items():                        # track ends (T-joins) and vias overlapping this track
                     q = Point(self.pos[k][1])
-                    if line.distance(q) <= max(w, we) / 2 + 1e-6: joins.append((line.project(q), k))
-                for v in vias:                                   # vias: the centreline passes within the via's copper
-                    q = Point(v['x'], v['y'])
-                    if line.distance(q) <= max(v['size'], w) / 2 + 1e-6: joins.append((line.project(q), self.key(L, (v['x'], v['y']))))
-                for f, p, pg in pads:                            # pads: the centreline crosses the pad (joined to it below)
-                    if L in p['layers'] and line.intersects(pg):
-                        cut.append(line.project(nearest_points(line.intersection(pg), Point(p['x'], p['y']))[0]))
+                    if touches(line.distance(q), w / 2 + r): joins.append((line.project(q), k))
+                for i, (f, p, pg) in enumerate(pads):            # pads this track's copper overlaps (joined below)
+                    if L in p['layers'] and touches(line.distance(pg), w / 2):
+                        near = line.intersection(pg.buffer(w / 2, quad_segs=32))
+                        q = nearest_points(near, Point(p['x'], p['y']))[0] if not near.is_empty else nearest_points(line, pg)[0]
+                        cut.append(line.project(q)); touched.append((i, line.project(q)))
                 cut += [d for d, _ in joins]
                 pts = [line.interpolate(d) for d in sorted({min(max(d, 0.0), line.length) for d in cut})]
                 for p0, p1 in zip(pts, pts[1:]):
                     k0, k1 = self.key(L, (p0.x, p0.y)), self.key(L, (p1.x, p1.y))
                     if k0 != k1: self.edge(k0, k1, p0.distance(p1), 'track', L, w)
+                for p0 in pts:
+                    k0 = self.key(L, (p0.x, p0.y)); self.rad[k0] = max(self.rad.get(k0, 0.0), w / 2)
                 for d, k in joins:                               # each joining end / via meets the track at its split point
                     p = line.interpolate(d); kk = self.key(L, (p.x, p.y))
                     if kk != k: self.edge(k, kk, p.distance(Point(self.pos[k][1])), 'track', L, w)
+                for i, d in touched:
+                    p = line.interpolate(d); padjoin[i].append(self.key(L, (p.x, p.y)))
         self.vias = []
-        for v in vias:
-            ks = [self.key(L, (v['x'], v['y'])) for L in LAYERS]
+        for v, span in vias:                                     # the barrel, over the layers the via spans
+            ks = [self.key(L, (v['x'], v['y'])) for L in span]
+            for k in ks: self.rad[k] = max(self.rad.get(k, 0.0), v['size'] / 2)
             for k0, k1 in zip(ks, ks[1:]):
                 self.edge(k0, k1, abs(ZL[self.pos[k1][0]] - ZL[self.pos[k0][0]]), 'via', None, v['drill'])
             self.vias.append((v, ks))
-        for f, p, pg in pads:
+        for (v1, s1), (v2, s2) in itertools.combinations(vias, 2):   # overlapping vias, on the layers both span
+            d = math.dist((v1['x'], v1['y']), (v2['x'], v2['y']))
+            if touches(d, (v1['size'] + v2['size']) / 2):
+                for L in s1:
+                    if L in s2:
+                        k1, k2 = self.key(L, (v1['x'], v1['y'])), self.key(L, (v2['x'], v2['y']))
+                        if k1 != k2: self.edge(k1, k2, d, 'track', L, min(v1['size'], v2['size']))
+        R = max(self.rad.values(), default=0.0)
+        for i, (f, p, pg) in enumerate(pads):
             ks = [self.key(L, (p['x'], p['y'])) for L in p['layers']]
             for k0, k1 in zip(ks, ks[1:]):
                 self.edge(k0, k1, abs(ZL[self.pos[k1][0]] - ZL[self.pos[k0][0]]), 'via', None, p['drill'] or 0.3)
             self.padnode[(f['ref'], str(p['num']))] += ks
-            pgb = pg.buffer(0.01); shapely.prepare(pgb)
-            for k in ks:                                         # track ends, split points and vias on the pad join it
+            pw = max(min(*rect_dims(pg)), 0.1) if pg.area else 0.2
+            x0, y0, x1, y1 = pg.bounds
+            near = set(padjoin[i])
+            for k2, (L2, q) in list(self.pos.items()):           # track ends, split points and vias overlapping the pad
+                if x0 - R <= q[0] <= x1 + R and y0 - R <= q[1] <= y1 + R:
+                    dq = pg.distance(Point(q))
+                    if dq == 0 or touches(dq, self.rad.get(k2, 0.0)): near.add(k2)
+            for k in ks:
                 L = self.pos[k][0]
-                for k2, (L2, q) in list(self.pos.items()):
-                    if L2 == L and k2 != k and pgb.contains(Point(q)):
-                        self.edge(k, k2, math.dist(q, (p['x'], p['y'])), 'track', L, max(min(*rect_dims(pg)), 0.1) if pg.area else 0.2)
+                for k2 in near:
+                    if self.pos[k2][0] == L and k2 != k:
+                        self.edge(k, k2, math.dist(self.pos[k2][1], (p['x'], p['y'])), 'track', L, pw)
         for L in LAYERS:                                         # pours / planes: every node inside a filled piece
             zf = zone_fill(net, L)
             if zf.is_empty: continue

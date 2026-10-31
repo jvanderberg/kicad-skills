@@ -18,20 +18,21 @@ Why: kicad-cli cannot create or set up a board, and pcbnew's python does not exp
   power-class nets. Keep class clearances at the Default unless the voltage needs more, and widen tracks instead.
 The board's copper layer count must match the stackup (make the board with new_board.py or KiCad first).
 
-The --assign and --pattern of a run are the project's complete set of assignments: every assignment and pattern
-already in the .kicad_pro is replaced (and the dropped ones are listed), so a regenerated project is a function of the
-build command and a net taken out of a class on a re-run leaves it. A run with neither clears them too.
---keep-assignments keeps the existing ones and adds to them (a one-off edit of a project whose classes are kept in
-KiCad). Assigned names and patterns are checked against the nets of the board next to the .kicad_pro (PROJECT.kicad_pcb,
-nets of its pads, tracks, vias and zones): one that names no net is a warning on stderr (the netlist's name for an
-unlabelled net is e.g. Net-(U3-SW), not SW), as is a missing board.
+Net class assignments (--assign) and patterns (--pattern): a run that gives either replaces the project's complete
+set, every assignment and pattern already in the .kicad_pro included (those made in KiCad's Net Classes panel too), so
+a regenerated project is a function of the build command and a net taken out of a class on a re-run leaves it; what
+it dropped is a WARNING on stderr. A run with neither (--stackup only, say) leaves them untouched. --keep-assignments
+makes a run with --assign / --pattern add to the existing ones instead (a one-off edit of a project whose classes are
+kept in KiCad). Assigned names and patterns are checked against the nets of the board next to the .kicad_pro
+(PROJECT.kicad_pcb, nets of its pads, tracks, vias and zones): one that names no net is a warning on stderr (the
+netlist's name for an unlabelled net is e.g. Net-(U3-SW), not SW), as is a missing board.
 
 Numbers: 4-layer stackups from kicad-new-board/references/jlcpcb-stackups.md (jlcpcb.com/impedance, checked Oct 2026);
 the 2-layer entry is derived (1.6 mm board less copper and mask), JLC publishes no 2-layer table. JLC changes these:
 re-check the page before ordering and say that you did. Board-specific rules (a footprint-scoped clearance for a
 fine-pitch part) belong in the project's .kicad_dru, written by hand with the reason in a comment.
 """
-import argparse, fnmatch, os, re, sys
+import argparse, copy, fnmatch, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kicad_sexpr import Board, Project, stackup  # noqa: E402
@@ -145,8 +146,8 @@ def parse_class(spec):
 
 def apply_project(project, rules, classes, assigns, patterns, layers=2, keep_assignments=False):
     """project: a kicad_sexpr Project. Rules (for a board of `layers` copper layers; unknown: 2, the stricter), net
-    classes (Default first, the user's other classes kept), assignments and patterns: the given ones replace all
-    existing ones unless keep_assignments."""
+    classes (Default first, the user's other classes kept), assignments and patterns: when any are given they replace
+    all existing ones (unless keep_assignments, which adds them); none given leaves the existing ones untouched."""
     pro = project.data
     ds = project.design_settings()
     if rules == 'jlc':
@@ -164,7 +165,7 @@ def apply_project(project, rules, classes, assigns, patterns, layers=2, keep_ass
     out += [c for n, c in old.items() if n not in want]          # keep classes the user already had
     ns['classes'] = out
     ns.setdefault('meta', {'version': 5})
-    if not keep_assignments:
+    if (assigns or patterns) and not keep_assignments:
         project.clear_assignments(patterns=True)
     for net, cls in assigns.items():
         project.assign(net, cls, replace=True)   # KiCad 10's list form: {"VBUS": ["Power"]}
@@ -214,7 +215,8 @@ def main():
     ap.add_argument('--class', dest='classes', action='append', default=[])
     ap.add_argument('--assign', action='append', default=[]); ap.add_argument('--pattern', action='append', default=[])
     ap.add_argument('--keep-assignments', action='store_true',
-                    help='add to the assignments and patterns already in the project instead of replacing them')
+                    help='with --assign / --pattern: add to the assignments and patterns already in the project '
+                         'instead of replacing them (a run with neither leaves them untouched anyway)')
     ap.add_argument('--list', action='store_true')
     a = ap.parse_args()
     if a.list or not a.project:
@@ -240,23 +242,31 @@ def main():
     unknown = sorted(({c for c in assigns.values()} | {c for _, c in patterns}) - known)
     if unknown:
         sys.exit('net class %s is not defined: add --class %s:track=...,clearance=...' % (unknown, unknown[0]))
+    board = Board.load(pcb_path) if os.path.exists(pcb_path) else None     # parsed once: stackup, layers, nets
     if a.stackup:
         if a.stackup not in STACKUPS:
             sys.exit('unknown stackup %s; --list shows the table' % a.stackup)
-        apply_stackup(Board.load(pcb_path), a.stackup, a.finish).save()      # may refuse before anything is written
+        if board is None:
+            sys.exit('no board at %s: make it with new_board.py or KiCad first' % pcb_path)
+        apply_stackup(board, a.stackup, a.finish).save()      # may refuse before anything is written
         print('stackup %s (%.3f mm) written to %s' % (a.stackup, thickness(a.stackup), pcb_path))
-    layers = copper_count(a.stackup) if a.stackup else len(Board.load(pcb_path).copper_layers()) if os.path.exists(pcb_path) else 2
-    before = Project.load(pro_path)
+    layers = copper_count(a.stackup) if a.stackup else len(board.copper_layers()) if board is not None else 2
+    before = Project(copy.deepcopy(project.data), project.path)
     project = apply_project(project, a.rules, classes, assigns, patterns, layers, a.keep_assignments)
     project.save()                            # KiCad's JSON layout: sorted keys, 2-space indent, final newline
-    print('%s: rules %s (%d copper layers); classes %s; %d assignments, %d patterns%s' % (
-        pro_path, a.rules, layers, [c['name'] for c in project.netclasses()], len(assigns), len(patterns),
-        ' (existing ones kept)' if a.keep_assignments else ''))
+    given = assigns or patterns
+    print('%s: rules %s (%d copper layers); classes %s; %s' % (
+        pro_path, a.rules, layers, [c['name'] for c in project.netclasses()],
+        '%d assignments, %d patterns%s' % (len(assigns), len(patterns),
+                                           ' added (existing ones kept)' if a.keep_assignments else ' (replacing the existing set)')
+        if given else 'net class assignments and patterns untouched (no --assign / --pattern)'))
     gone = dropped(before, project)
     if gone:
-        print('dropped (not given on this run): %s' % ', '.join(gone))
-    if assigns or patterns:
-        nets = Board.load(pcb_path).nets() if os.path.exists(pcb_path) else None
+        print('WARNING: dropped %d existing assignment(s) / pattern(s) not given on this run (a run with --assign or '
+              '--pattern replaces the whole set; --keep-assignments adds instead): %s' % (len(gone), ', '.join(gone)),
+              file=sys.stderr)
+    if given:
+        nets = board.nets() if board is not None else None
         if nets is None:
             warn = ['no board at %s: assigned net names not checked' % pcb_path]
         elif not nets:

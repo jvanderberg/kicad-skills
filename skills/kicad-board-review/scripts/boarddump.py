@@ -81,7 +81,8 @@ _VT = {getattr(pcbnew, 'VIATYPE_' + k): k.lower() for k in ('THROUGH', 'BLIND', 
 for t in b.GetTracks():
     if t.GetClass() == 'PCB_VIA':
         D['vias'].append(dict(x=mm(t.GetPosition().x), y=mm(t.GetPosition().y), net=t.GetNetname(), size=mm(t.GetWidth(pcbnew.F_Cu)),
-                              drill=mm(t.GetDrillValue()), type=int(t.GetViaType()), type_name=_VT.get(t.GetViaType(), 'unknown')))
+                              drill=mm(t.GetDrillValue()), type=int(t.GetViaType()), type_name=_VT.get(t.GetViaType(), 'unknown'),
+                              layers=[LN[t.TopLayer()], LN[t.BottomLayer()]]))   # the span: blind / buried vias join only these
     elif t.GetClass() == 'PCB_ARC':
         D['tracks'].append(dict(a=(mm(t.GetStart().x), mm(t.GetStart().y)), m=(mm(t.GetMid().x), mm(t.GetMid().y)), b=(mm(t.GetEnd().x), mm(t.GetEnd().y)),
                                 w=mm(t.GetWidth()), layer=pcbnew.BOARD.GetStandardLayerName(t.GetLayer()), net=t.GetNetname(), arc=True))

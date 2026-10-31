@@ -1,7 +1,7 @@
 """sourcing.py, part_gate.py, bom_check.py and derived_check.py against a fake jlcimport-cli (no network, no KiCad):
     python3 -m pytest -q tests          (LCSC_LIVE=1 also runs the real lookups in test_live_regions)
 The fake CLI fails any search without --region, so every test also proves no lookup relies on the CLI's own default."""
-import json, os, subprocess, sys, tempfile, textwrap
+import json, os, subprocess, sys, textwrap
 import pytest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -195,30 +195,144 @@ def test_derived_check_deps_coverage_and_incomplete(env):
     assert any('Q2 is not on the schematic any more' in p for p in probs)
 
 
-def test_ti_device_page_for_order_codes():
-    """fixed-voltage order codes carry the voltage mid-name (TLV755+18+P+DRVR -> page TLV755P), SN74 logic is TI;
-    the pages are what ti.com answered on 2026-10-30 (anything else 404)"""
-    pages = {'TLV755P', 'TLV767', 'SN74LV1T04', 'TLV700', 'TPS7A20', 'TLV1117LV', 'TPS61089', 'TPS61088-Q1'}
-    life = lambda c: 'ACTIVE' if c in pages else 'SUSPECT (product page HTTP 404)'
-    orig = part_gate.ti_lifecycle
-    part_gate.ti_lifecycle = life
-    try:
-        got = {n: part_gate.ti_resolve(n) for n in ('TLV75518PDRVR', 'TLV75518PDBVR', 'TLV76718DRVR', 'SN74LV1T04DBVR',
-                                                     'TLV70033DDCR', 'TPS7A2033PDBVR', 'TLV1117LV33DCYR', 'TPS61089RNRR',
-                                                     'TPS61088QRHLRQ1', 'TPS99999RGTR')}
-    finally:
-        part_gate.ti_lifecycle = orig
-    assert got['TLV75518PDRVR'] == got['TLV75518PDBVR'] == ('ACTIVE', 'TLV755P')
-    assert got['TLV76718DRVR'] == ('ACTIVE', 'TLV767') and got['SN74LV1T04DBVR'] == ('ACTIVE', 'SN74LV1T04')
-    assert got['TLV70033DDCR'][1] == 'TLV700' and got['TPS7A2033PDBVR'][1] == 'TPS7A20' and got['TLV1117LV33DCYR'][1] == 'TLV1117LV'
-    assert got['TPS61089RNRR'][1] == 'TPS61089' and got['TPS61088QRHLRQ1'][1] == 'TPS61088-Q1'
+# the product pages ti.com answered on 2026-10-30 (anything else 404); TLV70033 and TLV1117LV33 are ti.com's own
+# redirects to TLV700 and TLV1117LV, so those order codes resolve without taking a voltage code out
+TI_PAGES = {'TLV755P', 'TLV767', 'SN74LV1T04', 'TLV700', 'TLV70033', 'TPS7A20', 'TLV1117LV', 'TLV1117LV33', 'TPS61089',
+            'TPS61088-Q1', 'TPS62840', 'TPS54360', 'LMS3655-Q1', 'LMG3410R050'}
+
+
+@pytest.fixture()
+def ti_pages(monkeypatch):
+    """ti_lifecycle answered from a set of pages and ti_orderable_confirmed from a set of (page, order code) pairs
+    (empty: every part-details request is a 404); every request is recorded"""
+    pages, details, asked = set(TI_PAGES), set(), []
+
+    def life(c):
+        asked.append(c)
+        return 'ACTIVE' if c in pages else 'SUSPECT (product page HTTP 404)'
+
+    def confirmed(page, order):
+        asked.append('%s/part-details/%s' % (page, order))
+        return (page, order) in details
+    monkeypatch.setattr(part_gate, 'ti_lifecycle', life)
+    monkeypatch.setattr(part_gate, 'ti_orderable_confirmed', confirmed)
+    return pages, asked, details
+
+
+def test_ti_device_page_for_order_codes(ti_pages):
+    """fixed-voltage order codes carry the voltage mid-name (TLV755+18+P+DRVR -> page TLV755P), SN74 logic is TI"""
+    got = {n: part_gate.ti_resolve(n) for n in ('TLV75518PDRVR', 'TLV75518PDBVR', 'TLV76718DRVR', 'SN74LV1T04DBVR',
+                                                 'TLV70033DDCR', 'TPS7A2033PDBVR', 'TLV1117LV33DCYR', 'TPS61089RNRR',
+                                                 'TPS61088QRHLRQ1', 'TPS99999RGTR')}
+    assert got['TLV75518PDRVR'] == got['TLV75518PDBVR'] == ('ACTIVE', 'TLV755P', '18', False)
+    assert got['TLV76718DRVR'] == ('ACTIVE', 'TLV767', '18', False)
+    assert got['SN74LV1T04DBVR'] == ('ACTIVE', 'SN74LV1T04', None, False)
+    assert got['TPS7A2033PDBVR'] == ('ACTIVE', 'TPS7A20', '33', False)
+    assert got['TLV70033DDCR'] == ('ACTIVE', 'TLV70033', None, False)
+    assert got['TLV1117LV33DCYR'] == ('ACTIVE', 'TLV1117LV33', None, False)
+    assert got['TPS61089RNRR'] == ('ACTIVE', 'TPS61089', None, False) and got['TPS61088QRHLRQ1'][1] == 'TPS61088-Q1'
     assert got['TPS99999RGTR'][0].startswith('SUSPECT')
     # the plain trims are still tried before a voltage code is taken out
-    c = part_gate.ti_candidates('TLV75518PDRVR')
+    c = [n for n, _ in part_gate.ti_candidates('TLV75518PDRVR')]
     assert c.index('TLV75518') < c.index('TLV755PDRVR') and 'TLV7PDRVR' not in c
     assert all(part_gate.is_ti(n) for n in ('SN74LV1T04DBVR', 'SN65HVD230DR', 'TXS0108EPWR', 'TXB0104RUTR', 'ISO7721DR',
                                             'ISOW7841DWER', 'OPA333AIDBVR', 'REF3033AIDBZR', 'TMP117AIDRVR'))
     assert not any(part_gate.is_ti(n) for n in ('ISO1H811G', 'REF02', 'REF195', 'TMP36', 'CL21A106KAYNNNE', 'XC6206P332MR'))
+
+
+def test_ti_candidates_short_and_capped():
+    """LMS/LMG names: the prefix is LMS/LMG, not LM, so LMS3655's first digit group is not cut to LMS36; ordinary trims
+    only drop letters; no part asks ti.com more than MAX_TI_REQUESTS times"""
+    names = lambda n: [c for c, _ in part_gate.ti_candidates(n)]
+    lms, lmg = names('LMS3655AQRNLRQ1'), names('LMG3410R050RWHR')
+    assert not any(c.startswith('LMS36A') or c in ('LMS36', 'LMS36-Q1') for c in lms), lms
+    assert lmg == ['LMG3410R050RWHR', 'LMG3410R050RWH', 'LMG3410R050RW', 'LMG3410R050R', 'LMG3410R050'], lmg
+    assert names('TPS61089RNRR') == ['TPS61089RNRR', 'TPS61089RNR', 'TPS61089RN', 'TPS61089R', 'TPS61089']
+    for n in ('TPS62840DLCR', 'TPS54360DDAR', 'TPS61089RNRR'):    # 40, 60, 89 end device numbers, not voltages
+        assert part_gate._without_voltage(n) == [] and all(code is None for _, code in part_gate.ti_candidates(n)), n
+    for n in ('LMS3655AQRNLRQ1', 'LMG3410R050RWHR', 'TLV75518PDRVR', 'TPS7A2033PDBVR', 'TLV1117LV33DCYR',
+              'SN74LVC1G04DBVR', 'TPS61088QRHLRQ1', 'TPS61230ADRRR'):
+        c = names(n)
+        assert len(c) == len(set(c)) <= part_gate.MAX_TI_REQUESTS - 1, (n, c)    # one kept for part-details
+
+
+def test_ti_device_number_not_cut_to_another_device(ti_pages):
+    """a discontinued TPS62840 (its own page gone) is SUSPECT, not "ACTIVE (as TPS628)": the 40 of a five-digit device
+    number is not a voltage code, even when a page by the shorter name exists"""
+    pages, asked, _ = ti_pages
+    pages -= {'TPS62840', 'TPS54360'}
+    pages |= {'TPS628', 'TPS543'}
+    for n in ('TPS62840DLCR', 'TPS54360DDAR'):
+        st, page, code, ok = part_gate.ti_resolve(n)
+        assert st.startswith('SUSPECT') and page == n and code is None and not ok, (n, st, page)
+        assert part_gate.gate_flag(part_gate.lifecycle_text(n, st, page, code, ok)) == 'LIFECYCLE'
+    assert not {'TPS628', 'TPS543'} & set(asked), asked
+
+
+def test_voltage_stripped_page_is_unconfirmed_and_fails_the_gate(env, ti_pages, monkeypatch, capsys):
+    """TLV75518PDRVR's page is TLV755P, found only by taking '18' out, and its part-details page is not found (the
+    fixture's default): ACTIVE?, not ACTIVE, and part_gate exits 1 even with stock; a page reached by trimming letters stays plain ACTIVE and passes"""
+    st = part_gate.ti_resolve('TLV75518PDRVR')
+    life = part_gate.lifecycle_text('TLV75518PDRVR', *st)
+    assert life == "ACTIVE? (as TLV755P, found only by dropping '18' as a voltage code: confirm the device)", life
+    assert part_gate.gate_flag(life) == 'LIFECYCLE UNCONFIRMED'
+    plain = part_gate.lifecycle_text('TPS61089RNRR', *part_gate.ti_resolve('TPS61089RNRR'))
+    assert plain == 'ACTIVE (as TPS61089)' and part_gate.gate_flag(plain) is None
+    data = json.loads(json.dumps(STOCK))
+    data['global'].update({'C2861882': ('TLV75518PDRVR', '50000', '0.1'), 'C843404': ('TPS61089RNRR', '50000', '0.9')})
+    (env['tmp'] / 'data.json').write_text(json.dumps(data))
+    write_sourcing(env)
+
+    def gate(name):          # in-process, so ti_lifecycle stays the fake one
+        monkeypatch.setattr(sys, 'argv', ['part_gate.py', name, '--project', str(env['proj']), '--cli', env['cli']])
+        with pytest.raises(SystemExit) as e:
+            part_gate.main()
+        return e.value.code, capsys.readouterr().out
+    rc, out = gate('TLV75518PDRVR')
+    assert rc == 1 and 'ACTIVE? (as TLV755P' in out and '<-- LIFECYCLE UNCONFIRMED' in out, out
+    rc, out = gate('TPS61089RNRR')
+    assert rc == 0 and 'ACTIVE (as TPS61089)' in out and '<--' not in out, out
+
+
+def test_voltage_stripped_page_confirmed_by_part_details(env, ti_pages, monkeypatch, capsys):
+    """ti.com/product/<page>/part-details/<order code> answering 200 confirms a page found by dropping a voltage code:
+    plain ACTIVE naming both, and the gate passes; a 404 keeps ACTIVE?. The request is one of MAX_TI_REQUESTS."""
+    _, asked, details = ti_pages
+    details |= {('TLV755P', 'TLV75518PDRVR'), ('TPS7A20', 'TPS7A2033PDBVR')}     # TLV767/TLV76718DRVR: 404 here
+    got = {}
+    for n in ('TLV75518PDRVR', 'TPS7A2033PDBVR', 'TLV76718DRVR', 'TPS61089RNRR'):
+        del asked[:]
+        got[n] = part_gate.ti_resolve(n)
+        assert len(asked) <= part_gate.MAX_TI_REQUESTS, (n, asked)
+        if got[n][2]:
+            assert asked[-1] == '%s/part-details/%s' % (got[n][1], n), asked
+        else:
+            assert not any('part-details' in a for a in asked), asked     # only asked after dropping a code
+    assert got['TLV75518PDRVR'] == ('ACTIVE', 'TLV755P', '18', True)
+    assert got['TPS7A2033PDBVR'] == ('ACTIVE', 'TPS7A20', '33', True)            # its page is request 12, the check 13
+    assert got['TLV76718DRVR'] == ('ACTIVE', 'TLV767', '18', False)
+    life = part_gate.lifecycle_text('TLV75518PDRVR', *got['TLV75518PDRVR'])
+    assert life == 'ACTIVE (as TLV755P; ti.com lists TLV75518PDRVR under it)' and part_gate.gate_flag(life) is None, life
+    life = part_gate.lifecycle_text('TLV76718DRVR', *got['TLV76718DRVR'])
+    assert life.startswith('ACTIVE? (as TLV767') and part_gate.gate_flag(life) == 'LIFECYCLE UNCONFIRMED', life
+    data = json.loads(json.dumps(STOCK)); data['global']['C2868686'] = ('TLV75518PDRVR', '50000', '0.42')
+    (env['tmp'] / 'data.json').write_text(json.dumps(data))
+    write_sourcing(env)
+    monkeypatch.setattr(sys, 'argv', ['part_gate.py', 'TLV75518PDRVR', '--project', str(env['proj']), '--cli', env['cli']])
+    with pytest.raises(SystemExit) as e:
+        part_gate.main()
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and 'ACTIVE (as TLV755P; ti.com lists TLV75518PDRVR under it)' in out and '<--' not in out, out
+
+
+def test_lookup_fetches_only_a_few_rows(env):
+    """an exact C-number lookup asks the catalogue for a few rows (LOOKUP_FETCH), not the 30 a ranked search fetches"""
+    write_sourcing(env)
+    ctx = sourcing.resolve(str(env['proj']))
+    assert sourcing.lookup('C316138', 'global', env['cli'])['part'] == 'DMN1004UFV-7'
+    sourcing.check_part('C3289423', ctx, 3, env['cli'])           # short in global: both regions looked up
+    ns = [c[c.index('-n') + 1] for c in calls(env)]
+    assert len(ns) == 3 and all(int(n) <= 5 for n in ns), ns
 
 
 MPN_DATA = {'global': {  # the catalogue's order for "CL21A106KAYNNNE" on 2026-10-30: placeholder, cross-reference, Samsung

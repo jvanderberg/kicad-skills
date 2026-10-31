@@ -3,7 +3,10 @@
 An EasyEDA footprint has no courtyard, so its silkscreen outline is its placement boundary. DRC's silk_overlap sees
 only crossing lines: a part sitting wholly inside another's outline passes it. board_lint reports any overlap of the
 outline-and-pads rectangles; a pin-1 dot outside the outline does not count, and a part whose outline was removed
-(placed tighter on purpose) is checked by its pads and listed as spaced by rule of thumb."""
+(placed tighter on purpose) is checked by its body and pads and listed as spaced by rule of thumb, even when
+strip_outline.py kept its cathode bar (known by the property strip_outline writes). A part without an outline is still
+checked by its F.Fab body (BODY OVERLAP), and courtyards are read per footprint, not per reference (two REF**).
+strip_outline.py refuses to overwrite its input (case-different or linked --to) and same-named inputs."""
 import os, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
@@ -16,14 +19,25 @@ KICAD_PYTHON = next((c for c in (os.environ.get('KICAD_PYTHON', ''),
                      if c and os.path.exists(c)), None)
 
 
-def easyeda(d, name, half_w, half_h, pads, outline=True, dot=None):
-    """a footprint as JLCImport writes one: pads, an F.SilkS outline (no courtyard), optionally a pin-1 dot"""
+def _box(fp, half_w, half_h, layer):
+    c = [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)]
+    for (x0, y0), (x1, y1) in zip(c, c[1:] + c[:1]):
+        fp.append(Node('fp_line', Node('start', x0, y0), Node('end', x1, y1),
+                       Node('stroke', Node('width', 0.15 if layer == 'F.SilkS' else 0.1), Node('type', Sym('solid'))),
+                       Node('layer', layer)))
+
+
+def easyeda(d, name, half_w, half_h, pads, outline=True, dot=None, fab=None, bar=None):
+    """a footprint as JLCImport writes one: pads, an F.SilkS outline (no courtyard), optionally a pin-1 dot, an F.Fab
+    body (half width, half height) and a cathode bar inside the outline (x, half length)"""
     fp = new_footprint(name)
     if outline:
-        c = [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)]
-        for (x0, y0), (x1, y1) in zip(c, c[1:] + c[:1]):
-            fp.append(Node('fp_line', Node('start', x0, y0), Node('end', x1, y1),
-                           Node('stroke', Node('width', 0.15), Node('type', Sym('solid'))), Node('layer', 'F.SilkS')))
+        _box(fp, half_w, half_h, 'F.SilkS')
+    if fab:
+        _box(fp, fab[0], fab[1], 'F.Fab')
+    if bar:
+        fp.append(Node('fp_line', Node('start', bar[0], -bar[1]), Node('end', bar[0], bar[1]),
+                       Node('stroke', Node('width', 0.15), Node('type', Sym('solid'))), Node('layer', 'F.SilkS')))
     if dot:
         fp.append(Node('fp_circle', Node('center', *dot), Node('end', dot[0] + 0.15, dot[1]),
                        Node('stroke', Node('width', 0.15), Node('type', Sym('solid'))), Node('fill', Sym('solid')),
@@ -34,6 +48,16 @@ def easyeda(d, name, half_w, half_h, pads, outline=True, dot=None):
     p = os.path.join(d, name + '.kicad_mod')
     save(fp, p)
     return p
+
+
+def lint(pcb):
+    r = subprocess.run([KICAD_PYTHON, os.path.join(HERE, 'board_lint.py'), pcb, '--no-models', '--no-silk', '--no-paste',
+                        '--no-via-in-pad', '--no-hardware'], capture_output=True, text=True)
+    return r, r.stdout.splitlines()
+
+
+def pairs_of(lines, kind):
+    return {tuple(l.split()[2:5:2]) for l in lines if l.startswith(kind)}
 
 
 def test_silk_outline_overlaps():
@@ -88,6 +112,107 @@ def test_strip_outline_keeps_marks():
     assert len(q.nodes('pad')) == 2
     r = subprocess.run([sys.executable, os.path.join(HERE, 'strip_outline.py'), p, '--to', src], capture_output=True, text=True)
     assert r.returncode != 0 and 'separate library' in r.stderr, r.stdout + r.stderr
+    assert '(property "Silk outline" "removed by strip_outline.py"' in open(os.path.join(out, 'DIODE.kicad_mod')).read()
+
+
+def _strip(*args):
+    return subprocess.run([sys.executable, os.path.join(HERE, 'strip_outline.py')] + list(args), capture_output=True, text=True)
+
+
+def test_strip_outline_never_overwrites_its_input():
+    """--to naming the source library another way (other case on a case-insensitive disk, a link) is refused and the
+    original is left as it was"""
+    d = tempfile.mkdtemp()
+    src = os.path.join(d, 'JLCImport.pretty'); os.makedirs(src)
+    p = easyeda(src, 'CHIP', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])
+    before = open(p).read()
+    other = os.path.join(d, 'jlcimport.pretty')
+    insensitive = os.path.exists(other)
+    r = _strip(p, '--to', other)
+    if insensitive:                                       # macOS / Windows default: the same folder
+        assert r.returncode != 0 and 'separate library' in r.stderr, r.stdout + r.stderr
+    else:
+        assert r.returncode == 0, r.stdout + r.stderr
+    assert open(p).read() == before
+    link = os.path.join(d, 'Link.pretty'); os.symlink(src, link)
+    r = _strip(p, '--to', link)
+    assert r.returncode != 0 and 'separate library' in r.stderr, r.stdout + r.stderr
+    assert open(p).read() == before
+
+
+def test_strip_outline_refuses_same_named_inputs():
+    """two inputs with one file name from different libraries would write the same output: refused, nothing written"""
+    d = tempfile.mkdtemp()
+    a, b = os.path.join(d, 'A.pretty'), os.path.join(d, 'B.pretty'); os.makedirs(a); os.makedirs(b)
+    pa = easyeda(a, 'CHIP', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])
+    pb = easyeda(b, 'CHIP', 2.0, 0.5, [(-1.5, 0, 0.5, 0.5), (1.5, 0, 0.5, 0.5)])
+    out = os.path.join(d, 'NoOutline.pretty')
+    r = _strip(pa, pb, '--to', out)
+    assert r.returncode != 0 and 'both be written' in r.stderr, r.stdout + r.stderr
+    assert not os.path.exists(os.path.join(out, 'CHIP.kicad_mod'))
+    r = _strip(pa, pa, '--to', out)                       # the same file twice is one copy
+    assert r.returncode == 0 and r.stdout.count('wrote') == 1, r.stdout + r.stderr
+
+
+def test_duplicate_references():
+    """two footprints with one reference (REF**): each is checked by its own courtyard / outline. Reading courtyards by
+    reference gave the first REF** the second's courtyard (in board coordinates, far away), hiding its overlap"""
+    if not (FPLIB and KICAD_PYTHON):
+        print('  (skipped: no KiCad python / footprint library)'); return
+    d = tempfile.mkdtemp()
+    chip = easyeda(d, 'CHIP', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)])
+    r0603 = os.path.join(FPLIB, 'Resistor_SMD.pretty', 'R_0603_1608Metric.kicad_mod')
+    b = Board.new(copper_layers=2)
+    b.add_footprint(chip, 'T:CHIP', 'REF**', '1u', (100, 100))                              # outline, no courtyard
+    b.add_footprint(r0603, 'Resistor_SMD:R_0603_1608Metric', 'REF**', '1k', (130, 100))     # courtyard, far away
+    b.add_footprint(chip, 'T:CHIP', 'C1', '1u', (100.8, 100))                               # on the first REF**
+    pcb = os.path.join(d, 'dup.kicad_pcb'); b.save(pcb)
+    r, lines = lint(pcb)
+    assert pairs_of(lines, 'SILK OUTLINE') == {('REF**', 'C1')}, r.stdout + r.stderr
+    assert r.returncode == 1, r.stdout
+
+
+def test_stripped_part_keeps_inner_symbol_but_is_rule_of_thumb():
+    """a strip_outline.py copy that kept its cathode bar is listed as spaced by rule of thumb, and its area is its body
+    and pads, not the bar"""
+    if not (FPLIB and KICAD_PYTHON):
+        print('  (skipped: no KiCad python / footprint library)'); return
+    d = tempfile.mkdtemp()
+    src = os.path.join(d, 'JLCImport.pretty'); os.makedirs(src)
+    p = easyeda(src, 'DIODE', 1.8, 1.2, [(-1.2, 0, 0.6, 0.8), (1.2, 0, 0.6, 0.8)], bar=(-0.3, 1.0))
+    out = os.path.join(d, 'NoOutline.pretty')
+    r = _strip(p, '--to', out)
+    assert r.returncode == 0 and '4 outline shape(s) removed, 1 mark(s)' in r.stdout, r.stdout + r.stderr
+    bare = easyeda(d, 'CHIP_BARE', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)], outline=False)
+    b = Board.new(copper_layers=2)
+    b.add_footprint(os.path.join(out, 'DIODE.kicad_mod'), 'NoOutline:DIODE', 'D1', 'D', (100, 100))
+    b.add_footprint(bare, 'T:CHIP_BARE', 'C1', '1u', (99.7, 98.8))   # over the bar's end, clear of D1's pads
+    pcb = os.path.join(d, 's.kicad_pcb'); b.save(pcb)
+    r, lines = lint(pcb)
+    assert not any(l.startswith(('SILK OUTLINE', 'BODY OVERLAP')) for l in lines), r.stdout + r.stderr
+    rule = [l for l in lines if l.startswith('NOTE') and 'no silk outline' in l]
+    assert rule and 'D1' in rule[0].split(': ')[-1].split(), r.stdout
+    assert not any('silk outline checked' in l for l in lines), r.stdout
+    assert r.returncode == 0, r.stdout
+
+
+def test_bare_body_overhang():
+    """a footprint with neither courtyard nor outline is checked by its F.Fab body too: a custom QFN whose body overhangs
+    its pads onto a neighbour's pads is reported"""
+    if not (FPLIB and KICAD_PYTHON):
+        print('  (skipped: no KiCad python / footprint library)'); return
+    d = tempfile.mkdtemp()
+    qfn = easyeda(d, 'QFN_CUSTOM', 0, 0, [(x, y, 0.5, 0.5) for x in (-1.0, 1.0) for y in (-1.0, 1.0)], outline=False,
+                  fab=(2.5, 2.5))                         # pads within 1.25 mm, body 2.5 mm each way
+    bare = easyeda(d, 'CHIP_BARE', 1.0, 0.5, [(-0.5, 0, 0.5, 0.5), (0.5, 0, 0.5, 0.5)], outline=False)
+    b = Board.new(copper_layers=2)
+    b.add_footprint(qfn, 'T:QFN_CUSTOM', 'U1', 'X', (100, 100))
+    b.add_footprint(bare, 'T:CHIP_BARE', 'C1', '1u', (102.0, 100))   # pads under U1's body, clear of its pads
+    pcb = os.path.join(d, 'q.kicad_pcb'); b.save(pcb)
+    r, lines = lint(pcb)
+    assert pairs_of(lines, 'BODY OVERLAP') == {('U1', 'C1')}, r.stdout + r.stderr
+    assert any(l.startswith('NOTE') and 'no silk outline' in l and l.endswith(': U1 C1') for l in lines), r.stdout
+    assert r.returncode == 1, r.stdout
 
 
 if __name__ == '__main__':
