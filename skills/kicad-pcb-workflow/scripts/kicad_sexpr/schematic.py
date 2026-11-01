@@ -532,8 +532,10 @@ class Schematic:
         sheet blocks: N entries, each its own reference), in page order; ``ref`` is the Reference property, which KiCad
         sets to the first instance's. Default: this sheet's ``instance_path`` with ``ref``.
 
-        The symbol's uuid is stable (previous version's id by reference, or by any (instance path, reference) it had
-        there; else derived from ``key``, default ``symbol/REF/UNIT``); ``uuid`` sets it explicitly."""
+        The symbol's uuid is stable: the previous version's id by reference, else derived from ``key`` (default
+        ``symbol/REF/UNIT``); ``uuid`` sets it explicitly. With ``instances``, the id ``key`` derives wins when the
+        previous version has it, then the id most of its (instance path, reference) pairs had there (not for '#'
+        symbols, whose references are renumbered freely)."""
         if lib is not None:
             self.embed_symbol(lib_id, lib)
         libsym = self.lib_symbol(lib_id)
@@ -582,20 +584,33 @@ class Schematic:
             if pin.number not in nums:
                 nums.append(pin.number)
         insts = list(instances) if instances else [(self.instance_path, ref)]
-        # a previous version's id found by one of the symbol's (instance path, reference) pairs wins
-        def free(k: str) -> bool:
-            old = self.uuids.reuse.get(k)
-            return old is not None and old not in self.uuids.used
-        ikey = next((instance_key(p, r, unit) for p, r in insts if free(instance_key(p, r, unit))), None)
+        # On a sheet used several times, in this order: (1) the id the symbol's own key derives, when the previous
+        # version has it (the symbol was made by this key before: renumbering instances does not move it); (2) the id
+        # most of its (instance path, reference) pairs had there (a symbol whose id came from elsewhere, e.g. the
+        # GUI: the instances that kept their references outvote one that changed); (3) the key as for any item.
+        # Power and other '#' symbols skip (2): their references are renumbered freely, their key is their position.
+        ikey = None
+        if instances and not uuid:
+            own = self.uuids.derived(key) if key else None
+            if self.uuids.in_previous(own):
+                uuid = own
+            elif not ref.startswith('#'):
+                votes: Dict[str, List[str]] = {}
+                for p, r in insts:
+                    k = instance_key(p, r, unit)
+                    if self.uuids.in_previous(self.uuids.reuse.get(k)):
+                        votes.setdefault(self.uuids.reuse[k], []).append(k)
+                if votes:
+                    best = max(votes.values(), key=len)       # ties: the first instance in page order
+                    ikey = best[0]
+                    uuid = self.uuids.reuse[ikey]
         if uuid:
             n.need('uuid')[1] = self.uuids.take(uuid)
-        elif ikey and instances:
-            n.need('uuid')[1] = self.uuids.new(ikey)
         else:
             self._fill_uuid(n, key)
         skey = key or sch_item_key(n)
         for num in nums:
-            pk = '%s/pin/%s' % (ikey, num) if ikey and instances and '%s/pin/%s' % (ikey, num) in self.uuids.reuse \
+            pk = '%s/pin/%s' % (ikey, num) if ikey and '%s/pin/%s' % (ikey, num) in self.uuids.reuse \
                 else '%s/pin/%s' % (skey, num)
             n.append(Node('pin', num, Node('uuid', self.uuids.new(pk))))
         n.append(Node('instances', Node('project', self.project,

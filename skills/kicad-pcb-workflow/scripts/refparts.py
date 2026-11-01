@@ -25,8 +25,10 @@ reference-parts.json (found by projfiles.py's convention when --spec is not give
 
 Hierarchical designs: an entry for one instance of an IC on a sheet used several times (U101 on /ch1/) is checked on
 every instance of it (U201, U301, ...: the same symbol of the same sheet file), each against its own parts and board
-placement; net names local to the instance ("/ch1/VSENSE") are translated to each one's ("/ch2/VSENSE"). An instance
-with an entry of its own keeps it.
+placement. A net endpoint is carried over through the IC's own pin on it: "net:/BANK1" on U101's VCC pin is U201's
+VCC pin's net, whatever the parent named that instance's rail (/BANK2); a net the IC has no pin on is translated by
+sheet path ("/ch1/VSENSE" -> "/ch2/VSENSE") or kept (a global net). An instance with an entry of its own keeps it.
+"pin:2,5" names several pins of the IC on one net.
 """
 import argparse, json, math, os, re, sys
 
@@ -59,22 +61,31 @@ def load_netlist(root):
     return comps, pins
 
 
-def expand_instances(spec, sib):
+def expand_instances(spec, sib, pins):
     """the spec with each IC's entry repeated for the other instances of its sheet (same symbol uuid and sheet file)
-    that have none of their own, right after it"""
+    that have none of their own, right after it. A net endpoint is carried over through the IC's own pins on it
+    ("net:/BANK1" on U101's VCC pin becomes U201's VCC pin, whatever the parent named that instance's rail); a net
+    no pin of the IC is on is translated by sheet path (/ch1/X -> /ch2/X), or kept (a global net)."""
     out = {}
     for ic, blk in spec.items():
         out.setdefault(ic, blk)
         if ic not in sib or not sib[ic][1]:
             continue
         f, uuid, sheet = sib[ic]
+        own = pins.get(ic, [])
         for ref in sorted(sib, key=lambda r: [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', r)]):
             f2, u2, sheet2 = sib[ref]
             if ref == ic or (f2, u2) != (f, uuid) or ref in spec or ref in out:
                 continue
             def tr(ep):
+                if ep.startswith('pin:') or (not ep.startswith('net:') and any(fn.upper() == ep.upper() for _, fn, _ in own)):
+                    return ep                                   # a pin of the IC: the same pin in every instance
+                n = ep[4:] if ep.startswith('net:') else ep
+                on = sorted({p for p, _, net in own if net == n}, key=lambda t: [int(x) if x.isdigit() else x
+                                                                                 for x in re.split(r'(\d+)', t)])
+                if on:
+                    return 'pin:' + ','.join(on)
                 pre = 'net:' if ep.startswith('net:') else ''
-                n = ep[len(pre):]
                 return pre + sheet2 + n[len(sheet):] if sheet != '/' and n.startswith(sheet) else ep
             b = json.loads(json.dumps(blk))
             for e in b.get('parts', []):
@@ -86,9 +97,9 @@ def expand_instances(spec, sib):
 
 def endpoint(ep, ic, pins, nets):
     """-> (set of nets, set of IC pin numbers on it)"""
-    if ep.startswith('pin:'):
-        num = ep[4:]
-        return {n for p, f, n in pins.get(ic, []) if p == num}, {num}
+    if ep.startswith('pin:'):                             # one pin, or several on one net: "pin:2,5"
+        nums = set(ep[4:].split(','))
+        return {n for p, f, n in pins.get(ic, []) if p in nums}, nums
     if ep.startswith('net:'):
         n = ep[4:]
         return {n}, {p for p, f, nn in pins.get(ic, []) if nn == n}
@@ -185,7 +196,7 @@ def main():
     spec = json.load(open(sp))
     root = netlist_xml(a.netlist)
     comps, pins = load_netlist(root)
-    rows = check(expand_instances(spec, siblings(root)), comps, pins, board_pads(a.board))
+    rows = check(expand_instances(spec, siblings(root), pins), comps, pins, board_pads(a.board))
     out = ['| IC | Required (datasheet) | Where | Status |', '|---|---|---|---|']
     out += ['| %s | %s: %s | %s | %s |' % (r['ic'], r['role'], r['need'], r.get('where', ''), r['status']) for r in rows]
     bad = [r for r in rows if not r['status'].startswith('ok')]

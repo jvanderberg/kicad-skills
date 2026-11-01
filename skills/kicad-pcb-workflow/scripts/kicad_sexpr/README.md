@@ -150,9 +150,12 @@ Generated files are deterministic. Every builder gives its item a uuid from a st
 `symbol/R1/1` (power symbols by lib id and position, as their `#PWR` numbers are renumbered freely),
 `segment/<net>/<layer>/<ends>`, `via/<net>/<at>`, `zone/<net>/<layers>/name:<name>`, `wire/<ends>`, `label/<text>/<at>`,
 `sheet/<name>` (a sheet block, by its sheet name). A sub-sheet's ids are seeded by its file name
-(`Schematic.new(..., root=False, file=...)`), so one file used N times has one set; a symbol there is also found in a
-previous version by any `(instance path, reference)` it had (`symbol@<path>:<ref>/<unit>`), whatever its Reference
-property says.
+(`Schematic.new(..., root=False, file=...)`), so one file used N times has one set. A symbol placed with
+`instances=` keeps, in this order: the id its own `key` derives, when the previous version has it (renumbering one
+instance moves no id, so no other instance's footprint path changes); else the id most of its `(instance path,
+reference)` pairs had there (`symbol@<path>:<ref>/<unit>`: an id that came from elsewhere, the instances that kept
+their references outvoting one that changed). `#` symbols skip the vote: their references are renumbered freely and
+their key is their position.
 
 1. With a previous version of the file, an item whose key is found there keeps that item's uuid:
    `Board.new(previous='old.kicad_pcb')`, `Schematic.new(..., previous='old.kicad_sch')`, or `reuse_ids(...)` on any

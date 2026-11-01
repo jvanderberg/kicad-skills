@@ -940,3 +940,23 @@ its own to prove the round trip).
 
 Test runs: wf 130 passed, 2 skipped (was 118 / 2; kicad_sexpr runner 55 passed, 2 skipped); rev 31 passed, 2 skipped;
 ps 29 passed, 1 skipped (was 28 / 1); psu 4 passed.
+
+## Adversarial review (PR #12) and its fixes
+
+Every fix has a test that fails on the reviewed head (88e7cee) and passes now; the reviewer's own repros
+(`swap.py`, `pwrchurn.py`, `edge3.py`, the 16-instance `nc16` design) were re-run against the branch.
+
+| Finding | Fix | Verified |
+|---|---|---|
+| 1. A child file named like the root or another child except for letter case overwrote it (case-insensitive macOS); block names differing by case, padded names accepted | file names compared case-folded, refused before anything is written; block names unique ignoring case, no leading/trailing spaces (KiCad trims them), also in `sub()` file names; references unique ignoring case (KiCad's board checks) | `test_names_differing_only_by_case_or_padded_are_refused`, `test_duplicate_references_are_refused`; edge3.py: both cases REFUSED |
+| 2. refparts copied a net endpoint unchanged to every instance: on a rail the parent names per instance (/BANK1), U201 matched bank 1's C101 | a net endpoint is carried over through the IC's own pins on it (`pin:2,5`), so each instance resolves its own rail; sheet-path translation only for nets the IC has no pin on | `test_refparts_and_nc_audit_on_a_per_instance_rail`; nc16: U501 -> C501, U901 -> bank 3, U1301 -> bank 4 |
+| 3. nc_audit listed a strap to a per-instance rail once per bank | grouped on the symbol pin and the net as drawn in the instance (the instance's own symbol pins on it), whatever the net is called; the row lists every instance's net name | same test; nc16: `~{SRCLR}` one row for 16 instances on 4 banks |
+| 4. Adding one power symbol reshuffled every power-symbol uuid in the sub-sheets | `#` symbols never take an id by `(instance path, reference)`: their key is their position | `test_adding_a_power_symbol_keeps_the_other_power_symbols_ids`; pwrchurn.py: 0 changed |
+| 5. Renumbering one instance swapped the shared symbols' uuids, changing every instance's footprint paths | the id the local key derives wins when the previous file has it; otherwise a vote of the instances (a GUI-made id stays with the symbol most instances agree on) | `test_renumbering_one_instance_keeps_every_other_instances_links` (derived and foreign ids); swap.py: no uuid moved |
+| 6, 7. `/` and bus syntax in hierarchical labels; hierarchical labels on the root | refused (`hlabel()`; root at `write()`, flat or hierarchical); overbar markup `~{EN}` and `D[0]` still fine | `test_hierarchical_label_names_and_places_are_checked` |
+| 8. Renaming a block gives it a new uuid | documented (schgen `sheet()`, new-design.md 3a) | doc |
+| 9. Doc examples not runnable (non-orthogonal wire, undefined parts); "sheet number x 100" | both examples complete and wired with labels; wording: the offset is yours, not the page number | `test_documented_examples_run` executes both; the new-design.md one: ERC 0 errors |
+| 12. Conflict with main | rebased onto c16f0b8 (PR #11) | suites below |
+
+Test runs after the fixes, on main c16f0b8: wf 136 passed, 2 skipped (kicad_sexpr runner 55 passed, 2 skipped); rev 33
+passed, 2 skipped; ps 29 passed, 1 skipped; psu 4 passed.

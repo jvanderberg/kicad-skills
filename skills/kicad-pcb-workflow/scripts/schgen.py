@@ -21,19 +21,26 @@ junctions are added wherever three or more ends meet, so the drawing connects th
 
 Hierarchical designs (references/new-design.md "Large designs"): a sub-sheet is a Sch of its own, sharing the root's
 project and libraries; its hierarchical labels are the pins of the sheet blocks that place it, once or many times:
-  port = s.sub('port.kicad_sch', title='Port')           # parts, wires, power, labels, taps, collisions(), find_merges
-  port.hlabel('DIN', 50.8, 60.96, 180, shape='input')    # the sheet's interface (input / output / bidirectional / ...)
-  for k in range(16):                                    # one file, 16 instances, each with its own references
+  s = Sch('myproject', paper='A4')
+  s.lib('Device', kicad_symbol_dir() + '/Device.kicad_sym')
+  port = s.sub('port.kicad_sch', title='Port')          # parts, wires, power, labels, taps, collisions(), find_merges
+  r = port.add('Device:R', 'R1', '33', 63.5, 60.96, rot=90, footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25105')
+  port.hlabel('DIN', 50.8, 60.96, 180, shape='input')   # the sheet's interface (input / output / bidirectional / ...)
+  port.hlabel('DOUT', 76.2, 60.96, 0, shape='output')
+  port.wire((50.8, 60.96), r.p(1)); port.wire(r.p(2), (76.2, 60.96))
+  for k in range(4):                                    # one file, 4 instances, each with its own references
       b = s.sheet(port, 'port%d' % (k + 1), 101.6, 25.4 + 12.7 * k, refs=100 * (k + 1))    # R1 -> R101, R201, ...
-      s.wire(u1.p('GPIO%d' % k), b.p('DIN'))             # a sheet pin's point, wired like a part pin
-  s.write('myproject.kicad_sch')                         # the root, and every sub-sheet file next to it
+      for pt, dx, net in ((b.p('DIN'), -7.62, 'D%d' % k), (b.p('DOUT'), 7.62, 'Q%d' % k)):
+          s.wire(pt, (pt[0] + dx, pt[1])); s.label(net, pt[0] + dx, pt[1])   # a sheet pin's point, like a part pin
+  s.write('myproject.kicad_sch')                        # the root, and every sub-sheet file next to it
 A power symbol is one global net in every instance: a supply that differs per instance (each bank's own input) comes
 in through a hierarchical label instead.
 refs= is an int offset, a dict {local: reference} or a function; nested sheets compose them. write() refuses a
 reference used twice anywhere in the design, numbers power symbols across it (they stay global nets), writes each
 sub-sheet once with one (instances (project (path "/<root>/<block>" (reference ..) (unit ..)))) entry per instance
 and the page numbers in the sheet blocks, and keys ids by sub-sheet file and local reference, so an unchanged design
-rewrites the same bytes. s.instances() lists every instance's sheet path and reference map (for netspec.py's sheet
+rewrites the same bytes and renumbering an instance moves no symbol id (renaming a block gives it a new id, and every
+footprint path of that instance changes). s.instances() lists every instance's sheet path and reference map (for netspec.py's sheet
 templates). find_merges() on a parent names a sheet pin 'BLOCK/LABEL'.
 """
 import math, os, re, shutil, sys
@@ -272,9 +279,10 @@ class Sch:
         """A sub-sheet of this design, written to `file` next to the root sheet: a Sch of its own (parts, wires,
         power, labels, taps, collisions(), find_merges) that shares this sheet's project and symbol libraries. Its
         hierarchical labels (hlabel()) become the pins of every sheet block that places it (sheet())."""
-        if not file.endswith('.kicad_sch') or os.path.basename(file) != file:
-            raise ValueError('sub-sheet file %r: a plain file name ending .kicad_sch (it is written next to the root '
-                             'sheet)' % file)
+        stem = file[:-len('.kicad_sch')] if file.endswith('.kicad_sch') else ''
+        if not stem or os.path.basename(file) != file or stem != stem.strip():
+            raise ValueError('sub-sheet file %r: a plain file name ending .kicad_sch, no leading or trailing spaces (it '
+                             'is written next to the root sheet)' % file)
         c = Sch(self.project, paper, title, self.rev if rev is None else rev, self.date if date is None else date,
                 file=file)
         c.libs = self.libs
@@ -285,6 +293,10 @@ class Sch:
         sub-sheet through the pin of the same name on its sheet blocks. Anchor = connection point, as label()."""
         if shape not in ('input', 'output', 'bidirectional', 'tri_state', 'passive'):
             raise ValueError('hierarchical label %s: shape %r' % (name, shape))
+        if not name or name != name.strip() or '/' in name or re.search(r'\[[^\]]*\.\.[^\]]*\]|(?<![~^_]){', name):
+            raise ValueError('hierarchical label %r: a plain net name - no "/" (the sheet-path separator in KiCad\'s '
+                             'net names and in netspec\'s INSTANCE/NET), no bus syntax (D[0..7], {A B}), no leading or '
+                             'trailing spaces' % name)
         self.labels.append(('hierarchical_label', name, snap(x), snap(y), rot, shape))
 
     def ports(self):
@@ -306,15 +318,18 @@ class Sch:
         the design by write() and stay global nets.
         Pins: one per hierarchical label of the child, input/bidirectional/passive/tri_state on the left edge and
         output on the right (`left` / `right` lists of names override), 2.54 mm apart from 2.54 mm below the top.
-        Size: w x h, by default sized to fit the pins. Returns the SheetBlock; block.p('NAME') is a pin's point."""
+        Size: w x h, by default sized to fit the pins. Returns the SheetBlock; block.p('NAME') is a pin's point.
+        The block's id is keyed by `name`: renaming it gives the instance a new id (its footprints' paths change)."""
         if not isinstance(child, Sch) or not child.file:
             raise ValueError('sheet %s: the child must be a sub-sheet made with sub(file)' % name)
         if child is self:
             raise ValueError('sheet %s: a sheet cannot contain itself' % name)
         if child.project != self.project:
             raise ValueError('sheet %s: sub-sheet project %r is not %r' % (name, child.project, self.project))
-        if not name or '/' in name or any(b.name == name for b in self.blocks):
-            raise ValueError('sheet name %r: names are unique on a sheet and contain no "/"' % name)
+        if not name or name != name.strip() or '/' in name or \
+                any(b.name.casefold() == name.casefold() for b in self.blocks):
+            raise ValueError('sheet name %r: names are unique on a sheet ignoring letter case (KiCad: duplicate sheet '
+                             'names), contain no "/" and no leading or trailing spaces (KiCad trims them)' % name)
         if refs is not None and (isinstance(refs, bool) or not (isinstance(refs, (int, dict)) or callable(refs))):
             raise TypeError('sheet %s: refs must be an int offset, a dict or a function, not %r' % (name, refs))
         ports = child.ports()
@@ -614,6 +629,9 @@ class Sch:
         if self.placed_in:
             raise ValueError('%s is a sub-sheet (sheet block %s): write the root sheet, which writes every sheet file'
                              % (self.file, self.placed_in[0].name))
+        if self.ports():
+            raise ValueError('hierarchical labels %s on the root sheet: they connect to nothing (use label() or '
+                             'global labels there)' % [n for n, _ in self.ports()])
         if self.blocks:
             return self._write_design(path, previous)
         self._check_fields()
@@ -633,10 +651,12 @@ class Sch:
             if not any(s is t for t in sheets):
                 sheets.append(s)
         root_file = os.path.basename(path)
-        files = {}
+        files = {root_file.casefold(): self}   # case-folded: macOS and Windows file systems ignore letter case
         for s in sheets[1:]:
-            if s.file == root_file or files.setdefault(s.file, s) is not s:
-                raise ValueError('two different sheets would be written to %s' % s.file)
+            other = files.setdefault(s.file.casefold(), s)
+            if other is not s:
+                raise ValueError('%s and %s would be the same file (names that differ only in letter case are one '
+                                 'file on macOS and Windows): rename one' % (other.file or root_file, s.file))
         for s in sheets:
             ports = dict(s.ports()) if s is not self else {}
             for b in s.placed_in:
@@ -685,12 +705,14 @@ class Sch:
             where = '/' + ''.join(b.name + '/' for b in chain)
             for p in s.parts:
                 if not p.ref.startswith('#'):
-                    seen.setdefault(m[id(p)], []).append('%s (%s on %s)' % (where, p.ref, s.file or root_file))
+                    seen.setdefault(m[id(p)].casefold(), []).append('%s in %s (%s on %s)' % (
+                        m[id(p)], where, p.ref, s.file or root_file))
         dup = {r: w for r, w in seen.items() if len(w) > 1}
         if dup:
-            raise ValueError('duplicate references in the design: %s. Each instance of a sheet used more than once '
-                             'needs its own references: sheet(..., refs=100 * k) (an offset), a dict or a function.' % (
-                                 '; '.join('%s in %s' % (r, ', '.join(w)) for r, w in sorted(dup.items())[:8])))
+            raise ValueError('duplicate references in the design (letter case ignored, as KiCad\'s board checks do): '
+                             '%s. Each instance of a sheet used more than once needs its own references: sheet(..., '
+                             'refs=100 * k) (an offset), a dict or a function.' % (
+                                 '; '.join(', '.join(w) for _, w in sorted(dup.items())[:8])))
         for s in sheets:
             insts = refs[id(s)]
             s._emit(schs[id(s)], lambda p, insts=insts: [(ipath, m[id(p)]) for ipath, m in insts])

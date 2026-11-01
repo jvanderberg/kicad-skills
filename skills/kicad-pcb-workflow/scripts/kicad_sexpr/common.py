@@ -72,6 +72,7 @@ class Uuids:
         self.reuse: Dict[str, str] = reuse if reuse is not None else {}
         self.reused = 0
         self._anon = 0
+        self._prev: Tuple[Optional[Dict[str, str]], Set[str]] = (None, set())   # (reuse map, its ids), see in_previous
 
     def new(self, key: Optional[str] = None) -> str:
         if self.seed is None:
@@ -97,6 +98,16 @@ class Uuids:
                     return u
             n += 1
             k = '%s#%d' % (key, n)
+
+    def derived(self, key: str) -> Optional[str]:
+        """The id ``new(key)`` derives when nothing is reused (None without a seed); registers nothing."""
+        return None if self.seed is None else str(_uuid.uuid5(UUID_NAMESPACE, self.seed + '\n' + key))
+
+    def in_previous(self, u: Optional[str]) -> bool:
+        """``u`` is an id of the previous version (``reuse``) that this document has not used yet."""
+        if self._prev[0] is not self.reuse:
+            self._prev = (self.reuse, set(self.reuse.values()))
+        return u is not None and u in self._prev[1] and u not in self.used
 
     def take(self, u: str) -> str:
         """Register an explicit uuid; raises if the document already uses it."""

@@ -22,7 +22,9 @@ mention the pin's name and number, so the decision is written from the pin table
 
 Hierarchical designs: a sheet used N times is one drawing, so an unused or strapped pin in it is one decision. Its N
 instances (the same symbol of the same sheet file, under N references) are one row, listed by the first instance's
-pin with the others after it, and a note for any of them (e.g. "U101.5") covers all. Rail names may carry a sheet
+pin with the others after it, and a note for any of them (e.g. "U101.5") covers all. A strap groups when it is the
+same net of the drawing in every instance, whatever the net is called there: /ch1/X and /ch2/X, or a rail each
+instance gets through a hierarchical label and the parent names (/BANK1, /BANK2). Rail names may carry a sheet
 path ("/ch1/VIN" matches the default --rail-regex).
 """
 import argparse, json, os, re, sys
@@ -52,23 +54,35 @@ def pin_lines(text, name, num):
     return hits[:2]
 
 
-def group_instances(rows, sib):
+def group_instances(rows, sib, root):
     """rows of one symbol pin in every instance of a repeated sheet, merged: the first instance's row with the others
-    in 'instances'; a strap to a net local to each instance ('/ch1/X', '/ch2/X') is the same strap"""
+    in 'instances'. A strap is the same decision when it is the same net of the drawing: in each instance the pin's net
+    holds the same symbol pins of that instance - whatever the net is called there ('/ch1/X' and '/ch2/X', or a rail
+    the parent names per instance through a hierarchical label: '/BANK1', '/BANK2')."""
+    nodes = {net.get('name'): [(n.get('ref'), n.get('pin')) for n in net.findall('node')] for net in root.find('nets')}
+
+    def drawn(net, sheet):
+        """the net as drawn on one instance: the (symbol uuid, pin) on it that belong to that instance"""
+        return frozenset((sib[r][1], p) for r, p in nodes.get(net, []) if r in sib and sib[r][2] == sheet)
     groups, out = {}, []
     for r in rows:
         ref, num = r['pin'].split('.', 1)
         f, uuid, sheet = sib.get(ref, ('', ref, '/'))
-        state = r['state']
-        if sheet != '/' and state.startswith('tied to ' + sheet):
-            state = 'tied to ' + state[len('tied to ' + sheet):]
-        k = (f, uuid or ref, num, r['type'], state)
+        kind = 'tied' if r['state'].startswith('tied to ') else r['state']
+        k = (f, uuid or ref, num, r['type'], kind, drawn(r['net'], sheet) if kind == 'tied' and sheet != '/' else None)
         if k in groups:
-            groups[k]['instances'].append(r['pin'])
+            g = groups[k]
+            g['instances'].append(r['pin'])
+            if r['state'] != g['state'] and r['state'] not in g['states']:
+                g['states'].append(r['state'])
             continue
-        r = dict(r, instances=[])
+        r = dict(r, instances=[], states=[])
         groups[k] = r
         out.append(r)
+    for r in out:
+        if r['states']:                                  # one strap, a differently named net in each instance
+            names = [r['state'][len('tied to '):]] + [x[len('tied to '):] for x in r['states']]
+            r['state'] += ' (each instance its own: %s)' % ', '.join(names[:4] + (['...'] if len(names) > 4 else []))
     return out
 
 
@@ -93,7 +107,7 @@ def audit(root, rail_regex):
             else:
                 continue
             rows.append(dict(pin='%s.%s' % (n.get('ref'), n.get('pin')), value=comps.get(n.get('ref'), ''), name=pname,
-                             type=base, state=state))
+                             type=base, state=state, net=name))
     key = lambda r: [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', r['pin'])]
     return sorted(rows, key=key)
 
@@ -114,7 +128,7 @@ def main():
     for d in a.datasheet:
         k, f = d.split('=', 1); ds[k] = ds_text(f)
     root = netlist_xml(a.netlist)
-    rows = group_instances(audit(root, a.rail_regex), siblings(root))
+    rows = group_instances(audit(root, a.rail_regex), siblings(root), root)
     lines = ['| Pin | Part | Name | Type | State | Decision / datasheet note |' + (' Datasheet pin table |' if ds else ''),
              '|---|---|---|---|---|---|' + ('---|' if ds else '')]
     missing = 0

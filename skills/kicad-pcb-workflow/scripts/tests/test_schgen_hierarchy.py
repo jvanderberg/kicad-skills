@@ -118,7 +118,14 @@ def test_duplicate_references_are_refused():
         root.write(os.path.join(d, 'demo.kicad_sch'))
         raise AssertionError('duplicate references were written')
     except ValueError as e:
-        assert 'R101 in /ch1/ (R1 on channel.kicad_sch), /ch2/ (R1 on channel.kicad_sch)' in str(e), e
+        assert 'R101 in /ch1/ (R1 on channel.kicad_sch), R101 in /ch2/ (R1 on channel.kicad_sch)' in str(e), e
+    assert os.listdir(d) == []
+    root.blocks[-1].refs = lambda r: r.lower() + '01'           # r101 vs ch1's R101: one reference to KiCad's DRC
+    try:
+        root.write(os.path.join(d, 'demo.kicad_sch'))
+        raise AssertionError('references differing only by case were written')
+    except ValueError as e:
+        assert 'R101 in /ch1/' in str(e) and 'r101 in /ch2/' in str(e) and 'letter case' in str(e), e
     assert os.listdir(d) == []
     sub = root.blocks[0].child
     try:
@@ -300,8 +307,10 @@ def test_check_sh_on_a_hierarchical_project():
         '| error | unconnected_items | 37 |'], drc_md        # the board is not routed: nothing else
 
 
-def buf_design(n=2, far=False):
-    """a sub-sheet with a small IC (strapped EN, unused OUT, an NC pin) placed n times"""
+def buf_design(n=2, far=False, rail=False):
+    """a sub-sheet with a small IC (strapped EN, unused OUT, an NC pin) placed n times. rail=True: VCC, EN and the
+    bypass cap are on a per-instance rail that enters through hierarchical label VB (the root names it BANK1, BANK2,
+    ..., so KiCad calls the nets /BANK1, /BANK2: no sheet path of the instance in them)"""
     BUF = symgen.ic('BUF', 7.62, left=[('IN', ['1'], symgen.IN), ('EN', ['5'], symgen.IN)],
                     right=[('OUT', ['4'], symgen.OUT), ('NC', ['6'], symgen.NC)], top=[('VCC', ['2'], symgen.PI)],
                     bottom=[('GND', ['3'], symgen.PI)], footprint='Package_TO_SOT_SMD:SOT-23-6',
@@ -317,15 +326,20 @@ def buf_design(n=2, far=False):
     s.wire((66.04, u.p('IN')[1]), u.p('IN'))
     en = u.p('EN')
     s.wire(en, (71.12, en[1]), (71.12, 50.8))
-    s.power('+3V3', 71.12, 50.8, lib_id='power:+3V3')
     s.wire(u.p('VCC'), (u.p('VCC')[0], 50.8))
-    s.power('+3V3', u.p('VCC')[0], 50.8, lib_id='power:+3V3')
+    if rail:
+        s.wire((71.12, 50.8), (u.p('VCC')[0], 50.8), (c.p(1)[0], 50.8), (c.p(1)[0] + 5.08, 50.8))
+        s.hlabel('VB', c.p(1)[0] + 5.08, 50.8, 0, 'passive')
+    else:
+        s.power('+3V3', 71.12, 50.8, lib_id='power:+3V3')
+        s.power('+3V3', u.p('VCC')[0], 50.8, lib_id='power:+3V3')
     s.wire(u.p('GND'), (u.p('GND')[0], u.p('GND')[1] + 2.54))
     s.power('GND', u.p('GND')[0], u.p('GND')[1] + 2.54)
     s.nc(u.p('OUT'))
     s.nc(u.p('NC'))
     s.wire(c.p(1), (c.p(1)[0], 50.8))
-    s.power('+3V3', c.p(1)[0], 50.8, lib_id='power:+3V3')
+    if not rail:
+        s.power('+3V3', c.p(1)[0], 50.8, lib_id='power:+3V3')
     s.wire(c.p(2), (c.p(2)[0], c.p(2)[1] + 2.54))
     s.power('GND', c.p(2)[0], c.p(2)[1] + 2.54)
     j = root.add('Connector_Generic:Conn_01x%02d' % n, 'J1', 'IN', 50.8, 50.8, mirror='y',
@@ -334,6 +348,10 @@ def buf_design(n=2, far=False):
         b = root.sheet(s, 'b%d' % (k + 1), 101.6, 45.72 + 12.7 * k, refs=100 * (k + 1))
         a = j.p(k + 1)
         root.wire(a, (76.2 + 2.54 * k, a[1]), (76.2 + 2.54 * k, b.p('IN')[1]), b.p('IN'))
+        if rail:
+            vb = b.p('VB')
+            root.wire(vb, (vb[0] - 5.08, vb[1]))
+            root.label('BANK%d' % (k + 1), vb[0] - 5.08, vb[1])
     place = {'J1': [5, 5, 0]}
     for k in range(1, n + 1):
         place.update({'U%d01' % k: [15, 10 * k, 0], 'C%d01' % k: [20 if not (far and k == n) else 45, 10 * k, 0]})
@@ -447,6 +465,198 @@ def test_board_diff_lists_instance_references():
     r = script('board_diff.py', old, os.path.join(d, 'channel.kicad_sch'), '--expect-refs', 'R101,R102,R103,C101,J101')
     assert r.returncode == 0, r.stdout
     assert script('sexp.py', 'get', os.path.join(d, 'channel.kicad_sch'), 'R702').stdout.startswith('(symbol')
+
+
+# ---------------------------------------------------------------- review findings (PR #12)
+
+def channel_ids(d):
+    """{(lib id, x, y): uuid} of the symbols in the demo's channel sheet"""
+    return {(str(n.get('lib_id')), n.need('at').number(1), n.need('at').number(2)): str(n.get('uuid'))
+            for n in load(os.path.join(d, 'channel.kicad_sch')).nodes('symbol')}
+
+
+def footprint_paths(d):
+    """{reference: "/<block uuid>/<symbol uuid>"} as new_board.py and pcbnew link each instance's footprint"""
+    root = load(os.path.join(d, 'demo.kicad_sch'))
+    blocks = {str(b.get('uuid')) for b in root.nodes('sheet')}
+    out = {}
+    for f in ('power.kicad_sch', 'channel.kicad_sch'):
+        for n in load(os.path.join(d, f)).nodes('symbol'):
+            for p in n.walk('path'):
+                ref = str(p.find('reference')[1])
+                block = str(p[1]).rsplit('/', 1)[1]
+                assert block in blocks
+                if not ref.startswith('#'):
+                    out[ref] = '/%s/%s' % (block, n.get('uuid'))
+    return out
+
+
+def renumbered_ch1(local):
+    """ch1's references with R1 and R3 swapped (R1 -> R103, R3 -> R101), the rest +100 as before"""
+    return {'R1': 'R103', 'R3': 'R101'}.get(local) or '%s%d' % (local.rstrip('0123456789'),
+                                                                 int(local[len(local.rstrip('0123456789')):]) + 100)
+
+
+def test_renumbering_one_instance_keeps_every_other_instances_links():
+    """review finding 5: renumbering one instance must not move the shared sub-sheet's symbol ids, or every other
+    instance's footprint paths change (KiCad's Update PCB matches by path and would swap parts on a routed board)"""
+    d = tempfile.mkdtemp()
+    hierarchy_demo.write(d)
+    ids, paths = channel_ids(d), footprint_paths(d)
+    root, _ = hierarchy_demo.build()
+    root.blocks[1].refs = renumbered_ch1                      # blocks[0] is power, [1] is ch1
+    root.write(os.path.join(d, 'demo.kicad_sch'))
+    assert channel_ids(d) == ids                              # no symbol of the shared file changed id
+    after = footprint_paths(d)
+    others = [r for r in paths if not r.endswith(('101', '102', '103')) or len(r) < 4 or r[1] != '1']
+    assert others and all(after[r] == paths[r] for r in others), [(r, paths[r], after[r]) for r in others
+                                                                  if after[r] != paths[r]]
+    assert after['R101'] == paths['R103'] and after['R103'] == paths['R101']   # ch1's own: they swapped references
+    # the same with ids that were not derived by this generator (a GUI-made symbol): the instances that did not
+    # change outvote the one that did
+    t = open(os.path.join(d, 'channel.kicad_sch')).read()
+    foreign = {u: '00000000-0000-4000-8000-%012d' % i for i, u in enumerate(sorted(ids.values()))}
+    for u, f in foreign.items():
+        t = t.replace(u, f)
+    open(os.path.join(d, 'channel.kicad_sch'), 'w').write(t)
+    root, _ = hierarchy_demo.build()
+    root.blocks[1].refs = 100                                 # ch1 back to R101, R102, R103
+    root.write(os.path.join(d, 'demo.kicad_sch'))
+    assert channel_ids(d) == {k: foreign[u] for k, u in ids.items()}, channel_ids(d)
+
+
+def test_adding_a_power_symbol_keeps_the_other_power_symbols_ids():
+    """review finding 4: power references are renumbered across the design, so they must not key the ids"""
+    d = tempfile.mkdtemp()
+    hierarchy_demo.write(d)
+    before = {f: [str(n.get('uuid')) for n in load(os.path.join(d, f)).nodes('symbol')]
+              for f in ('power.kicad_sch', 'channel.kicad_sch')}
+    root, _ = hierarchy_demo.build()
+    root.power('GND', 25.4, 101.6)                            # one more on the root, numbered #PWR001
+    root.write(os.path.join(d, 'demo.kicad_sch'))
+    after = {f: [str(n.get('uuid')) for n in load(os.path.join(d, f)).nodes('symbol')] for f in before}
+    assert after == before
+
+
+def test_names_differing_only_by_case_or_padded_are_refused():
+    """review finding 1 (macOS file systems ignore case: a child named like the root overwrote it) and 7"""
+    def design(root_file='demo.kicad_sch', files=('ch.kicad_sch',)):
+        root = Sch('c', paper='A4')
+        root.lib('Device', os.path.join(kicad_symbol_dir(), 'Device.kicad_sym'))
+        for i, f in enumerate(files):
+            s = root.sub(f)
+            s.add('Device:R', 'R1', '1k', 50.8, 50.8, footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C11702')
+            root.sheet(s, 'b%d' % i, 101.6, 50.8 + 25.4 * i, refs=100 * (i + 1))
+        return root
+    for root_file, files, msg in (('demo.kicad_sch', ('Demo.kicad_sch',), 'Demo.kicad_sch'),
+                                  ('demo.kicad_sch', ('Port.kicad_sch', 'port.kicad_sch'), 'port.kicad_sch')):
+        d = tempfile.mkdtemp()
+        try:
+            design(root_file, files).write(os.path.join(d, root_file))
+            raise AssertionError('wrote %s next to %s' % (files, root_file))
+        except ValueError as e:
+            assert msg in str(e) and 'letter case' in str(e), e
+        assert os.listdir(d) == [], os.listdir(d)
+    root = design()
+    child = root.blocks[0].child
+    for name in ('B0', ' b9 ', 'b9 ', ''):
+        try:
+            root.sheet(child, name, 0, 0, refs=900); raise AssertionError(repr(name))
+        except ValueError:
+            pass
+    for f in (' x.kicad_sch', 'x .kicad_sch'):
+        try:
+            root.sub(f); raise AssertionError(repr(f))
+        except ValueError:
+            pass
+
+
+def test_hierarchical_label_names_and_places_are_checked():
+    """review findings 6 and 7: "/" (netspec's INSTANCE/NET separator, and KiCad's sheet separator), bus syntax and
+    padding are refused in hierarchical label names; a hierarchical label on the root sheet is refused at write()"""
+    root = Sch('l', paper='A4')
+    sub = root.sub('s.kicad_sch')
+    for name in ('A/B', 'D[0..7]', '{SDA SCL}', 'BUS{A B}', ' A', 'A ', ''):
+        try:
+            sub.hlabel(name, 50.8, 50.8); raise AssertionError(repr(name))
+        except ValueError:
+            pass
+    sub.hlabel('D[0]', 50.8, 50.8)                            # a plain name with brackets, and overbar markup, are fine
+    sub.hlabel('~{EN}', 50.8, 55.88)
+    flat = Sch('f', paper='A4')
+    flat.hlabel('X', 50.8, 50.8)
+    for s in (flat, root):
+        if s is root:
+            root.hlabel('Y', 25.4, 25.4)
+            root.sheet(sub, 's1', 101.6, 50.8)
+        try:
+            s.write(os.path.join(tempfile.mkdtemp(), 't.kicad_sch')); raise AssertionError('root hierarchical label')
+        except ValueError as e:
+            assert 'root sheet' in str(e), e
+
+
+def test_refparts_and_nc_audit_on_a_per_instance_rail():
+    """review findings 2 and 3: a rail that enters each instance through a hierarchical label is named by the parent
+    (/BANK1, /BANK2): refparts must check U201 against its own rail, nc_audit must list the strap once"""
+    if not CLI:
+        print('  (skipped: no kicad-cli)'); return
+    d = tempfile.mkdtemp()
+    root, place = buf_design(rail=True)
+    root.write(os.path.join(d, 'b.kicad_sch'))
+    xml = export_netlist(os.path.join(d, 'b.kicad_sch'))
+    nets = {n.get('name'): sorted('%s.%s' % (x.get('ref'), x.get('pin')) for x in n.findall('node'))
+            for n in ET.parse(xml).getroot().find('nets')}
+    assert nets['/BANK1'] == ['C101.1', 'U101.2', 'U101.5'] and nets['/BANK2'] == ['C201.1', 'U201.2', 'U201.5'], nets
+    spec = os.path.join(d, 'reference-parts.json')
+    json.dump({'U101': {'part': 'BUF', 'parts': [{'role': 'bank bypass', 'kind': 'C', 'between': ['net:/BANK1', 'GND'],
+                                                   'value': '100n'}]}}, open(spec, 'w'))
+    r = script('refparts.py', xml, '--spec', spec)
+    rows = {l.split('|')[1].strip(): l.split('|')[4].strip() for l in r.stdout.splitlines() if l.startswith('| U')}
+    assert rows['U101'].startswith('ok: C101') and rows['U201'].startswith('ok: C201'), r.stdout
+    assert r.returncode == 0, r.stdout
+    notes = os.path.join(d, 'notes.json')
+    json.dump({'U101.5': 'EN on the bank rail: on with its bank', 'U101.4': 'unused', 'U101.6': 'NC'}, open(notes, 'w'))
+    r = script('nc_audit.py', xml, '--notes', notes, '--require-notes')
+    rows = [l for l in r.stdout.splitlines() if l.startswith('| U')]
+    assert len(rows) == 3 and r.returncode == 0, r.stdout
+    en = [l for l in rows if l.startswith('| U101.5 (and U201.5) |')]
+    assert en and 'tied to /BANK1' in en[0] and 'on with its bank' in en[0], rows
+
+
+def doc_block(path, marker):
+    """the python code block that follows `marker` in a markdown file (or a docstring's indented example)"""
+    text = open(path).read()
+    i = text.index(marker)
+    if path.endswith('.md'):
+        a = text.index('```python\n', i) + len('```python\n')
+        return text[a:text.index('```', a)]
+    lines = []
+    for l in text[i:].splitlines()[1:]:
+        if l.startswith('  '):
+            lines.append(l[2:])
+        elif lines:
+            break
+    return '\n'.join(lines)
+
+
+def test_documented_examples_run():
+    """review finding 9: the hierarchy examples in new-design.md and schgen's docstring run as written"""
+    for path, marker in ((os.path.join(HERE, '..', 'references', 'new-design.md'), '**How, with `schgen`:**'),
+                         (os.path.join(HERE, 'schgen.py'), 'Hierarchical designs (references/new-design.md')):
+        d = tempfile.mkdtemp()
+        code = doc_block(path, marker)
+        cwd = os.getcwd()
+        os.chdir(d)
+        try:
+            g = {'__name__': 'doc'}
+            exec(compile('from schgen import *\nfrom schgen import Sch, find_merges, kicad_symbol_dir\n' + code,
+                         path, 'exec'), g)
+        finally:
+            os.chdir(cwd)
+        written = sorted(f for f in os.listdir(d) if f.endswith('.kicad_sch'))
+        assert len(written) == 2, (path, written)
+        root = g.get('root') or g.get('s')
+        assert not [m for sh in [root] + [b.child for b in root.blocks] for m in sh.collisions()], path
 
 
 if __name__ == '__main__':

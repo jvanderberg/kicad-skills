@@ -116,22 +116,35 @@ Keep each sheet's interface small: a handful of hierarchical labels, rails as po
 
 **How, with `schgen`:**
 ```python
+from schgen import Sch, kicad_symbol_dir
 root = Sch('pixel', paper='A3', title='Pixel driver', rev='1')
-root.lib('Device', kicad_symbol_dir() + '/Device.kicad_sym')            # libraries are shared by every sheet
-port = root.sub('port_pair.kicad_sch', paper='A4', title='Port pair')   # a Sch of its own: parts, wires, power,
-r1 = port.add('Device:R', 'R1', '33', 63.5, 60.96, rot=90, ...)         # labels, taps, collisions(), find_merges()
-port.hlabel('DATA_A', 50.8, 60.96, 180, shape='input')                  # the sheet's interface
-for k in range(16):                                                     # one file, 16 instances
-    b = root.sheet(port, 'port%d' % (k + 1), 200, 20 + 12.7 * k, refs=100 * (k + 1))
-    root.wire(mcu.p('GPIO%d' % k), b.p('DATA_A'))                       # a sheet pin, like a part pin
-root.write('pixel.kicad_sch')                                           # writes every sheet file next to it
+for lib in ('Device', 'Connector_Generic'):                             # libraries are shared by every sheet
+    root.lib(lib, '%s/%s.kicad_sym' % (kicad_symbol_dir(), lib))
+port = root.sub('port_pair.kicad_sch', paper='A4', title='Port pair')  # a Sch of its own: parts, wires, power,
+r1 = port.add('Device:R', 'R1', '33', 63.5, 60.96, rot=90,             # labels, taps, collisions(), find_merges()
+              footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25105')
+port.hlabel('DATA_A', 50.8, 60.96, 180, shape='input')                 # the sheet's interface
+port.hlabel('OUT_A', 76.2, 60.96, 0, shape='output')
+port.wire((50.8, 60.96), r1.p(1))
+port.wire(r1.p(2), (76.2, 60.96))
+mcu = root.add('Connector_Generic:Conn_01x16', 'J1', 'GPIO', 50.8, 50.8, mirror='y',   # stands in for the MCU
+               footprint='Connector_PinHeader_2.54mm:PinHeader_1x16_P2.54mm_Vertical', lcsc='C2337')
+for k in range(16):                                                    # one file, 16 instances
+    b = root.sheet(port, 'port%d' % (k + 1), 101.6, 25.4 + 12.7 * k, refs=100 * (k + 1))
+    for pt, dx, name in ((mcu.p(k + 1), 7.62, 'DATA%d' % k), (b.p('DATA_A'), -7.62, 'DATA%d' % k),
+                         (b.p('OUT_A'), 7.62, 'OUT%d' % k)):           # a sheet pin's point, like a part pin
+        root.wire(pt, (pt[0] + dx, pt[1]))                             # labels between blocks; wires orthogonal
+        root.label(name, pt[0] + dx, pt[1])
+assert not root.collisions() and not port.collisions()
+root.write('pixel.kicad_sch')                                          # writes every sheet file next to it
 ```
 - `sheet()` draws the block with one pin per hierarchical label of the child (inputs, bidirectional and passive on
   the left, outputs on the right; `left=` / `right=` to choose), sized to fit. `block.p('NAME')` is the pin's point.
   Draw the labels before placing the blocks: `write()` refuses a block whose pins no longer match its sheet.
 - **References.** A symbol in a sheet used N times has N references, one per instance (KiCad keeps them in the
-  symbol's `instances`). The generator decides them: `refs=100 * k` offsets each number (R1 -> R101, R201, ...;
-  KiCad's own "sheet number x 100" annotation), a dict renames, a function maps; nested sheets compose, innermost
+  symbol's `instances`). The generator decides them: `refs=100 * k` offsets each number (R1 -> R101, R201, ...:
+  the pattern of KiCad's "sheet number x 100" annotation, but from your offset, not from the page number, which
+  counts every sheet before it), a dict renames, a function maps; nested sheets compose, innermost
   first. Draw the sub-sheet with references below the offset step (R1-R99 for steps of 100). `write()` refuses any
   reference used twice in the design and names the instances. Power symbols are global nets in every sheet and are
   renumbered across the design. `root.instances()` lists every instance's sheet path and reference map.
@@ -141,7 +154,11 @@ root.write('pixel.kicad_sch')                                           # writes
   `VBANK` power symbol short the four PSUs together, and ERC does not notice (netspec does: a SHORT, as long as
   the spec keeps `VBANK` a per-instance sheet net, out of `global`).
 - Ids are stable as on one sheet: a sub-sheet's symbol ids are derived from its file name and its own (local)
-  references, so renumbering an instance does not move them, and the board stays linked.
+  references, and a regeneration keeps them by that key, so renumbering an instance moves no symbol id: every other
+  instance's footprint paths stay as they are (KiCad's Update PCB matches footprints by path). A sheet block's id is
+  keyed by its name: **renaming a block gives that instance a new id**, so every footprint path of that instance
+  changes (`new_board.py` relinks them by reference; a board updated by KiCad's Update PCB relinks by reference only
+  when told to).
 - Before writing, check **every sheet**: `s.collisions()` (sheet pins that touch nothing, wires through a block) and
   `find_merges(s, SHEET_NETS)` with that sheet's local references (`'port1/DATA_A'` names a sheet pin on the parent).
 
