@@ -39,8 +39,9 @@ refs= is an int offset, a dict {local: reference} or a function; nested sheets c
 reference used twice anywhere in the design, numbers power symbols across it (they stay global nets), writes each
 sub-sheet once with one (instances (project (path "/<root>/<block>" (reference ..) (unit ..)))) entry per instance
 and the page numbers in the sheet blocks, and keys ids by sub-sheet file and local reference, so an unchanged design
-rewrites the same bytes and renumbering an instance moves no symbol id (renaming a block gives it a new id, and every
-footprint path of that instance changes). s.instances() lists every instance's sheet path and reference map (for netspec.py's sheet
+rewrites the same bytes and renumbering an instance moves no symbol id (an id made in the GUI is kept by the
+instances' references, then by library id and position; renaming a block gives it a new id, and every footprint path
+of that instance changes). s.instances() lists every instance's sheet path and reference map (for netspec.py's sheet
 templates). find_merges() on a parent names a sheet pin 'BLOCK/LABEL'.
 """
 import math, os, re, shutil, sys

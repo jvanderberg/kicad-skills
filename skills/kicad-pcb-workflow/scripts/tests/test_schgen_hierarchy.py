@@ -623,6 +623,51 @@ def test_refparts_and_nc_audit_on_a_per_instance_rail():
     assert en and 'tied to /BANK1' in en[0] and 'on with its bank' in en[0], rows
 
 
+def channel_pins(d):
+    """{(lib id, x, y): (pin uuids)} of the demo's channel sheet"""
+    return {(str(n.get('lib_id')), n.need('at').number(1), n.need('at').number(2)):
+            tuple(str(q.find('uuid')[1]) for q in n.nodes('pin'))
+            for n in load(os.path.join(d, 'channel.kicad_sch')).nodes('symbol')}
+
+
+def test_regeneration_settles_when_an_instance_permutes_local_references():
+    """re-check finding 3: ch1 keeps the local R references but swaps R1 and R3 (the others offset by 900); every
+    regeneration over the previous one must give the same bytes (the pin ids used to swap back and forth)"""
+    def ch1(r):
+        if r.startswith('R'):
+            return {'R1': 'R3', 'R3': 'R1'}.get(r, r)
+        p = r.rstrip('0123456789')
+        return '%s%d' % (p, int(r[len(p):]) + 900)
+    d = tempfile.mkdtemp()
+    runs = []
+    for _ in range(3):
+        root, _ = hierarchy_demo.build()
+        root.blocks[1].refs = ch1
+        root.write(os.path.join(d, 'demo.kicad_sch'))
+        runs.append(files(d))
+    assert runs[0] == runs[1] == runs[2], [f for f in runs[0] if runs[0][f] != runs[1][f]]
+
+
+def test_gui_ids_with_two_instances_follow_position_on_a_tie():
+    """re-check finding 4: ids that are not derived (made in the GUI), the sheet placed twice: one instance swapping
+    R1 and R3 is a 1-1 vote, decided by the symbol's library id and position, so nothing swaps; swapping the two
+    instances' offsets leaves no vote at all, and the position match keeps the ids"""
+    d = tempfile.mkdtemp()
+    hierarchy_demo.write(d, 2)
+    ids = channel_ids(d)
+    t = open(os.path.join(d, 'channel.kicad_sch')).read()
+    for i, u in enumerate(sorted({u for k, u in ids.items()} | {p for v in channel_pins(d).values() for p in v})):
+        t = t.replace(u, '0000%04d-0000-4000-8000-%012d' % (i, i))
+    open(os.path.join(d, 'channel.kicad_sch'), 'w').write(t)
+    gui, gui_pins = channel_ids(d), channel_pins(d)
+    for refs in ((renumbered_ch1, 200), (200, 100)):
+        root, _ = hierarchy_demo.build(n=2)
+        root.blocks[1].refs, root.blocks[2].refs = refs
+        root.write(os.path.join(d, 'demo.kicad_sch'))
+        assert channel_ids(d) == gui, [(k, gui[k], v) for k, v in channel_ids(d).items() if gui[k] != v]
+        assert channel_pins(d) == gui_pins, refs
+
+
 def doc_block(path, marker):
     """the python code block that follows `marker` in a markdown file (or a docstring's indented example)"""
     text = open(path).read()

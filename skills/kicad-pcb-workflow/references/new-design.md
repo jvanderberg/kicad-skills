@@ -155,7 +155,9 @@ root.write('pixel.kicad_sch')                                          # writes 
   the spec keeps `VBANK` a per-instance sheet net, out of `global`).
 - Ids are stable as on one sheet: a sub-sheet's symbol ids are derived from its file name and its own (local)
   references, and a regeneration keeps them by that key, so renumbering an instance moves no symbol id: every other
-  instance's footprint paths stay as they are (KiCad's Update PCB matches footprints by path). A sheet block's id is
+  instance's footprint paths stay as they are (KiCad's Update PCB matches footprints by path). Ids made elsewhere
+  (a symbol drawn in the GUI) are kept by the instances' references, a tie by the symbol's library id and position;
+  such an id is lost only when every instance's reference changes and the symbol moves as well. A sheet block's id is
   keyed by its name: **renaming a block gives that instance a new id**, so every footprint path of that instance
   changes (`new_board.py` relinks them by reference; a board updated by KiCad's Update PCB relinks by reference only
   when told to).

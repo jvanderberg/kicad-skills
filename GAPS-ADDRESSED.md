@@ -960,3 +960,18 @@ Every fix has a test that fails on the reviewed head (88e7cee) and passes now; t
 
 Test runs after the fixes, on main c16f0b8: wf 136 passed, 2 skipped (kicad_sexpr runner 55 passed, 2 skipped); rev 33
 passed, 2 skipped; ps 29 passed, 1 skipped; psu 4 passed.
+
+## Re-check of the fixes (PR #12 at 484d68f) and its fixes
+
+Every test below fails on 484d68f and passes now; the re-check's repros (`/tmp/rc12/adv`: `regen.py`, `uuidorder.py`,
+the nc16 specs, `strap2.py`'s design) were re-run against the branch.
+
+| Finding | Fix | Verified |
+|---|---|---|
+| 1. refparts kept a net the IC has no pin on unchanged outside its sheet path: per-instance rails the parent names (/BANK1, /D1) gave a false pass (TP501 on bank 1's C101) or a false MISSING | a net endpoint goes to each instance through every symbol pin of the first instance on it (nested sheets included), to the same pin of the same symbol there; kept only when no symbol of the instance touches it (a global net maps to itself) | `test_refparts.py::test_instance_nets_the_ic_has_no_pin_on`; nc16: TP501 -> C501, U201 -> R202 ... U1601 -> R1602 |
+| 2. A translated `pin:a,b` on different nets in another instance let one pad on GND satisfy both endpoints | translation by net (not `pin:` lists); an entry whose net lands on several nets in an instance is AMBIGUOUS (give it its own entry); any endpoint on several nets is AMBIGUOUS; a part must have one pad on each endpoint | `test_refparts.py::test_a_net_wired_differently_in_another_instance_is_ambiguous`; strap2: U301/U401 AMBIGUOUS instead of ok: C9 |
+| 3. Pin uuids alternated on every regeneration when the first instance permuted local references | when the symbol's own derived id wins, its pin ids are derived from the key too, never looked up by the Reference property (the first instance's reference, another symbol's) | `test_regeneration_settles_when_an_instance_permutes_local_references`; regen.py case C: identical |
+| 4. GUI ids with a 1-1 vote (2 instances) swapped on a renumbering; swapped offsets gave new ids | a tie goes to the previous symbol of the same library id and position; no vote at all: that symbol; its pins keep their ids; the fallback derives from the key, never by the property | `test_gui_ids_with_two_instances_follow_position_on_a_tie`; uuidorder.py: 18 cases, 0 symbols moved, 0 pin sets changed |
+
+Test runs: wf 140 passed, 2 skipped (kicad_sexpr runner 55 passed, 2 skipped); rev 33 passed, 2 skipped; ps 29
+passed, 1 skipped; psu 4 passed.

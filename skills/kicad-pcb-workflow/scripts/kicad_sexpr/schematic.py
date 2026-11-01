@@ -91,6 +91,11 @@ def sch_ids(tree: Node) -> IdMap:
                 if pu is not None and len(pu) > 1:
                     m.put('%s/pin/%s' % (k, pin[1]), str(pu[1]))
         if n.head == 'symbol' and u is not None and len(u) > 1:
+            at = n.find('at')
+            if at is not None:
+                m.placed[str(u[1])] = (str(n.get('lib_id')), round(at.number(1), 4), round(at.number(2), 4))
+            m.pins[str(u[1])] = {str(pin[1]): str(pin.find('uuid')[1]) for pin in n.nodes('pin')
+                                 if pin.find('uuid') is not None and len(pin.find('uuid')) > 1}
             # a symbol on a sheet used more than once has one reference per sheet instance: it is also found by any
             # (instance path, reference) it had, whatever its Reference property says
             for path, ref, unit in _instances_of(n):
@@ -533,9 +538,10 @@ class Schematic:
         sets to the first instance's. Default: this sheet's ``instance_path`` with ``ref``.
 
         The symbol's uuid is stable: the previous version's id by reference, else derived from ``key`` (default
-        ``symbol/REF/UNIT``); ``uuid`` sets it explicitly. With ``instances``, the id ``key`` derives wins when the
-        previous version has it, then the id most of its (instance path, reference) pairs had there (not for '#'
-        symbols, whose references are renumbered freely)."""
+        ``symbol/REF/UNIT``); ``uuid`` sets it explicitly. With ``instances``: the id ``key`` derives when the
+        previous version has it; else the id most of its (instance path, reference) pairs had there (a tie: the one
+        of the same library symbol and position; no pair: the previous symbol of that library symbol and position);
+        else derived from ``key``. '#' symbols are matched by position, as their references are renumbered freely."""
         if lib is not None:
             self.embed_symbol(lib_id, lib)
         libsym = self.lib_symbol(lib_id)
@@ -584,35 +590,51 @@ class Schematic:
             if pin.number not in nums:
                 nums.append(pin.number)
         insts = list(instances) if instances else [(self.instance_path, ref)]
-        # On a sheet used several times, in this order: (1) the id the symbol's own key derives, when the previous
-        # version has it (the symbol was made by this key before: renumbering instances does not move it); (2) the id
-        # most of its (instance path, reference) pairs had there (a symbol whose id came from elsewhere, e.g. the
-        # GUI: the instances that kept their references outvote one that changed); (3) the key as for any item.
-        # Power and other '#' symbols skip (2): their references are renumbered freely, their key is their position.
-        ikey = None
-        if instances and not uuid:
+        # A symbol placed with instances (on a sheet used several times, or any sheet of a hierarchy) keeps, in order:
+        # (1) the id its own key derives, when the previous version has it: it was made by this key before, so
+        #     renumbering instances moves nothing; its pins' ids are derived from the key too;
+        # (2) an id from elsewhere (the GUI): the one most of its (instance path, reference) pairs had there, a tie
+        #     going to the previous symbol of the same library symbol at the same position; with no pair found, that
+        #     symbol of the same library symbol and position; its pins keep their ids;
+        # (3) otherwise derived from the key. Never the previous id of the key's reference: the Reference property is
+        #     the first instance's reference, which another symbol may have had.
+        # Power and other '#' symbols are matched by position as on any sheet: their references are renumbered freely.
+        prev = None
+        derive = bool(instances) and not ref.startswith('#') and not uuid
+        if derive:
+            reuse = self.uuids.reuse
             own = self.uuids.derived(key) if key else None
             if self.uuids.in_previous(own):
                 uuid = own
-            elif not ref.startswith('#'):
-                votes: Dict[str, List[str]] = {}
+            else:
+                placed = getattr(reuse, 'placed', {})
+                here = (lib_id, round(x, 4), round(y, 4))
+                votes: Dict[str, int] = {}
                 for p, r in insts:
-                    k = instance_key(p, r, unit)
-                    if self.uuids.in_previous(self.uuids.reuse.get(k)):
-                        votes.setdefault(self.uuids.reuse[k], []).append(k)
+                    old = reuse.get(instance_key(p, r, unit))
+                    if self.uuids.in_previous(old):
+                        votes[old] = votes.get(old, 0) + 1
+                if not votes:
+                    votes = {u: 0 for u, w in placed.items() if w == here and self.uuids.in_previous(u)}
                 if votes:
-                    best = max(votes.values(), key=len)       # ties: the first instance in page order
-                    ikey = best[0]
-                    uuid = self.uuids.reuse[ikey]
+                    order = list(votes)
+                    prev = max(order, key=lambda u: (votes[u], placed.get(u) == here, -order.index(u)))
+                    uuid = prev
         if uuid:
             n.need('uuid')[1] = self.uuids.take(uuid)
+        elif derive:
+            n.need('uuid')[1] = self.uuids.new(key or sch_item_key(n), reuse=False)
         else:
             self._fill_uuid(n, key)
         skey = key or sch_item_key(n)
+        old_pins = getattr(self.uuids.reuse, 'pins', {}).get(prev, {}) if prev else {}
         for num in nums:
-            pk = '%s/pin/%s' % (ikey, num) if ikey and '%s/pin/%s' % (ikey, num) in self.uuids.reuse \
-                else '%s/pin/%s' % (skey, num)
-            n.append(Node('pin', num, Node('uuid', self.uuids.new(pk))))
+            pk = '%s/pin/%s' % (skey, num)
+            if num in old_pins and old_pins[num] not in self.uuids.used:
+                pu = self.uuids.take(old_pins[num])
+            else:
+                pu = self.uuids.new(pk, reuse=not derive)
+            n.append(Node('pin', num, Node('uuid', pu)))
         n.append(Node('instances', Node('project', self.project,
                                         *[Node('path', p, Node('reference', r), Node('unit', unit)) for p, r in insts])))
         self.add(n)
