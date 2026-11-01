@@ -937,3 +937,6 @@ Left open: KiCad 10 per-instance field values (variants) are not generated (ever
 and fields); one unit per symbol as before; sub-sheet files sit next to the root (no sub-folders); board_diff compares
 one file at a time; KiCad re-saves only the root file with `sch upgrade` on the root (each sub-sheet was re-saved on
 its own to prove the round trip).
+
+Test runs: wf 130 passed, 2 skipped (was 118 / 2; kicad_sexpr runner 55 passed, 2 skipped); rev 31 passed, 2 skipped;
+ps 29 passed, 1 skipped (was 28 / 1); psu 4 passed.
