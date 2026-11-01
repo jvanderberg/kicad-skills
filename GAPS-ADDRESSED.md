@@ -909,3 +909,31 @@ and thermal.json differs only in its solve time: every via on these boards is a 
 
 Test runs: rev 33 passed, 2 skipped (test_thermal_minipc needs `MINIPC_PACK`); wf test_shared_copies passed. The three
 packs rebuilt: decoupling, planes, emc and islands identical to the run above.
+
+# Hierarchical (multi-sheet) schematics, a sheet used N times
+
+pixel-driver-pro (32 outputs, ~400 parts, one per-port circuit repeated) needed a root sheet with blocks for bank
+power, logic power and the core, and a port-pair sheet placed 16 times. `schgen` wrote one flat sheet only, and
+several readers assumed one reference per symbol.
+
+| Gap | Change | Verified |
+|---|---|---|
+| schgen: one sheet only | `Sch.sub(file)` (a Sch of its own sharing project and libraries), `hlabel()`, `sheet(child, name, x, y, refs=)` (a block with one pin per hierarchical label; the same child any number of times), `instances()`; `write()` on the root writes every file, one `(path ...)` per instance with that instance's reference, pages in the sheet blocks, power symbols numbered across the design, duplicate references refused with the clashing instances named, nothing written unless every file validates | `tests/test_schgen_hierarchy.py`; demo (`scripts/examples/hierarchy_demo.py`: root + power x1 + channel x3): ERC 0 errors, 0 warnings |
+| kicad_sexpr: one instance path per symbol; sheet blocks not as eeschema draws them | `add_symbol(instances=)`, `SchSymbol.instances() / reference() / set_reference()`, `sheet(instances=)` + `sheet_instance()`, `Schematic.new(root=False, file=)` (ids seeded by file), validation per instance, reuse by `(instance path, reference)`; block fields justified as eeschema 10 writes them; no `embedded_fonts` / `sheet_instances` in sub-sheets (KiCad drops them on re-save) | `test_multi_instance_sheet` (ERC, netlist, re-save, id reuse after a foreign uuid); KiCad's re-save of all three demo files changes only item order |
+| netspec: a repeated sheet's nets typed N times | sheet-template spec (`nets` / `sheets` / `global`, `INSTANCE/NET` joins, int offset or `{"refs"}` maps, nesting), `expand` subcommand, MISPLACED when a mapped reference is on another sheet | demo netlist matches; swapped offsets give MISPLACED + SHORT; nested 2 x 2 design matches; per-instance rail drawn as a power symbol gives SHORT |
+| new_board: no `sheetname` / `sheetfile` | written from the netlist as pcbnew writes them (`/ch2/`, `/` on the root; the Sheetfile property), one footprint per instance with path `/<block>/<symbol>` | DRC `--schematic-parity`: 0 on the demo, 0 after `pcb upgrade --force`; format read from a pcbnew-saved KiCad 10 board |
+| partfields: a repeated sheet's parts collapsed to one reference | walks every instance and takes each one's reference | 21 parts, 0 problems against the board; `check.sh` on the demo project |
+| nc_audit: N rows (and N notes) per decision of a repeated sheet; `/ch1/VIN` not a rail | one row per symbol pin with its other instances listed, a note for any covers all; rail regex allows a sheet path | test |
+| refparts: an entry covered one instance | repeated to every instance of the same symbol (net names translated), each against its own placement | test (one instance ok, the other FAR) |
+| board_diff (schematic): per-instance references invisible | each instance's reference is a symbol attribute | test |
+| sexp.py get REF: only the Reference property | also an instance's reference | test |
+| bom_check: untested on a repeated sheet | (no change needed: it reads the netlist) | ps test with KiCad's multi-instance netlist form; wf test on the demo's real export |
+
+Flat sheets: `schgen` output is byte-identical to main's for the same script (checked with a sheet using parts,
+power, labels, a global label and text). new_board now writes `sheetname` / `sheetfile` on flat boards too (as pcbnew
+does): a regenerated flat board gains those two lines per footprint.
+
+Left open: KiCad 10 per-instance field values (variants) are not generated (every instance shares Value, Footprint
+and fields); one unit per symbol as before; sub-sheet files sit next to the root (no sub-folders); board_diff compares
+one file at a time; KiCad re-saves only the root file with `sch upgrade` on the root (each sub-sheet was re-saved on
+its own to prove the round trip).
