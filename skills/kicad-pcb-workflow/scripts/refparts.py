@@ -21,12 +21,25 @@ reference-parts.json (found by projfiles.py's convention when --spec is not give
   between: two endpoints, each an IC pin function ("VOUT"), "pin:14", or "net:NAME" / a net name ("GND"); the part
   must have one pad on each. kind: refdes prefix (C, R, L, D, ...). value with "tol" (relative, default 0.25) and/or
   "min"/"max"; max_mm: centre-to-centre distance from the part's nearest pad to the IC pad of the first endpoint
-  (needs the board). Exit 1 if any entry is MISSING, WRONG VALUE or FAR.
+  (needs the board). Exit 1 if any entry is MISSING, WRONG VALUE, FAR or AMBIGUOUS.
+
+Hierarchical designs: an entry for one instance of an IC on a sheet used several times (U101 on /ch1/) is checked on
+every instance of it (U201, U301, ...: the same symbol of the same sheet file), each against its own parts and board
+placement: a part inside another instance of the same sheet never satisfies it (four port pairs on one bank rail:
+U201's decoupling cap is C201, not C101; parts of the root or a parent sheet still count). A pin endpoint is the same
+pin of each instance's IC. A global net (a power symbol or global label: +5V, GND - no sheet path) is the same net in
+every instance. Any other net endpoint is carried over through the symbol pins of the first instance that are on it,
+to the same pins in the other instance: "net:/BANK1" becomes U201's rail (/BANK2) whatever the parent named it,
+through the IC's VCC pin or, when the IC has no pin on it, through another part's (C101.1 -> C201.1). One no symbol of
+the instance touches is kept as written. An entry whose net lands on several nets in an instance (wired differently there) is AMBIGUOUS: give that
+instance its own entry. An instance with an entry of its own keeps it.
+"pin:2,5" names several pins of the IC on one net (AMBIGUOUS if they are not on one net); a part satisfies an entry
+only with one pad on each endpoint.
 """
 import argparse, json, math, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from netspec import netlist_xml  # noqa: E402
+from netspec import netlist_xml, siblings  # noqa: E402
 import projfiles  # noqa: E402
 
 UNIT = {'p': 1e-12, 'n': 1e-9, 'u': 1e-6, 'µ': 1e-6, 'm': 1e-3, '': 1.0, 'k': 1e3, 'K': 1e3, 'M': 1e6}
@@ -54,11 +67,82 @@ def load_netlist(root):
     return comps, pins
 
 
+def natkey(s):
+    return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', s)]
+
+
+def is_global(net):
+    """a net KiCad names the same on every sheet: a power symbol or a global label (no sheet path), not one of its
+    own names for an unlabelled net (Net-(R101-Pad2), unconnected-(...), named after one instance's part)"""
+    return not net.startswith(('/', 'Net-(', 'unconnected-('))
+
+
+def instance_net(net, sheet, sheet2, sib, pins):
+    """(the net `net` of instance `sheet` is on instance `sheet2`, or None, problem). A global net (is_global: +5V,
+    GND) is itself in every instance, whatever a pin strapped to it in one instance is strapped to in another. Any
+    other net is carried over through every symbol pin of the first instance (and the sheets below it) that is on it,
+    to the same pin of the same symbol in the other instance; one no symbol of the instance touches comes back
+    unchanged."""
+    if is_global(net):
+        return net, None
+    where = {(f, u, sh): r for r, (f, u, sh) in sib.items() if u}
+    pin2net = {(r, p): n for r, ps in pins.items() for p, _, n in ps}
+    to = {}
+    for r, ps in sorted(pins.items(), key=lambda kv: natkey(kv[0])):
+        f, u, sh = sib.get(r, ('', '', ''))
+        if not u or not sh.startswith(sheet):
+            continue
+        r2 = where.get((f, u, sheet2 + sh[len(sheet):]))
+        for p, _, n in ps:
+            if n == net and r2 is not None and (r2, p) in pin2net:
+                to.setdefault(pin2net[(r2, p)], []).append('%s.%s' % (r, p))
+    if not to:
+        return net, None
+    if len(to) > 1:
+        return None, 'its pins on %s are on %s in %s' % (net, ', '.join('%s (%s)' % (n, ' '.join(v[:3]))
+                                                                        for n, v in sorted(to.items())), sheet2)
+    return next(iter(to)), None
+
+
+def expand_instances(spec, sib, pins):
+    """the spec with each IC's entry repeated for the other instances of its sheet (same symbol uuid and sheet file)
+    that have none of their own, right after it. A pin endpoint (function or "pin:") is the same pin of each
+    instance's IC; a net endpoint is carried over through the instance's own symbol pins on it (instance_net), so
+    "net:/BANK1" becomes each instance's own rail whatever the parent named it, and an entry whose net lands on
+    several nets in an instance is marked (reported AMBIGUOUS)."""
+    out = {}
+    for ic, blk in spec.items():
+        out.setdefault(ic, blk)
+        if ic not in sib or not sib[ic][1]:
+            continue
+        f, uuid, sheet = sib[ic]
+        own = pins.get(ic, [])
+        for ref in sorted(sib, key=natkey):
+            f2, u2, sheet2 = sib[ref]
+            if ref == ic or (f2, u2) != (f, uuid) or ref in spec or ref in out:
+                continue
+            b = json.loads(json.dumps(blk))
+            for e in b.get('parts', []):
+                eps = []
+                for ep in e['between']:
+                    if ep.startswith('pin:') or (not ep.startswith('net:') and any(fn.upper() == ep.upper() for _, fn, _ in own)):
+                        eps.append(ep)                          # a pin of the IC: the same pin in every instance
+                        continue
+                    n2, problem = instance_net(ep[4:] if ep.startswith('net:') else ep, sheet, sheet2, sib, pins)
+                    if problem:
+                        e['ambiguous'] = '%s: %s' % (ep, problem)
+                    eps.append('net:%s' % n2 if n2 is not None else ep)
+                e['between'] = eps
+            b['instance_of'] = ic
+            out[ref] = b
+    return out
+
+
 def endpoint(ep, ic, pins, nets):
     """-> (set of nets, set of IC pin numbers on it)"""
-    if ep.startswith('pin:'):
-        num = ep[4:]
-        return {n for p, f, n in pins.get(ic, []) if p == num}, {num}
+    if ep.startswith('pin:'):                             # one pin, or several on one net: "pin:2,5"
+        nums = set(ep[4:].split(','))
+        return {n for p, f, n in pins.get(ic, []) if p in nums}, nums
     if ep.startswith('net:'):
         n = ep[4:]
         return {n}, {p for p, f, nn in pins.get(ic, []) if nn == n}
@@ -85,10 +169,22 @@ def board_pads(path):
     return out
 
 
-def check(spec, comps, pins, pads):
+def foreign(ic, sib):
+    """the sheet paths of the other instances of ic's sheet (ic on /port2/: /port1/, /port3/, ...; nested: the other
+    /g*/l*/): a part under one of them is another instance's, never ic's"""
+    if not sib or ic not in sib or not sib[ic][1]:
+        return ()
+    f, _, sheet = sib[ic]
+    return tuple(sorted({sh for ff, u, sh in sib.values() if ff == f and u and sh != sheet}))
+
+
+def check(spec, comps, pins, pads, sib=None):
+    """sib (netspec.siblings): with it, an IC on a sheet used several times is satisfied only by parts of its own
+    instance (or outside every instance of that sheet: the root's, a parent's), never by another instance's"""
     nets = {n for v in pins.values() for _, _, n in v}
     rows = []
     for ic, blk in spec.items():
+        others = foreign(ic, sib)
         used = {}                                        # one schematic part satisfies one datasheet part
         if ic not in pins:
             pass
@@ -100,14 +196,23 @@ def check(spec, comps, pins, pads):
                                      ' <=%g mm' % e['max_mm'] if e.get('max_mm') else '')
             r = dict(ic=ic, role=e['role'], need=need, where=e.get('where', ''))
             rows.append(r)
+            if e.get('ambiguous'):
+                r['status'] = 'AMBIGUOUS: in this instance %s (the entry for %s does not carry over: give %s its own)' % (
+                    e['ambiguous'], blk.get('instance_of', ic), ic); continue
             if not n1 or not n2:
                 r['status'] = 'MISSING: endpoint %s not found on %s' % (e['between'][0] if not n1 else e['between'][1], ic); continue
+            several = [(x, n) for x, n in zip(e['between'], (n1, n2)) if len(n) > 1]
+            if several:
+                r['status'] = 'AMBIGUOUS: endpoint %s of %s is on %d nets (%s): name one pin or net' % (
+                    several[0][0], ic, len(several[0][1]), ', '.join(sorted(several[0][1]))); continue
             cands = []
             for ref, ps in pins.items():
                 if e.get('kind') and not re.match(r'^%s\d' % re.escape(e['kind']), ref):
                     continue
-                pn = {n for _, _, n in ps}
-                if len(ps) == 2 and len(pn) == 2 and pn & n1 and pn & n2:
+                if len(ps) != 2 or (others and sib.get(ref, ('', '', ''))[2].startswith(others)):
+                    continue
+                a, b = ps[0][2], ps[1][2]                     # one pad on each endpoint, never both on one
+                if a != b and ((a in n1 and b in n2) or (b in n1 and a in n2)):
                     cands.append(ref)
             taken = [c for c in cands if c in used and not e.get('shared')]
             cands = [c for c in cands if c not in taken]
@@ -153,8 +258,10 @@ def main():
     if not sp:
         sys.exit('no reference-parts.json: write one from each IC\'s datasheet typical application and layout figure')
     spec = json.load(open(sp))
-    comps, pins = load_netlist(netlist_xml(a.netlist))
-    rows = check(spec, comps, pins, board_pads(a.board))
+    root = netlist_xml(a.netlist)
+    comps, pins = load_netlist(root)
+    sib = siblings(root)
+    rows = check(expand_instances(spec, sib, pins), comps, pins, board_pads(a.board), sib)
     out = ['| IC | Required (datasheet) | Where | Status |', '|---|---|---|---|']
     out += ['| %s | %s: %s | %s | %s |' % (r['ic'], r['role'], r['need'], r.get('where', ''), r['status']) for r in rows]
     bad = [r for r in rows if not r['status'].startswith('ok')]

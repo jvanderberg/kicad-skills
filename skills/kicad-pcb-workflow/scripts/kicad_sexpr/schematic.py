@@ -7,14 +7,14 @@ Items with no builder are added with ``sch.add(Node(...))``; every item already 
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from .common import (SCH_VERSION, IdMap, Point, Uuids, duplicate_uuids, font_effects, header, norm_angle, pt_key,
                      rotate, stroke)
 from .sexp import Node, Sym, load, save
 from .symbol_lib import Pin, SymbolLibrary, pins_of
 
-__all__ = ['Schematic', 'SchSymbol', 'symbol_point', 'sch_ids', 'sch_item_key']
+__all__ = ['Schematic', 'SchSymbol', 'symbol_point', 'sch_ids', 'sch_item_key', 'instance_key']
 
 # KiCad writes top-level schematic items grouped in this order; new items are inserted next to their kind.
 _ORDER = ['version', 'generator', 'generator_version', 'uuid', 'paper', 'title_block', 'lib_symbols', 'bus_alias',
@@ -90,7 +90,40 @@ def sch_ids(tree: Node) -> IdMap:
                 pu = pin.find('uuid')
                 if pu is not None and len(pu) > 1:
                     m.put('%s/pin/%s' % (k, pin[1]), str(pu[1]))
+        if n.head == 'symbol' and u is not None and len(u) > 1:
+            at = n.find('at')
+            if at is not None:
+                m.placed[str(u[1])] = (str(n.get('lib_id')), round(at.number(1), 4), round(at.number(2), 4))
+            m.pins[str(u[1])] = {str(pin[1]): str(pin.find('uuid')[1]) for pin in n.nodes('pin')
+                                 if pin.find('uuid') is not None and len(pin.find('uuid')) > 1}
+            m.refs[str(u[1])] = {path: ref for path, ref, _ in _instances_of(n)}
+            # a symbol on a sheet used more than once has one reference per sheet instance: it is also found by any
+            # (instance path, reference) it had, whatever its Reference property says
+            for path, ref, unit in _instances_of(n):
+                ik = instance_key(path, ref, unit)
+                m.put(ik, str(u[1]))
+                for pin in n.nodes('pin'):
+                    pu = pin.find('uuid')
+                    if pu is not None and len(pu) > 1:
+                        m.put('%s/pin/%s' % (ik, pin[1]), str(pu[1]))
     return m
+
+
+def instance_key(path: str, ref: str, unit: Union[int, str] = 1) -> str:
+    """Stable key of a symbol by one of its sheet instances: ``symbol@/<root>/<sheet>:R101/1``."""
+    return 'symbol@%s:%s/%s' % (path, ref, unit)
+
+
+def _instances_of(n: Node) -> List[Tuple[str, str, int]]:
+    """[(instance path, reference, unit)] of a placed symbol's (instances ...) block, in file order."""
+    out = []
+    inst = n.find('instances')
+    for proj in (inst.nodes('project') if inst is not None else []):
+        for p in proj.nodes('path'):
+            r = p.find('reference')
+            if r is not None and len(r) > 1:
+                out.append((str(p[1]), str(r[1]), int(p.get('unit', 1))))  # type: ignore[arg-type]
+    return out
 
 
 class SchSymbol:
@@ -146,6 +179,40 @@ class SchSymbol:
     def uuid(self) -> str:
         return str(self.node.get('uuid'))
 
+    def instances(self) -> List[Tuple[str, str, int]]:
+        """[(instance path, reference, unit)]: one entry per sheet instance the symbol appears in (a sheet used N
+        times has N), in file order."""
+        return _instances_of(self.node)
+
+    def reference(self, path: Optional[str] = None) -> str:
+        """The reference in one sheet instance (``path`` = "/<root uuid>/<sheet uuid>..."), default this sheet's
+        ``instance_path``; the Reference property when the symbol has no entry for that path."""
+        path = path or self.sch.instance_path
+        return next((r for p, r, _ in self.instances() if p == path), self.ref)
+
+    def set_reference(self, ref: str, path: Optional[str] = None) -> None:
+        """Set the reference of one sheet instance (default: this sheet's instance_path), adding the entry if the
+        symbol has none for it. The Reference property follows the first instance (what KiCad writes)."""
+        path = path or self.sch.instance_path
+        inst = self.node.find('instances')
+        if inst is None:
+            inst = Node('instances')
+            self.node.append(inst)
+        proj = inst.find('project')
+        if proj is None:
+            proj = Node('project', self.sch.project)
+            inst.append(proj)
+        paths = [p for pr in inst.nodes('project') for p in pr.nodes('path')]
+        hit = next((p for p in paths if str(p[1]) == path), None)
+        if hit is None:
+            hit = Node('path', path, Node('reference', ref), Node('unit', self.unit))
+            proj.append(hit)
+            paths.append(hit)
+        hit.need('reference')[1] = ref
+        f = self.field('Reference')
+        if f is not None and paths[0] is hit:
+            f[2] = ref
+
     # ---------------------------------------------------------------- pins
     def lib_pins(self) -> List[Pin]:
         return pins_of(self.lib, self.unit, int(self.node.get('body_style', 1)))  # type: ignore[arg-type]
@@ -200,10 +267,18 @@ class SchSymbol:
             if hide is None:
                 hide = True
         if value is not None:
-            f[2] = value
-            if name == 'Reference':
-                for r in self.node.walk('reference'):
-                    r[1] = value
+            insts = self.instances() if name == 'Reference' else []
+            if len(insts) > 1:
+                # one reference per sheet instance: only this sheet's instance changes (see set_reference)
+                if not any(p == self.sch.instance_path for p, _, _ in insts):
+                    raise ValueError('%s appears in %d sheet instances and none is %s: use set_reference(ref, path)'
+                                     % (self.ref, len(insts), self.sch.instance_path))
+                self.set_reference(value, self.sch.instance_path)
+            else:
+                f[2] = value
+                if name == 'Reference':
+                    for r in self.node.walk('reference'):
+                        r[1] = value
         a = f.need('at')
         if at is not None:
             a[1], a[2] = _sch_round(at[0]), _sch_round(at[1])
@@ -252,18 +327,27 @@ class Schematic:
         # instance path of this sheet: "/<root uuid>" for a root sheet, "/<root uuid>/<sheet uuid>" for a sub-sheet
         self.instance_path = instance_path or self._guess_instance_path()
         self._pwr = 0
+        self.unchanged: Set[str] = set()     # instance paths whose references did not change (mark_unchanged_instances)
 
     # ---------------------------------------------------------------- create / load / save
     @classmethod
     def new(cls, project: str, paper: str = 'A4', title: str = '', date: str = '', rev: str = '',
             company: str = '', comments: Sequence[str] = (), instance_path: Optional[str] = None,
-            root: bool = True, previous: Optional[Union[str, Node, 'Schematic']] = None) -> 'Schematic':
+            root: bool = True, previous: Optional[Union[str, Node, 'Schematic']] = None,
+            file: Optional[str] = None) -> 'Schematic':
         """An empty sheet. ``project`` is the project name used in symbol instances (the .kicad_pro stem).
-        Sub-sheets (root=False) need ``instance_path`` = "/<root sheet uuid>/<sheet block uuid>".
-        ``previous``: an earlier version of this sheet whose ids are reused (see reuse_ids); otherwise ids are derived
-        from the project name and each item's key, so regenerating gives the same file."""
+        Sub-sheets (root=False) are named by ``file`` (the Sheetfile the parent's sheet blocks point at): its ids are
+        derived from the project and that name, so one file used by N sheet blocks has one set of ids, and every
+        symbol lists its N instances (add_symbol(instances=...)). ``instance_path`` = "/<root sheet uuid>/<sheet block
+        uuid>" is the default instance of symbols placed without ``instances`` (older callers name a sub-sheet by it
+        alone). ``previous``: an earlier version of this sheet whose ids are reused (see reuse_ids); otherwise ids are
+        derived from the project name and each item's key, so regenerating gives the same file."""
         t = header('kicad_sch', SCH_VERSION, 'eeschema')
-        u = Uuids(seed='kicad_sch:%s:%s' % (project, instance_path if not root and instance_path else 'root'))
+        if not root and file:
+            seed = 'kicad_sch:%s:file:%s' % (project, file)
+        else:
+            seed = 'kicad_sch:%s:%s' % (project, instance_path if not root and instance_path else 'root')
+        u = Uuids(seed=seed)
         if previous is not None:
             u.reuse = sch_ids(cls._tree_of(previous))
         t.append(Node('uuid', u.new('sheet-root')))
@@ -277,9 +361,9 @@ class Schematic:
                 tb.append(Node('comment', i, c))
             t.append(tb)
         t.append(Node('lib_symbols'))
-        if root:
+        if root:          # sub-sheet files have neither: their pages live in the parent's sheet blocks
             t.append(Node('sheet_instances', Node('path', '/', Node('page', '1'))))
-        t.append(Node('embedded_fonts', False))
+            t.append(Node('embedded_fonts', False))
         s = cls(t, None, project, instance_path)
         s.uuids = u
         return s
@@ -296,6 +380,26 @@ class Schematic:
         m = sch_ids(self._tree_of(previous))
         self.uuids.reuse = m
         return m
+
+    def mark_unchanged_instances(self, placements: Sequence[Tuple[str, Point, Dict[str, str]]]) -> Set[str]:
+        """Before placing a sheet's symbols with instances: placements = [(lib id, position, {instance path:
+        reference})] of every (non-'#') symbol about to be placed. An instance path is unchanged when, at every
+        position where the previous version has a symbol of the same library id, its reference there is the same.
+        A tied vote between ids from elsewhere (add_symbol) goes to the one an unchanged instance had, so a symbol
+        moved while another instance was renumbered keeps its id. Returns the set (also kept in ``unchanged``)."""
+        prev = self.uuids.reuse
+        at = {w: prev.refs.get(u, {}) for u, w in getattr(prev, 'placed', {}).items()}
+        seen: Set[str] = set()
+        changed: Set[str] = set()
+        for lib_id, (x, y), refs in placements:
+            old = at.get((lib_id, _sch_round(x), _sch_round(y)))
+            for path, ref in (refs.items() if old else ()):
+                if path in old:
+                    seen.add(path)
+                    if old[path] != ref:
+                        changed.add(path)
+        self.unchanged = seen - changed
+        return self.unchanged
 
     def _fill_uuid(self, n: Node, key: Optional[str] = None) -> Node:
         u = n.need('uuid')
@@ -322,13 +426,17 @@ class Schematic:
         d = duplicate_uuids(self.tree)
         if d:
             out.append('%d duplicated uuids, e.g. %s' % (len(d), d[:3]))
-        refs: Dict[Tuple[str, int], int] = {}
+        refs: Dict[Tuple[str, str, int], int] = {}
         for s in self.symbols():
-            if s.ref.startswith('#'):
-                continue
-            k = (s.ref, s.unit)
-            refs[k] = refs.get(k, 0) + 1
-        dup = sorted('%s unit %d' % k for k, n in refs.items() if n > 1)
+            # per sheet instance: a sheet used N times holds N references per symbol, unique within each instance
+            for path, ref, unit in (s.instances() or [(self.instance_path, s.ref, s.unit)]):
+                if ref.startswith('#'):
+                    continue
+                k = (path, ref, unit)
+                refs[k] = refs.get(k, 0) + 1
+        multi = len({k[0] for k in refs}) > 1
+        dup = sorted(('%s unit %d in %s' % (k[1], k[2], k[0])) if multi else '%s unit %d' % (k[1], k[2])
+                     for k, n in refs.items() if n > 1)
         if dup:
             out.append('duplicate references: %s' % dup[:10])
         idx = self._lib_index()
@@ -436,7 +544,8 @@ class Schematic:
                    lib: Optional[Union[Node, SymbolLibrary]] = None, in_bom: bool = True, on_board: bool = True,
                    dnp: bool = False, exclude_from_sim: bool = False, in_pos_files: bool = True,
                    lib_fields: Optional[Sequence[str]] = None, key: Optional[str] = None,
-                   uuid: Optional[str] = None) -> SchSymbol:
+                   uuid: Optional[str] = None,
+                   instances: Optional[Sequence[Tuple[str, str]]] = None) -> SchSymbol:
         """Place a symbol. Its library symbol must be embedded already, or given as ``lib``. Fields start where the
         library puts them (offsets rotated/mirrored with the symbol, text angles as in the library); extra
         ``fields`` are added hidden. Move or show fields afterwards with ``SchSymbol.set_field``.
@@ -446,8 +555,16 @@ class Schematic:
         'Footprint', 'Datasheet'); Reference and Value are always written, and Footprint / Datasheet / Description
         are written whenever they are given as arguments.
 
-        The symbol's uuid is stable (previous version's id by reference, else derived from ``key``, default
-        ``symbol/REF/UNIT``); ``uuid`` sets it explicitly."""
+        ``instances``: [(instance path, reference)], one per sheet instance this sheet appears in (a sheet used by N
+        sheet blocks: N entries, each its own reference), in page order; ``ref`` is the Reference property, which KiCad
+        sets to the first instance's. Default: this sheet's ``instance_path`` with ``ref``.
+
+        The symbol's uuid is stable: the previous version's id by reference, else derived from ``key`` (default
+        ``symbol/REF/UNIT``); ``uuid`` sets it explicitly. With ``instances``: the id ``key`` derives when the
+        previous version has it; else by its (instance path, reference) pairs: the id an unchanged instance had there
+        (mark_unchanged_instances), else the one most pairs had (a tie: the one of the same library symbol and
+        position); no pair: the previous symbol of that library symbol and position;
+        else derived from ``key``. '#' symbols are matched by position, as their references are renumbered freely."""
         if lib is not None:
             self.embed_symbol(lib_id, lib)
         libsym = self.lib_symbol(lib_id)
@@ -495,15 +612,58 @@ class Schematic:
         for pin in pins_of(libsym, unit, body_style):
             if pin.number not in nums:
                 nums.append(pin.number)
+        insts = list(instances) if instances else [(self.instance_path, ref)]
+        # A symbol placed with instances (on a sheet used several times, or any sheet of a hierarchy) keeps, in order:
+        # (1) the id its own key derives, when the previous version has it: it was made by this key before, so
+        #     renumbering instances moves nothing; its pins' ids are derived from the key too;
+        # (2) an id from elsewhere (the GUI), by its (instance path, reference) pairs: the one an unchanged instance
+        #     had (mark_unchanged_instances), else the one most pairs had, a tie going to the previous symbol of the
+        #     same library symbol at the same position, then to the first instance's; with no pair found, the symbol
+        #     of the same library symbol and position; its pins keep their ids;
+        # (3) otherwise derived from the key. Never the previous id of the key's reference: the Reference property is
+        #     the first instance's reference, which another symbol may have had.
+        # Power and other '#' symbols are matched by position as on any sheet: their references are renumbered freely.
+        prev = None
+        derive = bool(instances) and not ref.startswith('#') and not uuid
+        if derive:
+            reuse = self.uuids.reuse
+            own = self.uuids.derived(key) if key else None
+            if self.uuids.in_previous(own):
+                uuid = own
+            else:
+                placed = getattr(reuse, 'placed', {})
+                here = (lib_id, round(x, 4), round(y, 4))
+                votes: Dict[str, int] = {}
+                trusted: Set[str] = set()                # candidates voted for by an unchanged instance
+                for p, r in insts:
+                    old = reuse.get(instance_key(p, r, unit))
+                    if self.uuids.in_previous(old):
+                        votes[old] = votes.get(old, 0) + 1
+                        if p in self.unchanged:
+                            trusted.add(old)
+                if not votes:
+                    votes = {u: 0 for u, w in placed.items() if w == here and self.uuids.in_previous(u)}
+                if votes:
+                    order = list(votes)
+                    prev = max(order, key=lambda u: (u in trusted, votes[u], placed.get(u) == here, -order.index(u)))
+                    uuid = prev
         if uuid:
             n.need('uuid')[1] = self.uuids.take(uuid)
+        elif derive:
+            n.need('uuid')[1] = self.uuids.new(key or sch_item_key(n), reuse=False)
         else:
             self._fill_uuid(n, key)
         skey = key or sch_item_key(n)
+        old_pins = getattr(self.uuids.reuse, 'pins', {}).get(prev, {}) if prev else {}
         for num in nums:
-            n.append(Node('pin', num, Node('uuid', self.uuids.new('%s/pin/%s' % (skey, num)))))
+            pk = '%s/pin/%s' % (skey, num)
+            if num in old_pins and old_pins[num] not in self.uuids.used:
+                pu = self.uuids.take(old_pins[num])
+            else:
+                pu = self.uuids.new(pk, reuse=not derive)
+            n.append(Node('pin', num, Node('uuid', pu)))
         n.append(Node('instances', Node('project', self.project,
-                                        Node('path', self.instance_path, Node('reference', ref), Node('unit', unit)))))
+                                        *[Node('path', p, Node('reference', r), Node('unit', unit)) for p, r in insts])))
         self.add(n)
         return SchSymbol(self, n)
 
@@ -598,21 +758,47 @@ class Schematic:
                              stroke(width, type_), Node('uuid', '')))
 
     def sheet(self, name: str, file: str, at: Point, size: Tuple[float, float],
-              pins: Sequence[Tuple[str, str, Point, float]] = (), page: str = '2') -> Node:
-        """A hierarchical sheet block. pins: (name, shape, position, angle) -- angle 180 = left edge, 0 = right.
-        Returns the node; its uuid is the second part of the sub-sheet's instance path."""
+              pins: Sequence[Tuple[str, str, Point, float]] = (), page: str = '2',
+              instances: Optional[Sequence[Tuple[str, str]]] = None, key: Optional[str] = None) -> Node:
+        """A hierarchical sheet block, laid out as KiCad 10 draws one (name above the top-left corner, file name below
+        the bottom-left one). pins: (name, shape, position, angle) -- angle 180 = left edge, 0 = right; each must match
+        a hierarchical label of the same name in ``file``. ``instances``: [(instance path of THIS sheet, page)], one
+        per instance of this sheet (default: its ``instance_path`` with ``page``); add more with sheet_instance().
+        Returns the node; its uuid is the last part of the sub-sheet's instance path ("<this path>/<uuid>")."""
         x, y = _sch_round(at[0]), _sch_round(at[1])
+        key = key or 'sheet/%s' % name
         n = Node('sheet', Node('at', x, y), Node('size', size[0], size[1]), Node('exclude_from_sim', False),
-                 Node('in_bom', True), Node('on_board', True), Node('dnp', False), stroke(0.254, 'solid'),
-                 Node('fill', Node('color', 0, 0, 0, 0)), Node('uuid', self.uuids.new('sheet/%s' % name)),
-                 Node('property', 'Sheetname', name, Node('at', x, _sch_round(y - 2.54), 0), Node('show_name', False),
-                      Node('do_not_autoplace', False), font_effects(1.27)),
-                 Node('property', 'Sheetfile', file, Node('at', x, _sch_round(y + size[1] + 2.54), 0),
-                      Node('show_name', False), Node('do_not_autoplace', False), font_effects(1.27)))
+                 Node('in_bom', True), Node('on_board', True), Node('dnp', False), Node('fields_autoplaced', True),
+                 stroke(0.1524, 'solid'), Node('fill', Node('color', 0, 0, 0, 0)), Node('uuid', self.uuids.new(key)),
+                 Node('property', 'Sheetname', name, Node('at', x, _sch_round(y - 0.7116), 0), Node('show_name', False),
+                      Node('do_not_autoplace', False), font_effects(1.27, justify=('left', 'bottom'))),
+                 Node('property', 'Sheetfile', file, Node('at', x, _sch_round(y + size[1] + 0.5846), 0),
+                      Node('show_name', False), Node('do_not_autoplace', False),
+                      font_effects(1.27, justify=('left', 'top'))))
         for pname, shape, (px, py), pangle in pins:
             n.append(Node('pin', pname, Sym(shape), Node('at', _sch_round(px), _sch_round(py), norm_angle(pangle)),
-                          Node('uuid', self.uuids.new('sheet/%s/pin/%s' % (name, pname))),
+                          Node('uuid', self.uuids.new('%s/pin/%s' % (key, pname))),
                           font_effects(1.27, justify=('left' if norm_angle(pangle) == 180 else 'right',))))
-        n.append(Node('instances', Node('project', self.project,
-                                        Node('path', self.instance_path, Node('page', page)))))
+        n.append(Node('instances', Node('project', self.project)))
+        for path, pg in (instances if instances is not None else [(self.instance_path, page)]):
+            self.sheet_instance(n, path, pg)
         return self.add(n)
+
+    def sheet_instance(self, sheet: Node, path: str, page: str) -> Node:
+        """Add one instance to a sheet block: ``path`` is an instance path of the sheet the block is drawn on (the
+        root: "/<root uuid>"), ``page`` the page number KiCad shows for that instance of the sub-sheet."""
+        inst = sheet.find('instances')
+        if inst is None:
+            inst = Node('instances')
+            sheet.append(inst)
+        proj = inst.find('project')
+        if proj is None:
+            proj = Node('project', self.project)
+            inst.append(proj)
+        node = Node('path', path, Node('page', str(page)))
+        proj.append(node)
+        return node
+
+    def sheets(self) -> List[Node]:
+        """The sheet blocks on this sheet."""
+        return self.tree.nodes('sheet')

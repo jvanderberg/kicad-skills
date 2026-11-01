@@ -6,7 +6,7 @@
 CLI:
   sexp.py check FILE...            balance, raw newlines/tabs inside strings, duplicate uuids, duplicate references
   sexp.py list FILE                footprints (pcb) or placed symbols (sch): ref, lib id, position
-  sexp.py get FILE REF             print the footprint / symbol block for a reference
+  sexp.py get FILE REF             print the footprint / symbol block for a reference (any sheet instance's)
   sexp.py nets FILE                pcb: net names in use (shows KiCad's {slash} style escaping)
 
 Library (import sexp):
@@ -43,11 +43,13 @@ def blocks(t, head):
     return out
 
 def find_ref(t, ref):
-    """footprint (pcb) or placed symbol (sch) whose Reference property is ref"""
-    for head in ('footprint', 'symbol'):
-        for s, b in blocks(t, head):
-            if re.search(r'\(property "Reference" "%s"' % re.escape(ref), b) and '(lib_symbols' not in b[:40]:
-                return s, b
+    """footprint (pcb) or placed symbol (sch) whose Reference property is ref; on a sheet used more than once, also
+    the symbol one of whose instances has that reference ((instances ... (path ... (reference "R201"))))"""
+    for pat in (r'\(property "Reference" "%s"', r'\(reference "%s"\)'):
+        for head in ('footprint', 'symbol'):
+            for s, b in blocks(t, head):
+                if re.search(pat % re.escape(ref), b) and '(lib_symbols' not in b[:40]:
+                    return s, b
     return None, None
 
 def check(path):

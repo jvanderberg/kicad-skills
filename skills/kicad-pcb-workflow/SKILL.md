@@ -14,8 +14,9 @@ render -> copy back -> report.** Skipping any step below lets a silent failure t
 Scripts are in `${CLAUDE_SKILL_DIR}/scripts/`. Detailed references (read the one you need, when you need it):
 - `scripts/kicad_sexpr/README.md` - the file-format layer: read, modify and generate .kicad_sch / .kicad_pcb /
   .kicad_sym / .kicad_mod / .kicad_pro. **Every generator and edit goes through it** (section 2)
-- `references/new-design.md` - a new project from nothing: intended netlist, readable generated schematic, board from
-  the netlist, stackup and rules (kicad-cli can do none of this)
+- `references/new-design.md` - a new project from nothing: intended netlist, readable generated schematic (one sheet,
+  or hierarchical sheets with a repeated circuit drawn once and placed N times: s3a), board from the netlist, stackup
+  and rules (kicad-cli can do none of this)
 - `references/layout-stages.md` - layout as staged sessions with written briefs, resource allocation, feasibility
   back-checks, the datasheet compliance file
 - `references/checks.md` - what each check proves and what it does not (cover the blind spots)

@@ -909,3 +909,84 @@ and thermal.json differs only in its solve time: every via on these boards is a 
 
 Test runs: rev 33 passed, 2 skipped (test_thermal_minipc needs `MINIPC_PACK`); wf test_shared_copies passed. The three
 packs rebuilt: decoupling, planes, emc and islands identical to the run above.
+
+# Hierarchical (multi-sheet) schematics, a sheet used N times
+
+pixel-driver-pro (32 outputs, ~400 parts, one per-port circuit repeated) needed a root sheet with blocks for bank
+power, logic power and the core, and a port-pair sheet placed 16 times. `schgen` wrote one flat sheet only, and
+several readers assumed one reference per symbol.
+
+| Gap | Change | Verified |
+|---|---|---|
+| schgen: one sheet only | `Sch.sub(file)` (a Sch of its own sharing project and libraries), `hlabel()`, `sheet(child, name, x, y, refs=)` (a block with one pin per hierarchical label; the same child any number of times), `instances()`; `write()` on the root writes every file, one `(path ...)` per instance with that instance's reference, pages in the sheet blocks, power symbols numbered across the design, duplicate references refused with the clashing instances named, nothing written unless every file validates | `tests/test_schgen_hierarchy.py`; demo (`scripts/examples/hierarchy_demo.py`: root + power x1 + channel x3): ERC 0 errors, 0 warnings |
+| kicad_sexpr: one instance path per symbol; sheet blocks not as eeschema draws them | `add_symbol(instances=)`, `SchSymbol.instances() / reference() / set_reference()`, `sheet(instances=)` + `sheet_instance()`, `Schematic.new(root=False, file=)` (ids seeded by file), validation per instance, reuse by `(instance path, reference)`; block fields justified as eeschema 10 writes them; no `embedded_fonts` / `sheet_instances` in sub-sheets (KiCad drops them on re-save) | `test_multi_instance_sheet` (ERC, netlist, re-save, id reuse after a foreign uuid); KiCad's re-save of all three demo files changes only item order |
+| netspec: a repeated sheet's nets typed N times | sheet-template spec (`nets` / `sheets` / `global`, `INSTANCE/NET` joins, int offset or `{"refs"}` maps, nesting), `expand` subcommand, MISPLACED when a mapped reference is on another sheet | demo netlist matches; swapped offsets give MISPLACED + SHORT; nested 2 x 2 design matches; per-instance rail drawn as a power symbol gives SHORT |
+| new_board: no `sheetname` / `sheetfile` | written from the netlist as pcbnew writes them (`/ch2/`, `/` on the root; the Sheetfile property), one footprint per instance with path `/<block>/<symbol>` | DRC `--schematic-parity`: 0 on the demo, 0 after `pcb upgrade --force`; format read from a pcbnew-saved KiCad 10 board |
+| partfields: a repeated sheet's parts collapsed to one reference | walks every instance and takes each one's reference | 21 parts, 0 problems against the board; `check.sh` on the demo project |
+| nc_audit: N rows (and N notes) per decision of a repeated sheet; `/ch1/VIN` not a rail | one row per symbol pin with its other instances listed, a note for any covers all; rail regex allows a sheet path | test |
+| refparts: an entry covered one instance | repeated to every instance of the same symbol (net names translated), each against its own placement | test (one instance ok, the other FAR) |
+| board_diff (schematic): per-instance references invisible | each instance's reference is a symbol attribute | test |
+| sexp.py get REF: only the Reference property | also an instance's reference | test |
+| bom_check: untested on a repeated sheet | (no change needed: it reads the netlist) | ps test with KiCad's multi-instance netlist form; wf test on the demo's real export |
+
+Flat sheets: `schgen` output is byte-identical to main's for the same script (checked with a sheet using parts,
+power, labels, a global label and text). new_board now writes `sheetname` / `sheetfile` on flat boards too (as pcbnew
+does): a regenerated flat board gains those two lines per footprint.
+
+Left open: KiCad 10 per-instance field values (variants) are not generated (every instance shares Value, Footprint
+and fields); one unit per symbol as before; sub-sheet files sit next to the root (no sub-folders); board_diff compares
+one file at a time; KiCad re-saves only the root file with `sch upgrade` on the root (each sub-sheet was re-saved on
+its own to prove the round trip).
+
+Test runs: wf 130 passed, 2 skipped (was 118 / 2; kicad_sexpr runner 55 passed, 2 skipped); rev 31 passed, 2 skipped;
+ps 29 passed, 1 skipped (was 28 / 1); psu 4 passed.
+
+## Adversarial review (PR #12) and its fixes
+
+Every fix has a test that fails on the reviewed head (88e7cee) and passes now; the reviewer's own repros
+(`swap.py`, `pwrchurn.py`, `edge3.py`, the 16-instance `nc16` design) were re-run against the branch.
+
+| Finding | Fix | Verified |
+|---|---|---|
+| 1. A child file named like the root or another child except for letter case overwrote it (case-insensitive macOS); block names differing by case, padded names accepted | file names compared case-folded, refused before anything is written; block names unique ignoring case, no leading/trailing spaces (KiCad trims them), also in `sub()` file names; references unique ignoring case (KiCad's board checks) | `test_names_differing_only_by_case_or_padded_are_refused`, `test_duplicate_references_are_refused`; edge3.py: both cases REFUSED |
+| 2. refparts copied a net endpoint unchanged to every instance: on a rail the parent names per instance (/BANK1), U201 matched bank 1's C101 | a net endpoint is carried over through the IC's own pins on it (`pin:2,5`), so each instance resolves its own rail; sheet-path translation only for nets the IC has no pin on | `test_refparts_and_nc_audit_on_a_per_instance_rail`; nc16: U501 -> C501, U901 -> bank 3, U1301 -> bank 4 |
+| 3. nc_audit listed a strap to a per-instance rail once per bank | grouped on the symbol pin and the net as drawn in the instance (the instance's own symbol pins on it), whatever the net is called; the row lists every instance's net name | same test; nc16: `~{SRCLR}` one row for 16 instances on 4 banks |
+| 4. Adding one power symbol reshuffled every power-symbol uuid in the sub-sheets | `#` symbols never take an id by `(instance path, reference)`: their key is their position | `test_adding_a_power_symbol_keeps_the_other_power_symbols_ids`; pwrchurn.py: 0 changed |
+| 5. Renumbering one instance swapped the shared symbols' uuids, changing every instance's footprint paths | the id the local key derives wins when the previous file has it; otherwise a vote of the instances (a GUI-made id stays with the symbol most instances agree on) | `test_renumbering_one_instance_keeps_every_other_instances_links` (derived and foreign ids); swap.py: no uuid moved |
+| 6, 7. `/` and bus syntax in hierarchical labels; hierarchical labels on the root | refused (`hlabel()`; root at `write()`, flat or hierarchical); overbar markup `~{EN}` and `D[0]` still fine | `test_hierarchical_label_names_and_places_are_checked` |
+| 8. Renaming a block gives it a new uuid | documented (schgen `sheet()`, new-design.md 3a) | doc |
+| 9. Doc examples not runnable (non-orthogonal wire, undefined parts); "sheet number x 100" | both examples complete and wired with labels; wording: the offset is yours, not the page number | `test_documented_examples_run` executes both; the new-design.md one: ERC 0 errors |
+| 12. Conflict with main | rebased onto c16f0b8 (PR #11) | suites below |
+
+Test runs after the fixes, on main c16f0b8: wf 136 passed, 2 skipped (kicad_sexpr runner 55 passed, 2 skipped); rev 33
+passed, 2 skipped; ps 29 passed, 1 skipped; psu 4 passed.
+
+## Re-check of the fixes (PR #12 at 484d68f) and its fixes
+
+Every test below fails on 484d68f and passes now; the re-check's repros (`/tmp/rc12/adv`: `regen.py`, `uuidorder.py`,
+the nc16 specs, `strap2.py`'s design) were re-run against the branch.
+
+| Finding | Fix | Verified |
+|---|---|---|
+| 1. refparts kept a net the IC has no pin on unchanged outside its sheet path: per-instance rails the parent names (/BANK1, /D1) gave a false pass (TP501 on bank 1's C101) or a false MISSING | a net endpoint goes to each instance through every symbol pin of the first instance on it (nested sheets included), to the same pin of the same symbol there; kept only when no symbol of the instance touches it (a global net maps to itself) | `test_refparts.py::test_instance_nets_the_ic_has_no_pin_on`; nc16: TP501 -> C501, U201 -> R202 ... U1601 -> R1602 |
+| 2. A translated `pin:a,b` on different nets in another instance let one pad on GND satisfy both endpoints | translation by net (not `pin:` lists); an entry whose net lands on several nets in an instance is AMBIGUOUS (give it its own entry); any endpoint on several nets is AMBIGUOUS; a part must have one pad on each endpoint | `test_refparts.py::test_a_net_wired_differently_in_another_instance_is_ambiguous`; strap2: U301/U401 AMBIGUOUS instead of ok: C9 |
+| 3. Pin uuids alternated on every regeneration when the first instance permuted local references | when the symbol's own derived id wins, its pin ids are derived from the key too, never looked up by the Reference property (the first instance's reference, another symbol's) | `test_regeneration_settles_when_an_instance_permutes_local_references`; regen.py case C: identical |
+| 4. GUI ids with a 1-1 vote (2 instances) swapped on a renumbering; swapped offsets gave new ids | a tie goes to the previous symbol of the same library id and position; no vote at all: that symbol; its pins keep their ids; the fallback derives from the key, never by the property | `test_gui_ids_with_two_instances_follow_position_on_a_tie`; uuidorder.py: 18 cases, 0 symbols moved, 0 pin sets changed |
+
+Test runs: wf 140 passed, 2 skipped (kicad_sexpr runner 55 passed, 2 skipped); rev 33 passed, 2 skipped; ps 29
+passed, 1 skipped; psu 4 passed.
+
+## Third re-check (PR #12 at c0fd85d) and its fixes
+
+Every test below fails on c0fd85d and passes now; the re-check's repros (`/tmp/rc13/adv`: `rp.py` p5_strap /
+gnd_strap, nc16x with C201 and C601 deleted, `nest.py`, `tie.py`, `resave2.py`) and the earlier rounds' were re-run
+against the branch.
+
+| Finding | Fix | Verified |
+|---|---|---|
+| 1. refparts carried a global net through a strap pin: ch1's strap to +5V moved "net:+5V" onto other instances' rails (a false pass on C201), "net:GND" gave a false AMBIGUOUS | a global net (no sheet path; not KiCad's Net-( / unconnected-( name for an unlabelled net) is the same net in every instance; only sheet nets are carried through the instance's pins | `test_refparts.py::test_a_global_net_stays_global_when_a_strap_differs`; rp.py: p5_strap every instance on C9, gnd_strap every instance on its own cap |
+| 2. Instances sharing a rail passed on the first instance's part (U201 on C101 with C201 deleted; nested U1201 on C1101) | an IC on a sheet used several times is satisfied only by parts outside every other instance of that sheet (its own, the root's, a parent's) | `test_refparts.py::test_only_its_own_instance_parts_satisfy_an_ic` (flat and nested); nc16x: U201 / U601 no longer on C101 / C501; nest.py: every leaf IC on its own leaf's parts, group parts still count |
+| 3. A part moved while one of two instances was renumbered swapped GUI ids (and a 2-1 majority of identically renumbered instances did too) | schgen marks, per sheet, the instances whose references are unchanged at every shared position (`Schematic.mark_unchanged_instances`); their vote decides first, then the majority, then library id and position | `test_gui_ids_when_a_part_moves_while_one_of_two_instances_is_renumbered` (both cases); tie.py: the unchanged instance keeps its references in every case |
+
+Test runs: wf 143 passed, 2 skipped (kicad_sexpr runner 55 passed, 2 skipped); rev 33 passed, 2 skipped; ps 29
+passed, 1 skipped; psu 4 passed.

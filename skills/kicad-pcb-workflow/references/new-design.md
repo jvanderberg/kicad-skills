@@ -13,7 +13,7 @@ so a generator describes the design and never formats KiCad text itself:
 | Intended connectivity, checked against KiCad's netlist | `netspec.py` | python3 |
 | Redraw symbols readably, pins numbered for the footprint | `symgen.py` (library) | python3 |
 | Register a project library in sym-lib-table / fp-lib-table; list what nicknames resolve to | `libtable.py`, `symgen.save_library()`, `kicad_sexpr.LibTable` | python3 |
-| Draw the schematic as wired blocks; geometry checks; locate shorts | `schgen.py` (library) | python3 |
+| Draw the schematic as wired blocks, on one sheet or a hierarchy (sheets used N times); geometry checks; locate shorts | `schgen.py` (library) | python3 |
 | Footprint facts: courtyard, pad count / body vs package, pins vs pads | `fpcheck.py` | python3 |
 | Add missing courtyards to imported footprints | `add_courtyard.py` | python3 |
 | Same-named footprint copy without its silk outline (a part placed tighter on purpose) | `strip_outline.py` | python3 |
@@ -63,7 +63,8 @@ Keep the project's own kicad-skills inputs where `projfiles.py` finds them (`doc
 
 Before drawing anything, write the intended netlist: `{net: ["REF.PIN", ...]}` in a JSON file or a `NETS = {...}`
 python file (see `netspec.py`). It is the design, independent of how it is drawn; every later step is checked against
-it. Pin numbers are the footprint's pad numbers, so pick the footprints now (`fpcheck.py` below).
+it. Pin numbers are the footprint's pad numbers, so pick the footprints now (`fpcheck.py` below). A design split into
+sheets writes each sheet's nets once, in that sheet's own references (section 3a).
 
 ## 2. Symbols
 
@@ -105,10 +106,90 @@ With `schgen.Sch`: place parts, `wire()` between pin points (`part.p('VIN')` or 
 `label()` between blocks, then **before writing**: `s.collisions()` (pins on wire interiors, overlapping wires, wires
 through bodies, overlapping bodies) must be empty and `find_merges(s, NETS)` must return nothing. Then `s.write()`.
 
+## 3a. Large designs: hierarchical sheets
+
+**When to split.** One sheet holds one readable page (A3: roughly 60-100 parts drawn as blocks). Split when the design
+outgrows that, along the functional blocks of the requirements document (input power, each converter, MCU and its
+support, each interface), and always when a circuit repeats: a per-channel or per-port circuit drawn N times on one
+sheet is N times the review, and N chances for one copy to differ. Draw it once as a sub-sheet and place it N times.
+Keep each sheet's interface small: a handful of hierarchical labels, rails as power symbols.
+
+**How, with `schgen`:**
+```python
+from schgen import Sch, kicad_symbol_dir
+root = Sch('pixel', paper='A3', title='Pixel driver', rev='1')
+for lib in ('Device', 'Connector_Generic'):                             # libraries are shared by every sheet
+    root.lib(lib, '%s/%s.kicad_sym' % (kicad_symbol_dir(), lib))
+port = root.sub('port_pair.kicad_sch', paper='A4', title='Port pair')  # a Sch of its own: parts, wires, power,
+r1 = port.add('Device:R', 'R1', '33', 63.5, 60.96, rot=90,             # labels, taps, collisions(), find_merges()
+              footprint='Resistor_SMD:R_0402_1005Metric', lcsc='C25105')
+port.hlabel('DATA_A', 50.8, 60.96, 180, shape='input')                 # the sheet's interface
+port.hlabel('OUT_A', 76.2, 60.96, 0, shape='output')
+port.wire((50.8, 60.96), r1.p(1))
+port.wire(r1.p(2), (76.2, 60.96))
+mcu = root.add('Connector_Generic:Conn_01x16', 'J1', 'GPIO', 50.8, 50.8, mirror='y',   # stands in for the MCU
+               footprint='Connector_PinHeader_2.54mm:PinHeader_1x16_P2.54mm_Vertical', lcsc='C2337')
+for k in range(16):                                                    # one file, 16 instances
+    b = root.sheet(port, 'port%d' % (k + 1), 101.6, 25.4 + 12.7 * k, refs=100 * (k + 1))
+    for pt, dx, name in ((mcu.p(k + 1), 7.62, 'DATA%d' % k), (b.p('DATA_A'), -7.62, 'DATA%d' % k),
+                         (b.p('OUT_A'), 7.62, 'OUT%d' % k)):           # a sheet pin's point, like a part pin
+        root.wire(pt, (pt[0] + dx, pt[1]))                             # labels between blocks; wires orthogonal
+        root.label(name, pt[0] + dx, pt[1])
+assert not root.collisions() and not port.collisions()
+root.write('pixel.kicad_sch')                                          # writes every sheet file next to it
+```
+- `sheet()` draws the block with one pin per hierarchical label of the child (inputs, bidirectional and passive on
+  the left, outputs on the right; `left=` / `right=` to choose), sized to fit. `block.p('NAME')` is the pin's point.
+  Draw the labels before placing the blocks: `write()` refuses a block whose pins no longer match its sheet.
+- **References.** A symbol in a sheet used N times has N references, one per instance (KiCad keeps them in the
+  symbol's `instances`). The generator decides them: `refs=100 * k` offsets each number (R1 -> R101, R201, ...:
+  the pattern of KiCad's "sheet number x 100" annotation, but from your offset, not from the page number, which
+  counts every sheet before it), a dict renames, a function maps; nested sheets compose, innermost
+  first. Draw the sub-sheet with references below the offset step (R1-R99 for steps of 100). `write()` refuses any
+  reference used twice in the design and names the instances. Power symbols are global nets in every sheet and are
+  renumbered across the design. `root.instances()` lists every instance's sheet path and reference map.
+- **A power symbol is one net in every instance.** `power('+5V', ...)` inside a repeated sheet joins all N copies
+  (that is what rails are for). A supply that differs per instance - each bank's own input, each port's switched
+  output - must enter or leave through a hierarchical label, never a power symbol: four bank sheets that each draw a
+  `VBANK` power symbol short the four PSUs together, and ERC does not notice (netspec does: a SHORT, as long as
+  the spec keeps `VBANK` a per-instance sheet net, out of `global`).
+- Ids are stable as on one sheet: a sub-sheet's symbol ids are derived from its file name and its own (local)
+  references, and a regeneration keeps them by that key, so renumbering an instance moves no symbol id: every other
+  instance's footprint paths stay as they are (KiCad's Update PCB matches footprints by path). Ids made elsewhere
+  (a symbol drawn in the GUI) follow an instance whose references did not change; without one, the majority of the
+  instances, then the symbol's library id and position. Such an id is lost only when no instance kept the symbol's
+  reference and nothing is at its old position, and can go to another symbol only when every instance had some reference renumbered. A sheet block's id is
+  keyed by its name: **renaming a block gives that instance a new id**, so every footprint path of that instance
+  changes (`new_board.py` relinks them by reference; a board updated by KiCad's Update PCB relinks by reference only
+  when told to).
+- Before writing, check **every sheet**: `s.collisions()` (sheet pins that touch nothing, wires through a block) and
+  `find_merges(s, SHEET_NETS)` with that sheet's local references (`'port1/DATA_A'` names a sheet pin on the parent).
+
+**The intended netlist, once per sheet.** `netspec.py` reads a template form: each sheet's nets in its own references,
+its instances with their reference map, and the parent's nets joining an instance's net by `INSTANCE/NET`:
+```json
+{"global": ["GND", "+5V", "+3V3"],
+ "nets": {"DATA1": ["U1.12", "port1/DATA_A"], "DATA2": ["U1.13", "port2/DATA_A"]},
+ "sheets": {"port_pair": {"nets": {"DATA_A": ["R1.1"], "OUT_A": ["R1.2", "J1.2"], "GND": ["J1.3"]},
+                          "instances": {"port1": 100, "port2": 200}}}}
+```
+Each sheet net becomes one net per instance (`/port1/OUT_A`, KiCad's name); names in `global` are the design-wide
+rails. `netspec.py expand SPEC` prints it flat; `check` also reports MISPLACED when an instance's mapped reference is
+on another sheet in KiCad's netlist (an offset that does not match the drawing). Generate the instance maps from
+`root.instances()` rather than retyping them (`scripts/examples/hierarchy_demo.py` does both).
+
+**Downstream**, all on the root sheet: ERC and the netlist cover every instance; `new_board.py` makes one footprint
+per instance, linked by `/<sheet uuid>/<symbol uuid>` with that instance's reference and fields and pcbnew's
+`sheetname` / `sheetfile`; `partfields.py`, `check.sh` and pcb-part-selection's `bom_check.py` see every instance.
+`nc_audit.py` lists an unused or strapped pin of a repeated sheet once (it is one decision), with its other instances
+after it; a note for any instance covers all. A `refparts.py` entry for one instance of an IC is checked on every
+instance. `board_diff.py` compares one file at a time, with each per-instance reference as a symbol attribute.
+
 ## 4. Verify the schematic
 
 1. `python3 scripts/netspec.py check nets.py sheet.kicad_sch` - must print "netlist matches the spec". It reports
-   SPLIT / SHORT / MISSING / UNEXPECTED. ERC does not replace this: a generated sheet with a supply shorted to GND
+   SPLIT / SHORT / MISSING / UNEXPECTED (and MISPLACED for a sheet-template spec; give a hierarchical design's root
+   sheet). ERC does not replace this: a generated sheet with a supply shorted to GND
    passed ERC with one unrelated warning; netspec caught it at once, and `find_merges()` then named the pin and
    coordinate where the two nets touched.
 2. `kicad-cli sch erc` - clean, or every remaining item explained.
@@ -176,6 +257,8 @@ python3 scripts/board_setup.py proj.kicad_pro --stackup JLC04161H-7628 --class P
 - `board_setup.py --list` shows the stackups it knows; the numbers come from `kicad-new-board`'s
   `references/jlcpcb-stackups.md` and need re-checking on jlcpcb.com before an order.
 - An empty schematic for a brand-new project: `Sch('name').write('name.kicad_sch')` with `schgen`.
+- A hierarchical design: export the netlist from the root sheet; a sheet used N times gives N footprints (`R101`,
+  `R201`, ...), so `place.json` and `--labels` name every instance's reference.
 - Placement lives in a data file (`place.json`, mm relative to the outline's top-left), and the board is regenerated
   from schematic + placement + route plan. GUI edits must be folded back into those files before the next regeneration,
   or they are lost (`board_diff.py HEAD` shows what a regeneration would revert).

@@ -41,6 +41,10 @@ class IdMap(Dict[str, str]):
     def __init__(self) -> None:
         super().__init__()
         self.ambiguous: List[str] = []
+        # placed symbols of a schematic: uuid -> (lib id, x, y) and uuid -> {pin number: pin uuid} (sch_ids)
+        self.placed: Dict[str, Tuple[str, float, float]] = {}
+        self.pins: Dict[str, Dict[str, str]] = {}
+        self.refs: Dict[str, Dict[str, str]] = {}        # uuid -> {instance path: reference}
 
     def put(self, key: str, uuid: str) -> None:
         k, n = key, 1
@@ -72,8 +76,9 @@ class Uuids:
         self.reuse: Dict[str, str] = reuse if reuse is not None else {}
         self.reused = 0
         self._anon = 0
+        self._prev: Tuple[Optional[Dict[str, str]], Set[str]] = (None, set())   # (reuse map, its ids), see in_previous
 
-    def new(self, key: Optional[str] = None) -> str:
+    def new(self, key: Optional[str] = None, reuse: bool = True) -> str:
         if self.seed is None:
             while True:
                 u = str(_uuid.uuid4())
@@ -85,7 +90,7 @@ class Uuids:
             key = '~anon/%d' % self._anon
         k, n = key, 1
         while True:
-            old = self.reuse.get(k)
+            old = self.reuse.get(k) if reuse else None     # reuse=False: derived only (the key may name another item)
             if old is not None and old not in self.used:
                 self.used.add(old)
                 self.reused += 1
@@ -97,6 +102,16 @@ class Uuids:
                     return u
             n += 1
             k = '%s#%d' % (key, n)
+
+    def derived(self, key: str) -> Optional[str]:
+        """The id ``new(key)`` derives when nothing is reused (None without a seed); registers nothing."""
+        return None if self.seed is None else str(_uuid.uuid5(UUID_NAMESPACE, self.seed + '\n' + key))
+
+    def in_previous(self, u: Optional[str]) -> bool:
+        """``u`` is an id of the previous version (``reuse``) that this document has not used yet."""
+        if self._prev[0] is not self.reuse:
+            self._prev = (self.reuse, set(self.reuse.values()))
+        return u is not None and u in self._prev[1] and u not in self.used
 
     def take(self, u: str) -> str:
         """Register an explicit uuid; raises if the document already uses it."""

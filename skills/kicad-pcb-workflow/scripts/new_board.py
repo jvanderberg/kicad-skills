@@ -9,7 +9,10 @@ KiCad has no command-line "update PCB from schematic". This does what that does 
 `kicad-cli sch export netlist --format kicadxml`, writing every item through kicad_sexpr (Board.add_footprint places
 and flips footprints the way pcbnew does, checked item by item against pcbnew in kicad_sexpr's tests):
 - loads each footprint from the project's fp-lib-table (${KIPRJMOD}) or KiCad's global table / library directory;
-- sets reference, value, the symbol link (sheet path + symbol uuid, so schematic parity works) and every pad's net,
+- sets reference, value, the symbol link (sheet path + symbol uuid, so schematic parity works: "/<symbol uuid>" on
+  the root sheet, "/<sheet uuid>/<symbol uuid>" on a sub-sheet, one footprint per instance of a sheet used N times,
+  each with that instance's reference and fields), the sheet it is on as pcbnew writes it ((sheetname "/ch2/"),
+  (sheetfile "channel.kicad_sch")) and every pad's net,
   escaping "/" as {slash} in auto-generated net names (kicad_sexpr.board_net_name), with the pin's name and electrical
   type as (pinfunction ...) and (pintype ...), as KiCad's update does (JLCImport's placement solver pairs a polarised
   part's pads by those pin names; without them it assumes KiCad's pad-1 convention and warns on every diode and LED);
@@ -169,6 +172,10 @@ def main():
             continue
         sp = c.find('sheetpath')
         path = (sp.get('tstamps') if sp is not None else '/') + (c.findtext('tstamps') or '').strip()
+        # the sheet a part is on, as pcbnew's update writes it: (sheetname "/ch2/") - the sheet path, "/" on the root -
+        # and (sheetfile "channel.kicad_sch"); every instance of a repeated sheet is a footprint of its own
+        sheetname = sp.get('names') if sp is not None else None
+        sheetfile = next((q.get('value') for q in c.findall('property') if q.get('name') == 'Sheetfile'), None)
         f = {e.get('name'): (e.text or '') for e in (c.find('fields') or [])}
         # every schematic field is carried to the footprint, Datasheet and Description included (KiCad also writes
         # them as <datasheet>/<description> elements; use those when the field list lacks them)
@@ -182,7 +189,8 @@ def main():
         if 'exclude_from_board' in flags:
             offboard.append(ref)
             continue
-        comps.append(dict(ref=ref, value=c.findtext('value') or '', fp=fp, path=path, fields=f, flags=flags))
+        comps.append(dict(ref=ref, value=c.findtext('value') or '', fp=fp, path=path, fields=f, flags=flags,
+                          sheetname=sheetname, sheetfile=sheetfile))
     # (net, pin name, pin type) per pad, as KiCad's update writes them: (pinfunction ...) only for a named pin, verbatim
     # from the netlist (KiCad's own suffixes such as "Pin_1_1" included), and (pintype ...) for every pin
     pins = {(n.get('ref'), n.get('pin')): (board_net_name(net.get('name')), n.get('pinfunction'), n.get('pintype'))
@@ -213,7 +221,8 @@ def main():
             col, row = divmod(staged, 12)
             at, rot, side = (ox + w + 15 + col * 10, oy + row * 8), 0, 'F'
             staged += 1
-        fp = b.add_footprint(src, c['fp'], c['ref'], c['value'], at, rot, side, path=c['path'], fields=c['fields'])
+        fp = b.add_footprint(src, c['fp'], c['ref'], c['value'], at, rot, side, path=c['path'], fields=c['fields'],
+                             sheetname=c['sheetname'], sheetfile=c['sheetfile'])
         set_sch_attrs(fp, c['flags'])
         for prop, _ in SCH_ATTRS:
             if prop in c['flags']:
