@@ -244,3 +244,62 @@ def test_add_symbol_lib_fields_limits_the_copied_properties():
     assert comps['R2']['LCSC'] == 'C11702' and comps['R2'].get('Description', '') == ''
     assert erc(p).get('lib_symbol_mismatch', 0) == 0
     assert comps['R2']['_footprint'] == 'Resistor_SMD:R_0402_1005Metric'
+
+
+def test_multi_instance_sheet():
+    """One sub-sheet file placed by two sheet blocks: each symbol lists both instances with its own reference (what
+    KiCad 10 writes), the netlist has both parts on their own sheet paths, ERC is clean, KiCad re-saves the instances
+    unchanged, and a regeneration finds a symbol's id by any (instance path, reference) it had."""
+    libs = _libs()
+    d = tmpdir('multi')
+    open(os.path.join(d, 'm.kicad_pro'), 'w').write('{}')
+
+    def build(previous=None):
+        root = Schematic.new('m', previous=os.path.join(d, 'm.kicad_sch') if previous else None)
+        root.embed_symbol('Device:R', libs['Device'])
+        blocks = []
+        for k in (1, 2):
+            y = 50.8 + 25.4 * (k - 1)
+            blk = root.sheet('ch%d' % k, 'ch.kicad_sch', (101.6, y), (25.4, 7.62), instances=[],
+                             pins=[('SIG', 'input', (101.6, y + 2.54), 180)])
+            root.sheet_instance(blk, root.instance_path, str(k + 1))
+            r = root.add_symbol('Device:R', 'R%d' % k, '1k', (76.2, y + 2.54), 90,
+                                footprint='Resistor_SMD:R_0402_1005Metric')
+            root.wire(r.pin(1), (101.6, y + 2.54))
+            root.no_connect(r.pin(2))
+            blocks.append(blk)
+        paths = ['%s/%s' % (root.instance_path, b.get('uuid')) for b in blocks]
+        sub = Schematic.new('m', root=False, file='ch.kicad_sch',
+                            previous=os.path.join(d, 'ch.kicad_sch') if previous else None)
+        sub.embed_symbol('Device:R', libs['Device'])
+        r = sub.add_symbol('Device:R', 'R101', '2k', (76.2, 55.88), 90, footprint='Resistor_SMD:R_0402_1005Metric',
+                           key='symbol/R1/1', instances=[(paths[0], 'R101'), (paths[1], 'R201')])
+        sub.wire(r.pin(2), (88.9, 55.88))
+        sub.hierarchical_label('SIG', (88.9, 55.88), 0, 'input')
+        sub.no_connect(r.pin(1))
+        return root, sub, r, paths
+    root, sub, r, paths = build()
+    assert r.instances() == [(paths[0], 'R101', 1), (paths[1], 'R201', 1)] and r.ref == 'R101'
+    assert r.reference(paths[1]) == 'R201'
+    assert sub.tree.find('embedded_fonts') is None and sub.tree.find('sheet_instances') is None
+    root.save(os.path.join(d, 'm.kicad_sch'))
+    sub.save(os.path.join(d, 'ch.kicad_sch'))
+    p = os.path.join(d, 'm.kicad_sch')
+    assert erc(p) == {}, erc(p)
+    nets = {k: sorted(v) for k, v in netlist(p).items()}
+    assert sorted(v for v in nets.values() if len(v) > 1) == [['R1.1', 'R101.2'], ['R2.1', 'R201.2']], nets
+    assert '/ch1/SIG' in nets and '/ch2/SIG' in nets, nets
+    # KiCad keeps both instances when it re-saves the sub-sheet
+    before = sorted(dumps(n) for n in load(os.path.join(d, 'ch.kicad_sch')).nodes())
+    after = sorted(dumps(n) for n in loads(resave(os.path.join(d, 'ch.kicad_sch'))).nodes())
+    assert before == after
+    # a duplicate reference within one instance is refused; the same reference in two instances is not
+    r.set_reference('R101', paths[1])
+    assert not any('duplicate references' in m for m in sub.validate())
+    sub.add_symbol('Device:R', 'R101', '1k', (50.8, 76.2), instances=[(paths[0], 'R101'), (paths[1], 'R202')])
+    assert any('R101 unit 1 in %s' % paths[0] in m for m in sub.validate()), sub.validate()
+    # a symbol whose id was changed (as a GUI edit or another tool might) keeps it, found by its instances
+    t = open(os.path.join(d, 'ch.kicad_sch')).read().replace(r.uuid, '12345678-1234-4234-8234-123456789abc')
+    open(os.path.join(d, 'ch.kicad_sch'), 'w').write(t)
+    _, sub2, r2, _ = build(previous=True)
+    assert r2.uuid == '12345678-1234-4234-8234-123456789abc', r2.uuid
