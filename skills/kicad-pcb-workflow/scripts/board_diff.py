@@ -9,7 +9,10 @@
                                                 # file it used
   board_diff.py HEAD:hardware/x.kicad_pcb NEW   # an explicit path in a revision (repo-root relative, or ./ relative
                                                 # to --repo or the current folder, as git takes it)
-  board_diff.py HEAD NEW.kicad_sch ...          # schematics: symbols by reference, then everything else
+  board_diff.py HEAD NEW.kicad_sch ...          # schematics: symbols by reference, then everything else; one
+                                                # file at a time (run it on each sheet of a hierarchical design:
+                                                # sheet blocks, their pins and pages are compared like any item, and
+                                                # a repeated sheet's per-instance references are symbol attributes)
 
 Lists every difference, never only the geometric ones: per footprint (or symbol) every attribute that changed -
 library id, position, rotation, side, every field (Value, LCSC, MPN, Datasheet, ...), attributes (DNP, exclude from
@@ -153,6 +156,12 @@ def sym_attrs(s):
             a[k] = str(s.get(k))
     for k, v in props(s).items():
         a['field ' + k] = v
+    # a symbol on a sheet used more than once has a reference per sheet instance: each is an attribute (on a single
+    # sheet the one instance repeats the Reference field, so it is not listed twice)
+    insts = [(str(p[1]), str(p.find('reference')[1])) for p in s.walk('path') if p.find('reference') is not None]
+    if not (len(insts) == 1 and insts[0][1] == a.get('field Reference')):
+        for path, ref in insts:
+            a['reference in %s' % path] = ref
     return a
 
 

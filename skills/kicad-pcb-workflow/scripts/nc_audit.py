@@ -19,11 +19,16 @@ project's pin-decisions.json is found by projfiles.py's convention (next to the 
 root) and the file used is printed. With --require-notes the exit status is 1 while any listed pin has no note.
 --datasheet: for parts whose pin table is in that PDF (or pdftotext output), each row shows the datasheet lines that
 mention the pin's name and number, so the decision is written from the pin table, not from memory.
+
+Hierarchical designs: a sheet used N times is one drawing, so an unused or strapped pin in it is one decision. Its N
+instances (the same symbol of the same sheet file, under N references) are one row, listed by the first instance's
+pin with the others after it, and a note for any of them (e.g. "U101.5") covers all. Rail names may carry a sheet
+path ("/ch1/VIN" matches the default --rail-regex).
 """
 import argparse, json, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from netspec import netlist_xml
+from netspec import netlist_xml, siblings
 import projfiles
 
 
@@ -45,6 +50,26 @@ def pin_lines(text, name, num):
             ctx = [x.strip() for x in lines[max(0, i - 2):i + 3] if x.strip()]
             hits.append(' / '.join(ctx))
     return hits[:2]
+
+
+def group_instances(rows, sib):
+    """rows of one symbol pin in every instance of a repeated sheet, merged: the first instance's row with the others
+    in 'instances'; a strap to a net local to each instance ('/ch1/X', '/ch2/X') is the same strap"""
+    groups, out = {}, []
+    for r in rows:
+        ref, num = r['pin'].split('.', 1)
+        f, uuid, sheet = sib.get(ref, ('', ref, '/'))
+        state = r['state']
+        if sheet != '/' and state.startswith('tied to ' + sheet):
+            state = 'tied to ' + state[len('tied to ' + sheet):]
+        k = (f, uuid or ref, num, r['type'], state)
+        if k in groups:
+            groups[k]['instances'].append(r['pin'])
+            continue
+        r = dict(r, instances=[])
+        groups[k] = r
+        out.append(r)
+    return out
 
 
 def audit(root, rail_regex):
@@ -76,7 +101,7 @@ def audit(root, rail_regex):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('netlist'); ap.add_argument('--notes'); ap.add_argument('--require-notes', action='store_true')
-    ap.add_argument('--rail-regex', default=r'^(/)?([AP]?GND\w*|\+\w+|V(CC|DD|IN|BAT|BUS|SYS)\w*)$',
+    ap.add_argument('--rail-regex', default=r'^(/([^/]+/)*)?([AP]?GND\w*|\+\w+|V(CC|DD|IN|BAT|BUS|SYS)\w*)$',
                     help='net names that count as rails for strapped inputs')
     ap.add_argument('--md', help='also write the table here')
     ap.add_argument('--datasheet', action='append', default=[], metavar='REF_OR_VALUE=FILE',
@@ -88,23 +113,27 @@ def main():
     ds = {}
     for d in a.datasheet:
         k, f = d.split('=', 1); ds[k] = ds_text(f)
-    rows = audit(netlist_xml(a.netlist), a.rail_regex)
+    root = netlist_xml(a.netlist)
+    rows = group_instances(audit(root, a.rail_regex), siblings(root))
     lines = ['| Pin | Part | Name | Type | State | Decision / datasheet note |' + (' Datasheet pin table |' if ds else ''),
              '|---|---|---|---|---|---|' + ('---|' if ds else '')]
     missing = 0
     for r in rows:
-        note = notes.get(r['pin'], '')
+        note = next((notes[p] for p in [r['pin']] + r['instances'] if notes.get(p)), '')
         if not note:
             missing += 1
-        row = '| %s | %s | %s | %s | %s | %s |' % (r['pin'], r['value'], r['name'], r['type'], r['state'], note or '**TODO**')
+        pin = r['pin'] + (' (and %s)' % ', '.join(r['instances']) if r['instances'] else '')
+        row = '| %s | %s | %s | %s | %s | %s |' % (pin, r['value'], r['name'], r['type'], r['state'], note or '**TODO**')
         if ds:
             t = ds.get(r['pin'].split('.')[0]) or ds.get(r['value'])
             row += ' %s |' % ('; '.join(pin_lines(t, r['name'], r['pin'].split('.')[1])) or '(no row for %s %s found)' % (r['name'], r['pin'].split('.')[1])
                               if t else '(no datasheet given)')
         lines.append(row)
-    stale = sorted(set(notes) - {r['pin'] for r in rows})
-    out = '\n'.join(lines) + '\n\n%d pins listed, %d without a decision%s\n' % (
-        len(rows), missing, '; notes for pins no longer unused/strapped: ' + ' '.join(stale) if stale else '')
+    stale = sorted(set(notes) - {p for r in rows for p in [r['pin']] + r['instances']})
+    every = sum(1 + len(r['instances']) for r in rows)
+    out = '\n'.join(lines) + '\n\n%d pins listed%s, %d without a decision%s\n' % (
+        len(rows), ' (%d counting every sheet instance)' % every if every != len(rows) else '', missing,
+        '; notes for pins no longer unused/strapped: ' + ' '.join(stale) if stale else '')
     print(out, end='')
     if a.md:
         open(a.md, 'w').write(out)

@@ -22,11 +22,16 @@ reference-parts.json (found by projfiles.py's convention when --spec is not give
   must have one pad on each. kind: refdes prefix (C, R, L, D, ...). value with "tol" (relative, default 0.25) and/or
   "min"/"max"; max_mm: centre-to-centre distance from the part's nearest pad to the IC pad of the first endpoint
   (needs the board). Exit 1 if any entry is MISSING, WRONG VALUE or FAR.
+
+Hierarchical designs: an entry for one instance of an IC on a sheet used several times (U101 on /ch1/) is checked on
+every instance of it (U201, U301, ...: the same symbol of the same sheet file), each against its own parts and board
+placement; net names local to the instance ("/ch1/VSENSE") are translated to each one's ("/ch2/VSENSE"). An instance
+with an entry of its own keeps it.
 """
 import argparse, json, math, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from netspec import netlist_xml  # noqa: E402
+from netspec import netlist_xml, siblings  # noqa: E402
 import projfiles  # noqa: E402
 
 UNIT = {'p': 1e-12, 'n': 1e-9, 'u': 1e-6, 'µ': 1e-6, 'm': 1e-3, '': 1.0, 'k': 1e3, 'K': 1e3, 'M': 1e6}
@@ -52,6 +57,31 @@ def load_netlist(root):
         for n in net.findall('node'):
             pins.setdefault(n.get('ref'), []).append((n.get('pin'), pin_fn(n.get('pinfunction'), n.get('pin')), net.get('name')))
     return comps, pins
+
+
+def expand_instances(spec, sib):
+    """the spec with each IC's entry repeated for the other instances of its sheet (same symbol uuid and sheet file)
+    that have none of their own, right after it"""
+    out = {}
+    for ic, blk in spec.items():
+        out.setdefault(ic, blk)
+        if ic not in sib or not sib[ic][1]:
+            continue
+        f, uuid, sheet = sib[ic]
+        for ref in sorted(sib, key=lambda r: [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', r)]):
+            f2, u2, sheet2 = sib[ref]
+            if ref == ic or (f2, u2) != (f, uuid) or ref in spec or ref in out:
+                continue
+            def tr(ep):
+                pre = 'net:' if ep.startswith('net:') else ''
+                n = ep[len(pre):]
+                return pre + sheet2 + n[len(sheet):] if sheet != '/' and n.startswith(sheet) else ep
+            b = json.loads(json.dumps(blk))
+            for e in b.get('parts', []):
+                e['between'] = [tr(x) for x in e['between']]
+            b['instance_of'] = ic
+            out[ref] = b
+    return out
 
 
 def endpoint(ep, ic, pins, nets):
@@ -153,8 +183,9 @@ def main():
     if not sp:
         sys.exit('no reference-parts.json: write one from each IC\'s datasheet typical application and layout figure')
     spec = json.load(open(sp))
-    comps, pins = load_netlist(netlist_xml(a.netlist))
-    rows = check(spec, comps, pins, board_pads(a.board))
+    root = netlist_xml(a.netlist)
+    comps, pins = load_netlist(root)
+    rows = check(expand_instances(spec, siblings(root)), comps, pins, board_pads(a.board))
     out = ['| IC | Required (datasheet) | Where | Status |', '|---|---|---|---|']
     out += ['| %s | %s: %s | %s | %s |' % (r['ic'], r['role'], r['need'], r.get('where', ''), r['status']) for r in rows]
     bad = [r for r in rows if not r['status'].startswith('ok')]

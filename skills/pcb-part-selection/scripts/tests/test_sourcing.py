@@ -533,6 +533,29 @@ def test_bom_check_one_part_on_two_bom_lines(env):
     assert rc == 0 and 'SPLIT' not in out, out
 
 
+def test_bom_check_sheet_used_several_times(env):
+    """a sheet placed 3 times is 3 sets of parts in KiCad's netlist (one <comp> per instance, the instance's own
+    reference and sheet path, one symbol uuid): every instance is counted in the order quantity"""
+    write_sourcing(env, boards=5, attrition=0)
+    sch = env['proj'] / 'hardware' / 'x.kicad_sch'; sch.write_text('')
+    inst = []
+    for k, block in ((1, 'a1b2c3d4-0000-4000-8000-000000000001'), (2, 'a1b2c3d4-0000-4000-8000-000000000002'),
+                     (3, 'a1b2c3d4-0000-4000-8000-000000000003')):
+        inst.append(comp('R%d01' % k, '100', 'C25076', fp='Resistor_SMD:R_0402_1005Metric').replace(
+            '</comp>', '<property name="Sheetname" value="ch%d"/><property name="Sheetfile" value="channel.kicad_sch"/>'
+            '<sheetpath names="/ch%d/" tstamps="/%s/"/><tstamps>5e1f0000-0000-4000-8000-0000000000aa</tstamps></comp>'
+            % (k, k, block)))
+    rc, out = sh(os.path.join(HERE, 'bom_check.py'), str(sch), '--netlist', netlist(env, inst), '--cli', env['cli'],
+                 '--no-derived', '--no-local-datasheets')
+    row = next(l for l in out.splitlines() if l.startswith('C25076'))
+    assert row.split()[1] == '3' and rc == 0, out
+    import bom_check
+    groups, missing = bom_check.bom_groups(netlist(env, inst))
+    assert groups['C25076']['refs'] == ['R101', 'R201', 'R301'] and not missing, groups
+    lc = [c for c in calls(env) if c[0] == 'search']
+    assert lc and all('--region' in c for c in lc)
+
+
 @pytest.mark.skipif(not os.environ.get('LCSC_LIVE'), reason='set LCSC_LIVE=1 to query LCSC for real')
 def test_live_regions():
     """the real case: C3289423 stocked in cn only, C316138 stocked in global (2026-10-25; stock moves)"""

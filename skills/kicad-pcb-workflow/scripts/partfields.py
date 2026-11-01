@@ -65,29 +65,53 @@ def _yes(n, head, default=True):
 
 
 def schematic_parts(path):
-    """{ref: dict(fields={name: value}, in_bom, on_board, dnp)} for real parts (power symbols and #refs skipped)"""
+    """{ref: dict(fields={name: value}, in_bom, on_board, dnp)} for real parts (power symbols and #refs skipped), over
+    the whole hierarchy: every sheet instance, so a sheet placed N times gives its parts N times, each under the
+    reference its instance has ((instances (project (path "/<root>/<sheet>" (reference ...))))), as KiCad's netlist
+    and the board name them."""
     from kicad_sexpr import load
     out = {}
-    def walk(file, seen):
-        t = load(file)
+    trees = {}
+
+    def tree(file):
+        if file not in trees:
+            trees[file] = load(file)
+        return trees[file]
+
+    def walk(file, ipath, depth):
+        t = tree(file)
         for s in t.nodes('symbol'):
             props = {str(p[1]): str(p[2]) for p in s.nodes('property')}
             ref = props.get('Reference', '')
+            refs = {}
+            inst = s.find('instances')
+            for proj in (inst.nodes('project') if inst is not None else []):
+                for pth in proj.nodes('path'):
+                    r = pth.find('reference')
+                    if r is not None and len(r) > 1:
+                        refs.setdefault(str(pth[1]), str(r[1]))
+            ref = refs.get(ipath, ref)                 # no entry for this instance: the Reference property
             if not ref or ref.startswith('#'):
                 continue
             e = out.setdefault(ref, dict(fields={}, in_bom=_yes(s, 'in_bom'), on_board=_yes(s, 'on_board'), dnp=_yes(s, 'dnp', False),
                                             in_pos=_yes(s, 'in_pos_files')))
             for k, v in props.items():               # units of one part: the union of their fields
+                if k == 'Reference':
+                    v = ref
                 if not blank(v) or k not in e['fields']:
                     e['fields'][k] = v
-        for sh in t.nodes('sheet'):                  # hierarchical sheets
+        for sh in t.nodes('sheet'):                  # hierarchical sheets: every instance
             props = {str(p[1]): str(p[2]) for p in sh.nodes('property')}
             f = props.get('Sheetfile') or props.get('Sheet file')
-            if f:
-                f = os.path.join(os.path.dirname(file), f)
-                if f not in seen and os.path.exists(f):
-                    seen.add(f); walk(f, seen)
-    walk(path, {path})
+            u = sh.find('uuid')
+            if not f or u is None or depth > 32:
+                continue
+            f = os.path.join(os.path.dirname(file), f)
+            if os.path.exists(f):
+                walk(f, '%s/%s' % (ipath, u[1]) if ipath is not None else None, depth + 1)
+    t = tree(path)
+    u = t.find('uuid')
+    walk(path, '/%s' % u[1] if u is not None else None, 0)
     return out
 
 
