@@ -40,8 +40,8 @@ reference used twice anywhere in the design, numbers power symbols across it (th
 sub-sheet once with one (instances (project (path "/<root>/<block>" (reference ..) (unit ..)))) entry per instance
 and the page numbers in the sheet blocks, and keys ids by sub-sheet file and local reference, so an unchanged design
 rewrites the same bytes and renumbering an instance moves no symbol id (an id made in the GUI is kept by the
-instances' references, then by library id and position; renaming a block gives it a new id, and every footprint path
-of that instance changes). s.instances() lists every instance's sheet path and reference map (for netspec.py's sheet
+instance whose references did not change, else by the majority of instances, then by library id and position;
+renaming a block gives it a new id, and every footprint path of that instance changes). s.instances() lists every instance's sheet path and reference map (for netspec.py's sheet
 templates). find_merges() on a parent names a sheet pin 'BLOCK/LABEL'.
 """
 import math, os, re, shutil, sys
@@ -617,6 +617,9 @@ class Sch:
                 sch.global_label(name, (x, y), rot, shape)
         for s, x, y, size, bold in self.texts:
             sch.text(s, (x, y), size=size, bold=bold)
+        if refs_of:                     # which instances kept their references: they decide tied id votes
+            sch.mark_unchanged_instances([(p.lib_id, (p.x, p.y), dict(refs_of(p))) for p in self.parts
+                                          if not p.ref.startswith('#')])
         for p in self.parts:
             self._place(sch, p, refs_of(p) if refs_of else None)
 

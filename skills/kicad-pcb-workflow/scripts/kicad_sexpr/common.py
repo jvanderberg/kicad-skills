@@ -44,6 +44,7 @@ class IdMap(Dict[str, str]):
         # placed symbols of a schematic: uuid -> (lib id, x, y) and uuid -> {pin number: pin uuid} (sch_ids)
         self.placed: Dict[str, Tuple[str, float, float]] = {}
         self.pins: Dict[str, Dict[str, str]] = {}
+        self.refs: Dict[str, Dict[str, str]] = {}        # uuid -> {instance path: reference}
 
     def put(self, key: str, uuid: str) -> None:
         k, n = key, 1

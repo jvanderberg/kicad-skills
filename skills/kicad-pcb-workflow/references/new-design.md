@@ -156,8 +156,9 @@ root.write('pixel.kicad_sch')                                          # writes 
 - Ids are stable as on one sheet: a sub-sheet's symbol ids are derived from its file name and its own (local)
   references, and a regeneration keeps them by that key, so renumbering an instance moves no symbol id: every other
   instance's footprint paths stay as they are (KiCad's Update PCB matches footprints by path). Ids made elsewhere
-  (a symbol drawn in the GUI) are kept by the instances' references, a tie by the symbol's library id and position;
-  such an id is lost only when every instance's reference changes and the symbol moves as well. A sheet block's id is
+  (a symbol drawn in the GUI) follow an instance whose references did not change; without one, the majority of the
+  instances, then the symbol's library id and position. Such an id is lost only when no instance kept the symbol's
+  reference and nothing is at its old position, and can go to another symbol only when every instance had some reference renumbered. A sheet block's id is
   keyed by its name: **renaming a block gives that instance a new id**, so every footprint path of that instance
   changes (`new_board.py` relinks them by reference; a board updated by KiCad's Update PCB relinks by reference only
   when told to).

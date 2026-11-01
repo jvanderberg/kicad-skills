@@ -154,10 +154,14 @@ Generated files are deterministic. Every builder gives its item a uuid from a st
 `instances=` keeps, in this order:
 - the id its own `key` derives, when the previous version has it, with pin ids derived from the key as well
   (renumbering an instance moves no id, so no other instance's footprint path changes);
-- else, for an id that came from elsewhere (the GUI), the id most of its `(instance path, reference)` pairs had there
-  (`symbol@<path>:<ref>/<unit>`), a tie going to the previous symbol of the same library id at the same position; with
-  no pair found, the previous symbol of that library id and position. Its pins keep their ids. Such an id is lost only
-  when every instance's reference changed and the symbol also moved;
+- else, for an id that came from elsewhere (the GUI), by its `(instance path, reference)` pairs
+  (`symbol@<path>:<ref>/<unit>`): the id an unchanged instance had (`mark_unchanged_instances`: an instance whose
+  references are the same at every position present in both versions; schgen marks them for each sheet); without
+  one, the id most pairs had, a tie going to the previous symbol of the same library id at the same position, then to
+  the first instance's. With no pair found, the previous symbol of that library id and position. Its pins keep their
+  ids. Such an id is lost only when no instance kept the symbol's reference and no previous symbol is at its position;
+  it can go to another symbol only when no instance kept all its references (the vote then follows the majority of
+  renumbered instances, or the position);
 - else an id derived from `key`, never the previous id of the Reference property's value (the first instance's
   reference, which another symbol may have had).
 

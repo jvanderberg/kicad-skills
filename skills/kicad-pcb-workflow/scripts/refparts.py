@@ -25,11 +25,13 @@ reference-parts.json (found by projfiles.py's convention when --spec is not give
 
 Hierarchical designs: an entry for one instance of an IC on a sheet used several times (U101 on /ch1/) is checked on
 every instance of it (U201, U301, ...: the same symbol of the same sheet file), each against its own parts and board
-placement. A pin endpoint is the same pin of each instance's IC. A net endpoint is carried over through the symbol
-pins of the first instance that are on it, to the same pins in the other instance: "net:/BANK1" becomes U201's rail
-(/BANK2) whatever the parent named it, through the IC's VCC pin or, when the IC has no pin on it, through another
-part's (C101.1 -> C201.1). A net no symbol of the instance touches is kept as written; a global net (GND) maps to
-itself. An entry whose net lands on several nets in an instance (wired differently there) is AMBIGUOUS: give that
+placement: a part inside another instance of the same sheet never satisfies it (four port pairs on one bank rail:
+U201's decoupling cap is C201, not C101; parts of the root or a parent sheet still count). A pin endpoint is the same
+pin of each instance's IC. A global net (a power symbol or global label: +5V, GND - no sheet path) is the same net in
+every instance. Any other net endpoint is carried over through the symbol pins of the first instance that are on it,
+to the same pins in the other instance: "net:/BANK1" becomes U201's rail (/BANK2) whatever the parent named it,
+through the IC's VCC pin or, when the IC has no pin on it, through another part's (C101.1 -> C201.1). One no symbol of
+the instance touches is kept as written. An entry whose net lands on several nets in an instance (wired differently there) is AMBIGUOUS: give that
 instance its own entry. An instance with an entry of its own keeps it.
 "pin:2,5" names several pins of the IC on one net (AMBIGUOUS if they are not on one net); a part satisfies an entry
 only with one pad on each endpoint.
@@ -69,10 +71,20 @@ def natkey(s):
     return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', s)]
 
 
+def is_global(net):
+    """a net KiCad names the same on every sheet: a power symbol or a global label (no sheet path), not one of its
+    own names for an unlabelled net (Net-(R101-Pad2), unconnected-(...), named after one instance's part)"""
+    return not net.startswith(('/', 'Net-(', 'unconnected-('))
+
+
 def instance_net(net, sheet, sheet2, sib, pins):
-    """(the net `net` of instance `sheet` is on instance `sheet2`, or None, problem): carried over through every
-    symbol pin of the first instance (and the sheets below it) that is on it, to the same pin of the same symbol in
-    the other instance. A net no symbol of the instance touches comes back unchanged; a global net maps to itself."""
+    """(the net `net` of instance `sheet` is on instance `sheet2`, or None, problem). A global net (is_global: +5V,
+    GND) is itself in every instance, whatever a pin strapped to it in one instance is strapped to in another. Any
+    other net is carried over through every symbol pin of the first instance (and the sheets below it) that is on it,
+    to the same pin of the same symbol in the other instance; one no symbol of the instance touches comes back
+    unchanged."""
+    if is_global(net):
+        return net, None
     where = {(f, u, sh): r for r, (f, u, sh) in sib.items() if u}
     pin2net = {(r, p): n for r, ps in pins.items() for p, _, n in ps}
     to = {}
@@ -157,10 +169,22 @@ def board_pads(path):
     return out
 
 
-def check(spec, comps, pins, pads):
+def foreign(ic, sib):
+    """the sheet paths of the other instances of ic's sheet (ic on /port2/: /port1/, /port3/, ...; nested: the other
+    /g*/l*/): a part under one of them is another instance's, never ic's"""
+    if not sib or ic not in sib or not sib[ic][1]:
+        return ()
+    f, _, sheet = sib[ic]
+    return tuple(sorted({sh for ff, u, sh in sib.values() if ff == f and u and sh != sheet}))
+
+
+def check(spec, comps, pins, pads, sib=None):
+    """sib (netspec.siblings): with it, an IC on a sheet used several times is satisfied only by parts of its own
+    instance (or outside every instance of that sheet: the root's, a parent's), never by another instance's"""
     nets = {n for v in pins.values() for _, _, n in v}
     rows = []
     for ic, blk in spec.items():
+        others = foreign(ic, sib)
         used = {}                                        # one schematic part satisfies one datasheet part
         if ic not in pins:
             pass
@@ -185,7 +209,7 @@ def check(spec, comps, pins, pads):
             for ref, ps in pins.items():
                 if e.get('kind') and not re.match(r'^%s\d' % re.escape(e['kind']), ref):
                     continue
-                if len(ps) != 2:
+                if len(ps) != 2 or (others and sib.get(ref, ('', '', ''))[2].startswith(others)):
                     continue
                 a, b = ps[0][2], ps[1][2]                     # one pad on each endpoint, never both on one
                 if a != b and ((a in n1 and b in n2) or (b in n1 and a in n2)):
@@ -236,7 +260,8 @@ def main():
     spec = json.load(open(sp))
     root = netlist_xml(a.netlist)
     comps, pins = load_netlist(root)
-    rows = check(expand_instances(spec, siblings(root), pins), comps, pins, board_pads(a.board))
+    sib = siblings(root)
+    rows = check(expand_instances(spec, sib, pins), comps, pins, board_pads(a.board), sib)
     out = ['| IC | Required (datasheet) | Where | Status |', '|---|---|---|---|']
     out += ['| %s | %s: %s | %s | %s |' % (r['ic'], r['role'], r['need'], r.get('where', ''), r['status']) for r in rows]
     bad = [r for r in rows if not r['status'].startswith('ok')]

@@ -7,7 +7,7 @@ Items with no builder are added with ``sch.add(Node(...))``; every item already 
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from .common import (SCH_VERSION, IdMap, Point, Uuids, duplicate_uuids, font_effects, header, norm_angle, pt_key,
                      rotate, stroke)
@@ -96,6 +96,7 @@ def sch_ids(tree: Node) -> IdMap:
                 m.placed[str(u[1])] = (str(n.get('lib_id')), round(at.number(1), 4), round(at.number(2), 4))
             m.pins[str(u[1])] = {str(pin[1]): str(pin.find('uuid')[1]) for pin in n.nodes('pin')
                                  if pin.find('uuid') is not None and len(pin.find('uuid')) > 1}
+            m.refs[str(u[1])] = {path: ref for path, ref, _ in _instances_of(n)}
             # a symbol on a sheet used more than once has one reference per sheet instance: it is also found by any
             # (instance path, reference) it had, whatever its Reference property says
             for path, ref, unit in _instances_of(n):
@@ -326,6 +327,7 @@ class Schematic:
         # instance path of this sheet: "/<root uuid>" for a root sheet, "/<root uuid>/<sheet uuid>" for a sub-sheet
         self.instance_path = instance_path or self._guess_instance_path()
         self._pwr = 0
+        self.unchanged: Set[str] = set()     # instance paths whose references did not change (mark_unchanged_instances)
 
     # ---------------------------------------------------------------- create / load / save
     @classmethod
@@ -378,6 +380,26 @@ class Schematic:
         m = sch_ids(self._tree_of(previous))
         self.uuids.reuse = m
         return m
+
+    def mark_unchanged_instances(self, placements: Sequence[Tuple[str, Point, Dict[str, str]]]) -> Set[str]:
+        """Before placing a sheet's symbols with instances: placements = [(lib id, position, {instance path:
+        reference})] of every (non-'#') symbol about to be placed. An instance path is unchanged when, at every
+        position where the previous version has a symbol of the same library id, its reference there is the same.
+        A tied vote between ids from elsewhere (add_symbol) goes to the one an unchanged instance had, so a symbol
+        moved while another instance was renumbered keeps its id. Returns the set (also kept in ``unchanged``)."""
+        prev = self.uuids.reuse
+        at = {w: prev.refs.get(u, {}) for u, w in getattr(prev, 'placed', {}).items()}
+        seen: Set[str] = set()
+        changed: Set[str] = set()
+        for lib_id, (x, y), refs in placements:
+            old = at.get((lib_id, _sch_round(x), _sch_round(y)))
+            for path, ref in (refs.items() if old else ()):
+                if path in old:
+                    seen.add(path)
+                    if old[path] != ref:
+                        changed.add(path)
+        self.unchanged = seen - changed
+        return self.unchanged
 
     def _fill_uuid(self, n: Node, key: Optional[str] = None) -> Node:
         u = n.need('uuid')
@@ -539,8 +561,9 @@ class Schematic:
 
         The symbol's uuid is stable: the previous version's id by reference, else derived from ``key`` (default
         ``symbol/REF/UNIT``); ``uuid`` sets it explicitly. With ``instances``: the id ``key`` derives when the
-        previous version has it; else the id most of its (instance path, reference) pairs had there (a tie: the one
-        of the same library symbol and position; no pair: the previous symbol of that library symbol and position);
+        previous version has it; else by its (instance path, reference) pairs: the id an unchanged instance had there
+        (mark_unchanged_instances), else the one most pairs had (a tie: the one of the same library symbol and
+        position); no pair: the previous symbol of that library symbol and position;
         else derived from ``key``. '#' symbols are matched by position, as their references are renumbered freely."""
         if lib is not None:
             self.embed_symbol(lib_id, lib)
@@ -593,9 +616,10 @@ class Schematic:
         # A symbol placed with instances (on a sheet used several times, or any sheet of a hierarchy) keeps, in order:
         # (1) the id its own key derives, when the previous version has it: it was made by this key before, so
         #     renumbering instances moves nothing; its pins' ids are derived from the key too;
-        # (2) an id from elsewhere (the GUI): the one most of its (instance path, reference) pairs had there, a tie
-        #     going to the previous symbol of the same library symbol at the same position; with no pair found, that
-        #     symbol of the same library symbol and position; its pins keep their ids;
+        # (2) an id from elsewhere (the GUI), by its (instance path, reference) pairs: the one an unchanged instance
+        #     had (mark_unchanged_instances), else the one most pairs had, a tie going to the previous symbol of the
+        #     same library symbol at the same position, then to the first instance's; with no pair found, the symbol
+        #     of the same library symbol and position; its pins keep their ids;
         # (3) otherwise derived from the key. Never the previous id of the key's reference: the Reference property is
         #     the first instance's reference, which another symbol may have had.
         # Power and other '#' symbols are matched by position as on any sheet: their references are renumbered freely.
@@ -610,15 +634,18 @@ class Schematic:
                 placed = getattr(reuse, 'placed', {})
                 here = (lib_id, round(x, 4), round(y, 4))
                 votes: Dict[str, int] = {}
+                trusted: Set[str] = set()                # candidates voted for by an unchanged instance
                 for p, r in insts:
                     old = reuse.get(instance_key(p, r, unit))
                     if self.uuids.in_previous(old):
                         votes[old] = votes.get(old, 0) + 1
+                        if p in self.unchanged:
+                            trusted.add(old)
                 if not votes:
                     votes = {u: 0 for u, w in placed.items() if w == here and self.uuids.in_previous(u)}
                 if votes:
                     order = list(votes)
-                    prev = max(order, key=lambda u: (votes[u], placed.get(u) == here, -order.index(u)))
+                    prev = max(order, key=lambda u: (u in trusted, votes[u], placed.get(u) == here, -order.index(u)))
                     uuid = prev
         if uuid:
             n.need('uuid')[1] = self.uuids.take(uuid)

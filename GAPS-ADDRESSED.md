@@ -975,3 +975,18 @@ the nc16 specs, `strap2.py`'s design) were re-run against the branch.
 
 Test runs: wf 140 passed, 2 skipped (kicad_sexpr runner 55 passed, 2 skipped); rev 33 passed, 2 skipped; ps 29
 passed, 1 skipped; psu 4 passed.
+
+## Third re-check (PR #12 at c0fd85d) and its fixes
+
+Every test below fails on c0fd85d and passes now; the re-check's repros (`/tmp/rc13/adv`: `rp.py` p5_strap /
+gnd_strap, nc16x with C201 and C601 deleted, `nest.py`, `tie.py`, `resave2.py`) and the earlier rounds' were re-run
+against the branch.
+
+| Finding | Fix | Verified |
+|---|---|---|
+| 1. refparts carried a global net through a strap pin: ch1's strap to +5V moved "net:+5V" onto other instances' rails (a false pass on C201), "net:GND" gave a false AMBIGUOUS | a global net (no sheet path; not KiCad's Net-( / unconnected-( name for an unlabelled net) is the same net in every instance; only sheet nets are carried through the instance's pins | `test_refparts.py::test_a_global_net_stays_global_when_a_strap_differs`; rp.py: p5_strap every instance on C9, gnd_strap every instance on its own cap |
+| 2. Instances sharing a rail passed on the first instance's part (U201 on C101 with C201 deleted; nested U1201 on C1101) | an IC on a sheet used several times is satisfied only by parts outside every other instance of that sheet (its own, the root's, a parent's) | `test_refparts.py::test_only_its_own_instance_parts_satisfy_an_ic` (flat and nested); nc16x: U201 / U601 no longer on C101 / C501; nest.py: every leaf IC on its own leaf's parts, group parts still count |
+| 3. A part moved while one of two instances was renumbered swapped GUI ids (and a 2-1 majority of identically renumbered instances did too) | schgen marks, per sheet, the instances whose references are unchanged at every shared position (`Schematic.mark_unchanged_instances`); their vote decides first, then the majority, then library id and position | `test_gui_ids_when_a_part_moves_while_one_of_two_instances_is_renumbered` (both cases); tie.py: the unchanged instance keeps its references in every case |
+
+Test runs: wf 143 passed, 2 skipped (kicad_sexpr runner 55 passed, 2 skipped); rev 33 passed, 2 skipped; ps 29
+passed, 1 skipped; psu 4 passed.

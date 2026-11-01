@@ -668,6 +668,46 @@ def test_gui_ids_with_two_instances_follow_position_on_a_tie():
         assert channel_pins(d) == gui_pins, refs
 
 
+def test_gui_ids_when_a_part_moves_while_one_of_two_instances_is_renumbered():
+    """third re-check, finding 3: GUI ids, the sheet placed twice; local R1 is moved while ch1 swaps R1 and R3. The
+    1-1 votes are not decided by position (R1 is somewhere new): the vote of ch2, whose references did not change,
+    decides, so ch2's links stay (the symbol that is R201 keeps its id) and nothing swaps"""
+    d = tempfile.mkdtemp()
+    hierarchy_demo.write(d, 2)
+    t = open(os.path.join(d, 'channel.kicad_sch')).read()
+    for i, u in enumerate(sorted(set(channel_ids(d).values()) | {q for v in channel_pins(d).values() for q in v})):
+        t = t.replace(u, '0000%04d-0000-4000-8000-%012d' % (i, i))
+    open(os.path.join(d, 'channel.kicad_sch'), 'w').write(t)
+
+    def by_ch2_ref(d):
+        out = {}
+        for n in load(os.path.join(d, 'channel.kicad_sch')).nodes('symbol'):
+            refs = {str(p[1]).rsplit('/', 1)[1]: str(p.find('reference')[1]) for p in n.walk('path')}
+            out[sorted(refs.values())[-1]] = str(n.get('uuid'))      # the ch2 reference (2xx sorts after 1xx)
+        return out
+    before = by_ch2_ref(d)
+    root, _ = hierarchy_demo.build(n=2)
+    root.blocks[1].refs = renumbered_ch1                             # ch1: R1 <-> R3
+    next(p for p in root.blocks[1].child.parts if p.ref == 'R1').y += 5.08     # local R1 moved
+    root.write(os.path.join(d, 'demo.kicad_sch'))
+    after = by_ch2_ref(d)
+    assert after == before, [(k, before[k], after.get(k)) for k in before if before[k] != after.get(k)]
+    # three instances, two of them renumbered the same way (a 2-1 majority for the wrong id): ch3 kept its
+    # references, and its vote decides
+    d = tempfile.mkdtemp()
+    hierarchy_demo.write(d, 3)
+    t = open(os.path.join(d, 'channel.kicad_sch')).read()
+    for i, u in enumerate(sorted(set(channel_ids(d).values()) | {q for v in channel_pins(d).values() for q in v})):
+        t = t.replace(u, '0000%04d-0000-4000-8000-%012d' % (i, i))
+    open(os.path.join(d, 'channel.kicad_sch'), 'w').write(t)
+    gui = channel_ids(d)
+    root, _ = hierarchy_demo.build(n=3)
+    root.blocks[1].refs = renumbered_ch1
+    root.blocks[2].refs = lambda r: {'R1': 'R203', 'R3': 'R201'}.get(r) or renumbered_ch1(r).replace('1', '2', 1)
+    root.write(os.path.join(d, 'demo.kicad_sch'))
+    assert channel_ids(d) == gui, [(k, gui[k], v) for k, v in channel_ids(d).items() if gui[k] != v]
+
+
 def doc_block(path, marker):
     """the python code block that follows `marker` in a markdown file (or a docstring's indented example)"""
     text = open(path).read()

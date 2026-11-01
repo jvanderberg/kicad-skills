@@ -50,9 +50,11 @@ def comp(ref, uuid, sheet):
                                                              sheet.strip('/') or 'root', uuid))
 
 
-def instances(nets):
-    """the netlist of U, C, R on /b1/ and /b2/ plus C9 (+5V to GND) on the root; nets: {name: ['U101.4', ...]}"""
-    parts = [comp('%s%d01' % (p, k), p.lower() * 2, '/b%d/' % k) for k in (1, 2) for p in 'UCR'] + [comp('C9', 'c9', '/')]
+def instances(nets, sheets=('/b1/', '/b2/')):
+    """the netlist of U, C, R on each instance sheet (U101, C101, R101 on the first, U201 ... on the second, ...) plus
+    C9 (+5V to GND) on the root; nets: {name: ['U101.4', ...]}"""
+    parts = [comp('%s%d01' % (p, k), p.lower() * 2, sh) for k, sh in enumerate(sheets, 1) for p in 'UCR'] + \
+        [comp('C9', 'c9', '/')]
     fn = {'1': 'GND', '2': 'OUT', '3': 'CLR', '4': 'VCC'}
     net = lambda name, pins: '<net name="%s">%s</net>' % (name, ''.join(
         '<node ref="%s" pin="%s"%s/>' % (r, n, ' pinfunction="%s"' % fn[n] if r[0] == 'U' else '')
@@ -64,10 +66,12 @@ def instances(nets):
 BASE = {'/b1/OUT': ['R101.2', 'U101.2'], '/b2/OUT': ['R201.2', 'U201.2'], '+5V': ['C9.1', 'U101.4', 'U201.4']}
 
 
-def rows_for(spec, nets):
-    root = instances(nets)
+def rows_for(spec, nets, sheets=('/b1/', '/b2/')):
+    root = instances(nets, sheets)
     comps, pins = refparts.load_netlist(root)
-    rows = refparts.check(refparts.expand_instances(spec, refparts.siblings(root), pins), comps, pins, {})
+    sib = refparts.siblings(root)
+    extra = (sib,) if 'sib' in refparts.check.__code__.co_varnames else ()       # (older check() had no sib)
+    rows = refparts.check(refparts.expand_instances(spec, sib, pins), comps, pins, {}, *extra)
     return {(r['ic'], r['role']): r['status'] for r in rows}
 
 
@@ -97,6 +101,44 @@ def test_a_net_wired_differently_in_another_instance_is_ambiguous():
     assert st[('U101', 'two nets')].startswith('AMBIGUOUS: endpoint pin:1,3 of U101 is on 2 nets'), st   # GND, /BANK1
     st = rows_for({'C9': {'parts': [{'role': 'both on GND', 'kind': 'C', 'between': ['GND', 'net:GND']}]}}, nets)
     assert st[('C9', 'both on GND')].startswith('MISSING'), st          # one pad on GND does not count twice
+
+
+def test_a_global_net_stays_global_when_a_strap_differs():
+    """third re-check, finding 1: CLR is strapped to +5V on b1 and to the instance's own rail on b2. "net:+5V" is +5V in
+    every instance (a global net), not carried onto b2's rail through the strap pin (a false pass on C201); "net:GND"
+    likewise (it gave a false AMBIGUOUS)"""
+    nets = {'/b1/OUT': ['R101.2', 'U101.2'], '/b2/OUT': ['R201.2', 'U201.2'],
+            '+5V': ['C9.1', 'U101.3'], '/BANK1': ['C101.1', 'U101.4'], '/BANK2': ['C201.1', 'U201.4', 'U201.3'],
+            'GND': ['C101.2', 'C201.2', 'C9.2', 'U101.1', 'U201.1']}
+    st = rows_for({'U101': {'parts': [{'role': '+5V cap', 'kind': 'C', 'between': ['net:+5V', 'GND'], 'value': '100n'},
+                                      {'role': 'VCC cap', 'kind': 'C', 'between': ['VCC', 'net:GND'], 'value': '100n'}]}},
+                  nets)
+    assert st[('U101', '+5V cap')].startswith('ok: C9') and st[('U201', '+5V cap')].startswith('ok: C9'), st
+    assert st[('U101', 'VCC cap')].startswith('ok: C101') and st[('U201', 'VCC cap')].startswith('ok: C201'), st
+    nets['GND'].remove('U101.1'); nets['GND'].append('U101.3'); nets['+5V'].remove('U101.3'); nets['+5V'].append('U101.1')
+    st = rows_for({'U101': {'parts': [{'role': 'VCC cap', 'kind': 'C', 'between': ['VCC', 'net:GND'], 'value': '100n'}]}},
+                  nets)                                          # b1's CLR on GND, b2's on its own rail
+    assert st[('U201', 'VCC cap')].startswith('ok: C201'), st
+
+
+def test_only_its_own_instance_parts_satisfy_an_ic():
+    """third re-check, finding 2: two instances on one shared bank rail, b2's cap deleted. U201 must not pass on
+    C101 (b1's), nor U101 on C201; a root part still counts. Nested: the same between /g1/l1/ and /g1/l2/, /g2/l1/."""
+    nets = {'/b1/OUT': ['R101.2', 'U101.2'], '/b2/OUT': ['R201.2', 'U201.2'], '+5V': ['C9.1'],
+            '/BANK1': ['C101.1', 'U101.4', 'U201.4'], 'GND': ['C101.2', 'C9.2', 'U101.1', 'U201.1']}
+    spec = {'U101': {'parts': [{'role': 'bypass', 'kind': 'C', 'between': ['VCC', 'GND'], 'value': '100n'}]}}
+    st = rows_for(spec, nets)
+    assert st[('U101', 'bypass')].startswith('ok: C101') and st[('U201', 'bypass')].startswith('MISSING'), st
+    st = rows_for({'U201': spec['U101']}, dict(nets, **{'/BANK1': ['C201.1', 'U101.4', 'U201.4'],
+                                                       'GND': ['C201.2', 'C9.2', 'U101.1', 'U201.1']}))
+    assert st[('U201', 'bypass')].startswith('ok: C201') and st[('U101', 'bypass')].startswith('MISSING'), st
+    st = rows_for(spec, dict(nets, **{'+5V': [], '/BANK1': ['C9.1', 'C101.1', 'U101.4', 'U201.4']}))
+    assert st[('U201', 'bypass')].startswith('ok: C9'), st             # the parent's part is everyone's
+    sheets = ('/g1/l1/', '/g1/l2/', '/g2/l1/')
+    nested = {'/BANK1': ['C101.1', 'U101.4', 'U201.4', 'U301.4'], 'GND': ['C101.2', 'U101.1', 'U201.1', 'U301.1']}
+    st = rows_for(spec, nested, sheets)
+    assert st[('U101', 'bypass')].startswith('ok: C101'), st
+    assert st[('U201', 'bypass')].startswith('MISSING') and st[('U301', 'bypass')].startswith('MISSING'), st
 
 
 if __name__ == '__main__':
