@@ -80,6 +80,7 @@ Sources: https://jlcpcb.com/capabilities/pcb-assembly-capabilities, https://jlcp
 |---|---|---|
 | Smallest package | 0402 | 01005 |
 | Sides | Single-sided placement | Single and double sided |
+| Through-hole parts | Yes (SMT and through-hole, one side) | Yes |
 | Layer counts | 2, 4, 6 | 1-32 |
 | Board thickness | 0.8-1.6 mm | No limit |
 | Board size (single) | 10x10 to 470x500 mm | 70x70 to 460x500 mm |
@@ -88,12 +89,17 @@ Sources: https://jlcpcb.com/capabilities/pcb-assembly-capabilities, https://jlcp
 | Setup fee | $8.18 | $25.56 one side / $51.12 two sides |
 | Stencil | $1.53 | $8.21 one side / $16.42 two sides |
 | Feeder loading | $3.07 per unique Extended part | $1.53 per unique part (Basic or Extended) |
+| Hand soldering (through-hole) | $3.58 per order + $0.0164 per joint | Same |
 
 - Basic parts are kept loaded on the machines; Extended parts are loaded by hand, hence the fee. "Preferred Extended"
   parts are exempt from the loading fee on economic assembly (assembly FAQ).
 - One part that economic assembly cannot place (e.g. an 0201, or a part only available for standard) moves the whole
   order to standard. Check each part's class with the pcb-part-selection skill.
 - All parts on the top side keeps the board eligible for economic assembly.
+- Through-hole parts do **not** force standard assembly: the capabilities page lists economic as "Single sided
+  placement (SMT/Thru-hole)". Through-hole parts are soldered by hand (or wave) for the per-order fee plus a per-joint
+  fee, so a few connectors cost a few dollars (20 joints: about $3.58 + $0.33). Default to letting JLC fit them; only
+  offer hand soldering when the user wants it or the part is not in LCSC stock.
 
 ## Lead time
 

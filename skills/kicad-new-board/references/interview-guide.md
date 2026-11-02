@@ -122,7 +122,7 @@ roughly 10 / 0.9 + 2 x 4.2 / 0.9, about 20 W - beyond any 5 V USB-C source.
 | Mounting holes: count, size, positions? | 4 x M3 (3.2 mm), 3-4 mm from the corners | Must match the enclosure or standoffs; each needs a copper and part keepout around it, which costs area |
 | Height limit above/below the board? | None | Tall parts (electrolytics, connectors, inductors) may not fit a lid |
 | All parts on top? | Yes | Required for JLC economic assembly; cheaper and simpler |
-| Through-hole parts? | Few, hand-soldered or JLC through-hole assembly | Each is a cost and process decision |
+| Through-hole parts? | Few, assembled by JLC | Economic assembly fits through-hole parts too (about $3.58 per order + $0.0164 per joint); they do not move the order to standard |
 | Jumpers or switches that select a rail or mode? | Solder jumper or a header + shunt | A header that picks one of several rails must be a checkerboard (every adjacent pin pair one rail + common) so no shunt position shorts two rails (kicad-pcb-workflow `layout-rules.md` "Selection jumpers"); record each position's meaning |
 
 ## 6. Manufacturing
@@ -130,7 +130,7 @@ roughly 10 / 0.9 + 2 x 4.2 / 0.9, about 20 W - beyond any 5 V USB-C source.
 | Ask | Default | Why it matters |
 |---|---|---|
 | Fab and assembler? | JLCPCB fab + JLC economic assembly | Sets capabilities, part library (LCSC) and fees |
-| Assembled by JLC, by hand, or a mix? | JLC assembles SMD, user solders big through-hole | Hand soldering limits package choice (0603+ and no QFN/BGA is a hobby-friendly floor). Record the method per part (assembled / hand-soldered / not fitted): it becomes each symbol's in-BOM, in-position-file and DNP attributes, and the assembler's BOM and position file follow them |
+| Assembled by JLC, by hand, or a mix? | JLC assembles everything, through-hole included | Hand soldering limits package choice (0603+ and no QFN/BGA is a hobby-friendly floor). Record the method per part (assembled / hand-soldered / not fitted): it becomes each symbol's in-BOM, in-position-file and DNP attributes, and the assembler's BOM and position file follow them |
 | Quantity per order? | 5 boards, 2-5 assembled | JLC assembly can populate fewer boards than are fabricated |
 | Which JLC: international (jlcpcb.com) or China (jlc.com)? | International: LCSC **global** warehouse | Stock is per warehouse region (global vs cn): a part can be plentiful in one and absent from the other. Written to `sourcing.json`; every stock lookup reads it |
 | Finish and colour? | HASL (lead-free), green | ENIG for fine-pitch parts or edge contacts |
